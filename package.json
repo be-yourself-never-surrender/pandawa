@@ -1,0 +1,28 @@
+{
+  "name": "pandawa",
+  "version": "1.0.0",
+  "description": "Pandawa — Visual Agentic Team & Layered Brain Platform with Multi-AI Routing",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev:server": "node --watch --experimental-strip-types server/src/index.ts",
+    "dev:web": "npm --prefix web run dev",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:web": "npm --prefix web run build",
+    "build": "npm run build:server && npm run build:web",
+    "start": "node dist/server/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.10",
+    "@types/ws": "^8.18.0",
+    "typescript": "^5.8.2"
+  }
+}

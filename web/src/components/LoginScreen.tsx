@@ -69,7 +69,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
                   type={showPw ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter password (default: 11111111)"
+                  placeholder="Enter admin password"
                   autoFocus
                   className="w-full bg-[#090c14] border border-slate-700/80 focus:border-amber-500 rounded-xl pl-10 pr-10 py-3 text-sm text-white placeholder-slate-500 outline-none transition"
                 />
@@ -105,7 +105,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
               Encrypted scrypt auth
             </span>
-            <span>Default password: <code className="text-slate-300">11111111</code></span>
+            <span>First boot password: <code className="text-slate-300">data/.initial_password</code></span>
           </div>
         </div>
       </div>

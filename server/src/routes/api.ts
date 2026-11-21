@@ -1368,7 +1368,6 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
             durationMs: result.durationMs,
             promptTokens: result.promptTokens,
             completionTokens: result.completionTokens,
-            dryRun: result.dryRun,
           })
         );
         try {
@@ -1404,7 +1403,8 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const isAborted = /aborted|stopped by user/i.test(msg);
-      res.status(isAborted ? 499 : 500).json({ error: msg, aborted: isAborted });
+      const statusCode = (err as { statusCode?: number })?.statusCode || (isAborted ? 499 : 500);
+      res.status(statusCode).json({ error: msg, aborted: isAborted });
     } finally {
       if (activeSessionId) clearMissionController(activeSessionId, controller);
     }
@@ -2305,8 +2305,8 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const allProvs = db.prepare("SELECT * FROM providers").all() as unknown as ProviderRecord[];
     const readyProviders = allProvs.filter((p) => {
       if (!p.enabled) return false;
-      const k = decryptSecret(p.api_key || "");
-      return k.trim().length > 0;
+      const k = decryptSecret(p.api_key || "").trim();
+      return k.length > 0 && k.toLowerCase() !== "ollama";
     }).length;
 
     const counts = {

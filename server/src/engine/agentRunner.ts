@@ -25,7 +25,6 @@ export interface AgentRunResult {
   durationMs: number;
   stepsUsed?: number;
   usedFallbackProvider?: boolean;
-  dryRun?: boolean;
 }
 
 function isProviderReady(p: ProviderRecord | null): p is ProviderRecord {
@@ -232,39 +231,20 @@ export async function runAgentTurn(params: {
   });
 
   if (!provider) {
-    const dryContent =
-      `[Pandawa Dry-Run · No API Key Configured Yet]\n\n` +
-      `**${runtime.agent.avatar} ${runtime.agent.name}** (${runtime.agent.title}) is wired and ready!\n` +
-      `- **Assigned Model:** \`${runtime.model || "not set"}\` (purpose: \`${runtime.agent.purpose}\`)\n` +
-      `- **Connected Brains:** ${runtime.summary.brainNames.join(", ") || "None"}\n` +
-      `- **Mounted Knowledge Files:** ${runtime.summary.mountedPaths.join(", ") || "None"} (${runtime.summary.totalFiles} files, ${runtime.summary.totalChars} chars compiled)\n` +
-      `- **Active Tool Packs:** ${runtime.toolPacks.join(", ")}\n` +
-      `- **Max Autonomous Steps:** ${runtime.agent.max_iterations || 35}\n\n` +
-      `Open **Multi-AI Hub** in the sidebar to add an API key (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama, or any Custom Base URL).`;
+    const errMsg =
+      `No configured AI provider for ${runtime.agent.name} (assigned model: "${runtime.model || "unset"}"). ` +
+      `Open Multi-AI Hub to add an API key (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama, or Custom Base URL) before running a live mission.`;
 
     params.onEvent?.({
-      type: "agent_done",
+      type: "agent_error",
       agentId: runtime.agent.id,
       agentName: runtime.agent.name,
-      content: dryContent,
-      dryRun: true,
+      error: errMsg,
     });
 
-    return {
-      agentId: runtime.agent.id,
-      agentName: runtime.agent.name,
-      avatar: runtime.agent.avatar,
-      model,
-      providerName: "Unconfigured (Dry-Run)",
-      content: dryContent,
-      reasoning: "",
-      toolTrace: [],
-      promptTokens: 0,
-      completionTokens: 0,
-      durationMs: Date.now() - started,
-      stepsUsed: 0,
-      dryRun: true,
-    };
+    const err = new Error(errMsg) as Error & { statusCode?: number };
+    err.statusCode = 422;
+    throw err;
   }
 
   // Pull live discovered tools from enabled MCP servers

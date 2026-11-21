@@ -167,11 +167,9 @@ export async function runHeartbeatPulse(trigger: "daemon" | "manual" = "daemon")
 
     const durationMs = Date.now() - started;
     const raw = (res.content || "").trim();
-    const isOk = res.dryRun || /^HEARTBEAT_OK\b/i.test(raw) || (raw.includes("HEARTBEAT_OK") && raw.length < 180);
+    const isOk = /^HEARTBEAT_OK\b/i.test(raw) || (raw.includes("HEARTBEAT_OK") && raw.length < 180);
     const status: "ok" | "alert" = isOk ? "ok" : "alert";
-    const summary = res.dryRun
-      ? "HEARTBEAT_OK (Dry-Run: configure an AI provider in Multi-AI Hub to enable live autonomous checks)"
-      : raw.slice(0, 1500);
+    const summary = raw.slice(0, 1500);
 
     let alerted = false;
     if (status === "alert") {

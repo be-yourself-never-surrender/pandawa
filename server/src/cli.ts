@@ -87,8 +87,11 @@ async function cmdStatus() {
     .prepare("SELECT name, title, purpose, model, max_iterations FROM agents WHERE enabled = 1")
     .all() as Array<{ name: string; title: string; purpose: string; model: string; max_iterations?: number }>;
   const providers = db
-    .prepare("SELECT name, kind, base_url, length(trim(api_key)) as hasKey FROM providers")
-    .all() as Array<{ name: string; kind: string; base_url: string; hasKey: number }>;
+    .prepare("SELECT name, kind, base_url, api_key, enabled FROM providers")
+    .all() as Array<{ name: string; kind: string; base_url: string; api_key: string; enabled: number }>;
+  const readyProviderCount = providers.filter(
+    (p) => p.enabled === 1 && p.api_key.trim().length > 0 && p.api_key.trim().toLowerCase() !== "ollama"
+  ).length;
   const packs = listAllToolPacks();
   const totalTools = packs.reduce((acc, p) => acc + p.tools.length, 0);
   const terms = await listTerminals();
@@ -105,7 +108,7 @@ async function cmdStatus() {
       .map((a) => `${a.name}[${a.model || a.purpose}·${a.max_iterations || 35}st]`)
       .join(", ")}`
   );
-  console.log(`   Providers      : ${providers.filter((p) => p.hasKey > 0).length}/${providers.length} ready`);
+  console.log(`   Providers      : ${readyProviderCount}/${providers.length} ready`);
   console.log(`   Skills         : ${listSkills().length} SKILL.md playbooks`);
   console.log(`   Tool Arsenal   : ${totalTools} built-in tools across ${packs.length} toolpacks (+ live MCP)`);
   console.log(

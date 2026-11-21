@@ -224,7 +224,7 @@ async function maybeAutoReflect(params: {
   signal?: AbortSignal;
   onEvent?: (ev: Record<string, unknown>) => void;
 }): Promise<void> {
-  if (params.signal?.aborted || params.synthesis.dryRun) return;
+  if (params.signal?.aborted) return;
   const totalTools =
     params.contributions.reduce((acc, c) => acc + c.toolTrace.length, 0) + params.synthesis.toolTrace.length;
   if (totalTools < 3) return;
@@ -356,20 +356,8 @@ export async function runTeamMission(params: {
           providerName: planRes.providerName,
           phase: "planning",
           durationMs: planRes.durationMs,
-          dryRun: planRes.dryRun,
         },
       });
-
-      if (planRes.dryRun) {
-        return {
-          teamId: team.id,
-          teamName: team.name,
-          mode,
-          contributions,
-          synthesis: planRes,
-          blackboardCount: 0,
-        };
-      }
 
       // Persist planned tasks to Shared Team Task Board
       let plannedTasks = parsePlannedTasks(planRes.content, executionRoster);
@@ -458,6 +446,7 @@ export async function runTeamMission(params: {
               }
               return res;
             } catch (err) {
+              if ((err as { statusCode?: number })?.statusCode === 422) throw err;
               const errMsg = err instanceof Error ? err.message : String(err);
               return {
                 agentId: member.id,
@@ -710,7 +699,6 @@ export async function runTeamMission(params: {
             phase: "relay",
             stepsUsed: res.stepsUsed,
             durationMs: res.durationMs,
-            dryRun: res.dryRun,
           },
         });
       }
@@ -773,6 +761,7 @@ export async function runTeamMission(params: {
           });
           return res;
         } catch (err) {
+          if ((err as { statusCode?: number })?.statusCode === 422) throw err;
           const errMsg = err instanceof Error ? err.message : String(err);
           return {
             agentId: member.id,
@@ -793,22 +782,20 @@ export async function runTeamMission(params: {
 
     for (const res of round1Results) {
       contributions.push(res);
-      if (!res.dryRun) {
-        const bbId = generateId("bb");
-        db.prepare(
-          `INSERT INTO blackboard_entries (id, team_id, session_id, author_agent_id, author_name, entry_type, title, content)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          bbId,
-          team.id,
-          params.sessionId,
-          res.agentId,
-          res.agentName,
-          "proposal",
-          `${res.agentName} Perspective`,
-          res.content.slice(0, 1200)
-        );
-      }
+      const bbId = generateId("bb");
+      db.prepare(
+        `INSERT INTO blackboard_entries (id, team_id, session_id, author_agent_id, author_name, entry_type, title, content)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        bbId,
+        team.id,
+        params.sessionId,
+        res.agentId,
+        res.agentName,
+        "proposal",
+        `${res.agentName} Perspective`,
+        res.content.slice(0, 1200)
+      );
 
       saveMessage({
         sessionId: params.sessionId,
@@ -825,52 +812,8 @@ export async function runTeamMission(params: {
           phase: "peer_deliberation",
           stepsUsed: res.stepsUsed,
           durationMs: res.durationMs,
-          dryRun: res.dryRun,
         },
       });
-    }
-
-    if (round1Results.every((r) => r.dryRun)) {
-      const summaryContent =
-        `## Pandawa Agentic OS — Ready for Live Multi-AI Execution\n\n` +
-        `**Team:** ${team.name} (\`${mode}\` mode)\n` +
-        `**Wired Peers (${members.length}):** ${members.map((m) => `${m.avatar} **${m.name}** (\`${m.model || "unset"}\`)`).join(" · ")}\n\n` +
-        `All agents successfully compiled their **Living Brain -> Team Brain -> [[wikilinks]]** topology!\n\n` +
-        `👉 Next step: Open **Multi-AI Hub** in the sidebar, paste at least one API key (or Custom Base URL), and run your mission live!`;
-
-      const drySynth: AgentRunResult = {
-        agentId: synthesizer.id,
-        agentName: `${synthesizer.name} (Team Consensus)`,
-        avatar: synthesizer.avatar,
-        model: synthesizer.model,
-        providerName: "Dry-Run",
-        content: summaryContent,
-        reasoning: "",
-        toolTrace: [],
-        promptTokens: 0,
-        completionTokens: 0,
-        durationMs: 0,
-        dryRun: true,
-      };
-
-      saveMessage({
-        sessionId: params.sessionId,
-        role: "assistant",
-        agentId: synthesizer.id,
-        agentName: `${synthesizer.name} · Team Consensus`,
-        modelUsed: synthesizer.model,
-        content: summaryContent,
-        meta: { avatar: synthesizer.avatar, phase: "consensus", dryRun: true },
-      });
-
-      return {
-        teamId: team.id,
-        teamName: team.name,
-        mode,
-        contributions,
-        synthesis: drySynth,
-        blackboardCount: 0,
-      };
     }
 
     if (params.signal?.aborted) throw new Error("Mission stopped by user.");

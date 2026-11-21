@@ -253,11 +253,11 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "Ollama / Local OpenAI",
     "openai",
     "http://127.0.0.1:11434/v1",
-    "ollama",
+    "",
     "llama3.3",
     JSON.stringify(["llama3.3", "qwen2.5-coder:32b", "deepseek-r1:14b"]),
     "{}",
-    1
+    0
   );
   insertProvider.run(
     "prov_custom",

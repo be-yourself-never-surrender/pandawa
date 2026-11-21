@@ -460,7 +460,7 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
               required
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
-              placeholder="Default is 11111111"
+              placeholder="Enter current password"
               className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
             />
           </div>
@@ -471,10 +471,10 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
               <input
                 type="password"
                 required
-                minLength={4}
+                minLength={8}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Min 4 characters"
+                placeholder="Min 8 characters"
                 className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
               />
             </div>
@@ -483,7 +483,7 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
               <input
                 type="password"
                 required
-                minLength={4}
+                minLength={8}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"

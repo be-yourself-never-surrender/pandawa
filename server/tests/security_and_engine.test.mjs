@@ -278,6 +278,29 @@ test("10. HTTP API enforces header-only REST auth, login 429 rate-limit, encrypt
     const mcpList = await (await fetch(`${base}/api/connectors`, { headers: { Authorization: `Bearer ${token}` } })).json();
     const foundMcp = mcpList.servers.find((s) => s.id === mcpId);
     assert.ok(foundMcp.headers.Authorization.includes("••••"), "GET /connectors must mask MCP headers");
+
+    // 11. Zero mock / zero dry-run: missing AI provider returns real HTTP 422 error (both agent & team)
+    const noProvAgent = await fetch(`${base}/api/chat/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ targetType: "agent", targetId: "agent_yudhistira", prompt: "hello" }),
+    });
+    assert.equal(noProvAgent.status, 422, "Agent turn without provider must fail fast with 422 (no dry-run)");
+    const agentErr = await noProvAgent.json();
+    assert.match(agentErr.error, /No configured AI provider/i);
+
+    const noProvTeam = await fetch(`${base}/api/chat/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ targetType: "team", targetId: "team_pandawa", prompt: "hello team" }),
+    });
+    assert.equal(noProvTeam.status, 422, "Team mission without provider must fail fast with 422 (no dry-run)");
+    const teamErr = await noProvTeam.json();
+    assert.match(teamErr.error, /No configured AI provider/i);
+
+    // Status reports 0 configured providers on clean boot (no phantom Ollama placeholder)
+    const st = await (await fetch(`${base}/api/system/status`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    assert.equal(st.counts.configuredProviders, 0, "Clean install must report 0 configured providers");
   } finally {
     srv.close();
   }

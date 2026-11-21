@@ -40,6 +40,11 @@ import {
 } from "../engine/approvalManager.js";
 import { discoverMcpTools, type McpServerRow } from "../mcp/mcpClient.js";
 import { exportTeamBundle, importTeamBundle, type PandawaBundle } from "../bundles/bundleService.js";
+import {
+  registerMissionController,
+  clearMissionController,
+  abortMission,
+} from "../engine/missionController.js";
 
 function maskProvider(p: ProviderRecord) {
   const key = decryptSecret(p.api_key || "");
@@ -782,6 +787,76 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({ ok: true });
   });
 
+  router.delete("/teams/:id", (req: Request, res: Response) => {
+    const db = getDb();
+    const teamId = String(req.params.id);
+    const team = db.prepare("SELECT * FROM teams WHERE id = ?").get(teamId) as
+      | { id: string; team_brain_id?: string | null }
+      | undefined;
+    if (!team) {
+      res.status(404).json({ error: "Team not found" });
+      return;
+    }
+
+    // Collect Team Brain node + its direct squad agent nodes to remove cleanly from canvas
+    const tbNodeIds = new Set<string>();
+    const allNodes = db.prepare("SELECT id, type, ref_id, data_json FROM canvas_nodes").all() as Array<{
+      id: string;
+      type: string;
+      ref_id: string;
+      data_json: string;
+    }>;
+    const allEdges = db.prepare("SELECT id, source, target FROM canvas_edges").all() as Array<{
+      id: string;
+      source: string;
+      target: string;
+    }>;
+
+    for (const n of allNodes) {
+      let data: Record<string, unknown> = {};
+      try {
+        data = JSON.parse(n.data_json || "{}");
+      } catch {
+        // ignore
+      }
+      if (n.type === "team_brain" && (n.ref_id === team.team_brain_id || data.teamId === teamId)) {
+        tbNodeIds.add(n.id);
+      }
+    }
+
+    const nodeIdsToRemove = new Set<string>(tbNodeIds);
+    const agentIdsToRemove = new Set<string>();
+    const nodeById = new Map(allNodes.map((n) => [n.id, n]));
+
+    if (req.query.cascade !== "false") {
+      for (const e of allEdges) {
+        let other: (typeof allNodes)[number] | undefined;
+        if (tbNodeIds.has(e.source)) other = nodeById.get(e.target);
+        else if (tbNodeIds.has(e.target)) other = nodeById.get(e.source);
+        if (other && other.type === "agent") {
+          nodeIdsToRemove.add(other.id);
+          if (other.ref_id) agentIdsToRemove.add(other.ref_id);
+        }
+      }
+    }
+
+    for (const nid of nodeIdsToRemove) {
+      db.prepare("DELETE FROM canvas_edges WHERE source = ? OR target = ?").run(nid, nid);
+      db.prepare("DELETE FROM canvas_nodes WHERE id = ?").run(nid);
+    }
+    for (const aid of agentIdsToRemove) {
+      db.prepare("DELETE FROM agents WHERE id = ?").run(aid);
+    }
+    if (team.team_brain_id) {
+      db.prepare("DELETE FROM brains WHERE id = ?").run(team.team_brain_id);
+    }
+    db.prepare("DELETE FROM teams WHERE id = ?").run(teamId);
+
+    logAudit("admin", "team.delete", teamId, `Removed team + ${nodeIdsToRemove.size} canvas nodes`);
+    broadcast({ type: "topology_updated" });
+    res.json({ ok: true, removedNodes: nodeIdsToRemove.size });
+  });
+
   router.get("/teams/:id/blackboard", (req: Request, res: Response) => {
     const db = getDb();
     const rows = db
@@ -857,7 +932,16 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({ ok: true });
   });
 
+  router.post("/chat/abort", (req: Request, res: Response) => {
+    const sessionId = String(req.body?.sessionId || "*");
+    const stopped = abortMission(sessionId);
+    broadcast({ type: "mission_aborted", sessionId });
+    res.json({ ok: true, stopped, sessionId });
+  });
+
   router.post("/chat/send", async (req: Request, res: Response) => {
+    let activeSessionId = "";
+    let controller: AbortController | undefined;
     try {
       const db = getDb();
       const prompt = String(req.body?.prompt || "").trim();
@@ -879,6 +963,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           targetId
         );
       }
+
+      activeSessionId = sessionId;
+      controller = registerMissionController(sessionId);
 
       // Load prior history for session
       const priorRows = db
@@ -904,6 +991,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           sessionId,
           prompt,
           history,
+          signal: controller.signal,
           onEvent: (ev) => broadcast({ ...ev, sessionId }),
         });
 
@@ -943,12 +1031,17 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         userPrompt: prompt,
         history,
         activeAgentIds,
+        signal: controller.signal,
         onEvent: (ev) => broadcast({ ...ev, sessionId }),
       });
 
       res.json({ ok: true, sessionId, mode: "team", result: teamResult });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      const msg = err instanceof Error ? err.message : String(err);
+      const isAborted = /aborted|stopped by user/i.test(msg);
+      res.status(isAborted ? 499 : 500).json({ error: msg, aborted: isAborted });
+    } finally {
+      if (activeSessionId) clearMissionController(activeSessionId, controller);
     }
   });
 
@@ -1356,9 +1449,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
          VALUES (?, ?, ?, ?, ?, 'deliberate', 2, 1)`
       ).run(teamId, `${tpl}-${suffix}`, spec.teamName, spec.desc, brainId);
 
-      // Add Team Brain node + Agent nodes + edges to Canvas
+      // Dynamically place new Team Kit cleanly to the right of all existing nodes (never stacks!)
+      const maxXRow = db.prepare("SELECT COALESCE(MAX(position_x), 0) as mx FROM canvas_nodes").get() as { mx: number };
+      const baseX = maxXRow.mx > 0 ? Math.round(maxXRow.mx + 380) : 0;
+      const agentGap = 280;
+      const squadCenterX = baseX + Math.round(((spec.agents.length - 1) * agentGap) / 2);
+
       const tbNodeId = `node_tb_${suffix}`;
-      const baseX = 1280;
       db.prepare(
         `INSERT INTO canvas_nodes (id, type, ref_id, label, position_x, position_y, data_json)
          VALUES (?, 'team_brain', ?, ?, ?, ?, ?)`
@@ -1366,7 +1463,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         tbNodeId,
         brainId,
         `Team Brain: ${spec.teamName}`,
-        baseX + 220,
+        squadCenterX,
         220,
         JSON.stringify({ folderPath, teamId, color: "#8b5cf6", subtitle: spec.desc })
       );
@@ -1377,11 +1474,12 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         | undefined;
       if (mainNode?.id) {
         db.prepare(
-          `INSERT INTO canvas_edges (id, source, target, relation, permission, label, animated)
-           VALUES (?, ?, ?, 'brain_link', 'sync', 'inherits + sync', 1)`
+          `INSERT INTO canvas_edges (id, source, target, source_handle, target_handle, relation, permission, label, animated)
+           VALUES (?, ?, ?, 'bottom', 'top', 'brain_link', 'sync', 'inherits + sync', 1)`
         ).run(generateId("edge"), mainNode.id, tbNodeId);
       }
 
+      const createdAgNodeIds: string[] = [];
       spec.agents.forEach((ag, idx) => {
         const agId = generateId("agent");
         const agSlug = `${ag.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${suffix}`;
@@ -1394,6 +1492,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         writeBrainFile(`agents/${agSlug}/soul.md`, `${ag.soul}\n`);
 
         const agNodeId = `node_ag_${suffix}_${idx}`;
+        createdAgNodeIds.push(agNodeId);
         db.prepare(
           `INSERT INTO canvas_nodes (id, type, ref_id, label, position_x, position_y, data_json)
            VALUES (?, 'agent', ?, ?, ?, ?, ?)`
@@ -1401,15 +1500,23 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           agNodeId,
           agId,
           ag.name,
-          baseX + idx * 240,
-          460,
+          baseX + idx * agentGap,
+          440,
           JSON.stringify({ agentId: agId, avatar: ag.avatar, role: ag.title, purpose: ag.purpose, color: "#06b6d4" })
         );
         db.prepare(
-          `INSERT INTO canvas_edges (id, source, target, relation, permission, label, animated)
-           VALUES (?, ?, ?, 'brain_link', 'read_write', 'team brain', 1)`
+          `INSERT INTO canvas_edges (id, source, target, source_handle, target_handle, relation, permission, label, animated)
+           VALUES (?, ?, ?, 'bottom', 'top', 'brain_link', 'read_write', 'team brain', 1)`
         ).run(generateId("edge"), tbNodeId, agNodeId);
       });
+
+      // Add horizontal peer collaboration edges between squad teammates
+      for (let i = 0; i < createdAgNodeIds.length - 1; i++) {
+        db.prepare(
+          `INSERT INTO canvas_edges (id, source, target, source_handle, target_handle, relation, permission, label, animated)
+           VALUES (?, ?, ?, 'right', 'left', 'peer_collab', 'sync', 'peer', 0)`
+        ).run(generateId("edge"), createdAgNodeIds[i], createdAgNodeIds[i + 1]);
+      }
 
       logAudit("admin", "template.apply", teamId, spec.teamName);
       broadcast({ type: "topology_updated" });
@@ -1444,7 +1551,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     }
   });
 
-  // 1-Click Clean Layered Auto-Layout for Canvas
+  // 1-Click Team-Clustered Smart Auto-Layout (zero overlap even with many Team Kits!)
   router.post("/topology/auto-layout", (_req: Request, res: Response) => {
     const db = getDb();
     const nodes = db.prepare("SELECT id, type, ref_id, data_json FROM canvas_nodes").all() as Array<{
@@ -1453,46 +1560,110 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       ref_id: string;
       data_json: string;
     }>;
+    const edges = db.prepare("SELECT id, source, target, relation FROM canvas_edges").all() as Array<{
+      id: string;
+      source: string;
+      target: string;
+      relation: string;
+    }>;
 
-    const groups: Record<string, typeof nodes> = {
-      main_brain: [],
-      team_brain: [],
-      agent: [],
-      provider: [],
-      knowledge_top: [],
-      bottom: [],
-    };
-
-    for (const n of nodes) {
-      if (n.type === "main_brain") groups.main_brain.push(n);
-      else if (n.type === "team_brain") groups.team_brain.push(n);
-      else if (n.type === "agent") groups.agent.push(n);
-      else if (n.type === "provider") groups.provider.push(n);
-      else if (n.type === "knowledge" && String(n.ref_id).startsWith("main-brain/")) groups.knowledge_top.push(n);
-      else groups.bottom.push(n);
-    }
-
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
     const upd = db.prepare("UPDATE canvas_nodes SET position_x = ?, position_y = ? WHERE id = ?");
-    const rowWidth = Math.max(groups.agent.length, groups.provider.length, 3) * 280;
 
-    function placeRow(list: typeof nodes, y: number, gap = 280) {
-      if (list.length === 0) return;
-      const totalW = (list.length - 1) * gap;
-      const startX = Math.max(0, Math.round((rowWidth - totalW) / 2));
-      list.forEach((n, idx) => upd.run(startX + idx * gap, y, n.id));
+    const mainBrains = nodes.filter((n) => n.type === "main_brain");
+    const teamBrains = nodes.filter((n) => n.type === "team_brain");
+    const topKnowledge = nodes.filter((n) => n.type === "knowledge" && String(n.ref_id).startsWith("main-brain/"));
+
+    const placed = new Set<string>();
+    const AGENT_GAP = 280;
+    const TEAM_ALLEY = 180;
+
+    function connectedOfType(nodeId: string, targetType: string): typeof nodes {
+      const out: typeof nodes = [];
+      for (const e of edges) {
+        let otherId = "";
+        if (e.source === nodeId) otherId = e.target;
+        else if (e.target === nodeId) otherId = e.source;
+        if (!otherId) continue;
+        const other = nodeById.get(otherId);
+        if (other && other.type === targetType && !out.some((x) => x.id === other.id)) {
+          out.push(other);
+        }
+      }
+      return out;
     }
 
-    // Place top main-brain row flanking with main-brain knowledge files
-    const topCombined = [
-      ...groups.knowledge_top.slice(0, 1),
-      ...groups.main_brain,
-      ...groups.knowledge_top.slice(1),
-    ];
-    placeRow(topCombined, 20, 340);
-    placeRow(groups.team_brain, 220, 340);
-    placeRow(groups.agent, 440, 280);
-    placeRow(groups.provider, 670, 280);
-    placeRow(groups.bottom, 870, 280);
+    let cursorX = 0;
+
+    // Place each Team Brain cleanly centered above its OWN agents, models & tools
+    for (const tb of teamBrains) {
+      const squadAgents = connectedOfType(tb.id, "agent").filter((a) => !placed.has(a.id));
+      const cols = Math.max(1, squadAgents.length);
+      const clusterStartX = cursorX;
+      const clusterWidth = (cols - 1) * AGENT_GAP;
+      const centerX = clusterStartX + Math.round(clusterWidth / 2);
+
+      upd.run(centerX, 220, tb.id);
+      placed.add(tb.id);
+
+      squadAgents.forEach((ag, idx) => {
+        const ax = clusterStartX + idx * AGENT_GAP;
+        upd.run(ax, 440, ag.id);
+        placed.add(ag.id);
+
+        // Place connected AI model directly below its Agent
+        const provs = connectedOfType(ag.id, "provider").filter((p) => !placed.has(p.id));
+        provs.forEach((p, pidx) => {
+          upd.run(ax + pidx * 40, 670, p.id);
+          placed.add(p.id);
+        });
+
+        // Place connected personal knowledge / toolpacks cleanly in Row 5 below Agent
+        const extras = [
+          ...connectedOfType(ag.id, "knowledge"),
+          ...connectedOfType(ag.id, "toolpack"),
+        ].filter((k) => !placed.has(k.id) && !String(k.ref_id).startsWith("main-brain/"));
+        extras.forEach((k, kidx) => {
+          upd.run(ax + kidx * 250, 870, k.id);
+          placed.add(k.id);
+        });
+      });
+
+      cursorX = clusterStartX + clusterWidth + AGENT_GAP + TEAM_ALLEY;
+    }
+
+    // Place any unattached remaining agents/providers/tools neatly to the right
+    const remainingAgents = nodes.filter((n) => n.type === "agent" && !placed.has(n.id));
+    remainingAgents.forEach((ag, idx) => {
+      upd.run(cursorX + idx * AGENT_GAP, 440, ag.id);
+      placed.add(ag.id);
+    });
+    if (remainingAgents.length > 0) cursorX += remainingAgents.length * AGENT_GAP + TEAM_ALLEY;
+
+    const remainingProviders = nodes.filter((n) => n.type === "provider" && !placed.has(n.id));
+    remainingProviders.forEach((p, idx) => {
+      upd.run(idx * AGENT_GAP, 670, p.id);
+      placed.add(p.id);
+    });
+
+    const remainingBottom = nodes.filter(
+      (n) => !placed.has(n.id) && n.type !== "main_brain" && !topKnowledge.some((t) => t.id === n.id)
+    );
+    remainingBottom.forEach((b, idx) => {
+      upd.run(idx * AGENT_GAP, 870, b.id);
+      placed.add(b.id);
+    });
+
+    // Center Main Brain + its flanking soul.md / rules.md across the total canvas span
+    const totalSpan = Math.max(cursorX - TEAM_ALLEY - AGENT_GAP, 900);
+    const topCombined = [...topKnowledge.slice(0, 1), ...mainBrains, ...topKnowledge.slice(1)];
+    const topGap = 360;
+    const topW = Math.max(0, (topCombined.length - 1) * topGap);
+    const topStart = Math.max(0, Math.round((totalSpan - topW) / 2));
+    topCombined.forEach((n, idx) => {
+      upd.run(topStart + idx * topGap, 20, n.id);
+      placed.add(n.id);
+    });
 
     broadcast({ type: "topology_updated" });
     res.json({ ok: true });
@@ -1536,7 +1707,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "2.5.0",
+      version: "3.0.0",
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),
@@ -1564,6 +1735,42 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const db = getDb();
     const logs = db.prepare("SELECT * FROM usage_logs ORDER BY created_at DESC LIMIT 80").all();
     res.json({ logs });
+  });
+
+  router.get("/system/analytics", (_req: Request, res: Response) => {
+    const db = getDb();
+    const byAgent = db
+      .prepare(
+        `SELECT u.agent_id as agentId,
+                COALESCE(a.name, u.agent_id) as agentName,
+                COALESCE(a.avatar, '⚡') as avatar,
+                COUNT(*) as calls,
+                COALESCE(SUM(u.prompt_tokens), 0) as promptTokens,
+                COALESCE(SUM(u.completion_tokens), 0) as completionTokens,
+                ROUND(COALESCE(AVG(u.duration_ms), 0)) as avgDurationMs
+         FROM usage_logs u
+         LEFT JOIN agents a ON a.id = u.agent_id
+         GROUP BY u.agent_id
+         ORDER BY (promptTokens + completionTokens) DESC`
+      )
+      .all();
+
+    const byModel = db
+      .prepare(
+        `SELECT u.model as model,
+                COALESCE(p.name, u.provider_id) as providerName,
+                COUNT(*) as calls,
+                COALESCE(SUM(u.prompt_tokens), 0) as promptTokens,
+                COALESCE(SUM(u.completion_tokens), 0) as completionTokens,
+                ROUND(COALESCE(AVG(u.duration_ms), 0)) as avgDurationMs
+         FROM usage_logs u
+         LEFT JOIN providers p ON p.id = u.provider_id
+         GROUP BY u.model, u.provider_id
+         ORDER BY (promptTokens + completionTokens) DESC`
+      )
+      .all();
+
+    res.json({ byAgent, byModel });
   });
 
   return router;

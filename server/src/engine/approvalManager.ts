@@ -58,7 +58,11 @@ export function requestApproval(params: {
   args: Record<string, unknown>;
   onEvent?: (ev: Record<string, unknown>) => void;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<{ approved: boolean; reason?: string }> {
+  if (params.signal?.aborted) {
+    return Promise.resolve({ approved: false, reason: "Mission aborted by user." });
+  }
   const id = generateId("apr");
   const record: PendingApproval = {
     id,
@@ -70,13 +74,30 @@ export function requestApproval(params: {
   };
 
   return new Promise((resolve) => {
+    const onAbort = () => {
+      if (!pendingMap.has(id)) return;
+      clearTimeout(timer);
+      pendingMap.delete(id);
+      params.onEvent?.({ type: "approval_resolved", id, approved: false, reason: "Mission aborted" });
+      resolve({ approved: false, reason: "Mission aborted by user." });
+    };
+
     const timer = setTimeout(() => {
+      params.signal?.removeEventListener("abort", onAbort);
       pendingMap.delete(id);
       params.onEvent?.({ type: "approval_resolved", id, approved: false, reason: "Timed out waiting for approval" });
       resolve({ approved: false, reason: "Approval request timed out (180s)." });
     }, params.timeoutMs ?? 180_000);
 
-    pendingMap.set(id, { record, resolve, timer });
+    params.signal?.addEventListener("abort", onAbort, { once: true });
+    pendingMap.set(id, {
+      record,
+      resolve: (decision) => {
+        params.signal?.removeEventListener("abort", onAbort);
+        resolve(decision);
+      },
+      timer,
+    });
     params.onEvent?.({ type: "approval_required", approval: record });
   });
 }

@@ -86,6 +86,27 @@ async function* iterateSseData(body: ReadableStream<Uint8Array>): AsyncGenerator
   }
 }
 
+function isRetryableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/aborted|abort/i.test(msg)) return false;
+  return /\((429|500|502|503|504|529)\)|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg);
+}
+
+async function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("Mission aborted by user.");
+  await new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(new Error("Mission aborted by user."));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function callLLM(params: {
   provider: ProviderRecord;
   model?: string;
@@ -98,7 +119,6 @@ export async function callLLM(params: {
 }): Promise<LLMCompletionResult> {
   const { provider, messages, tools = [], temperature = 0.6, maxTokens = 4096, onToken, signal } = params;
   const model = params.model || provider.default_model;
-  const started = Date.now();
   const apiKey = decryptSecret(provider.api_key || "");
 
   const isLocal =
@@ -115,13 +135,29 @@ export async function callLLM(params: {
   const kind = (provider.kind || "openai").toLowerCase();
   const customHeaders = parseCustomHeaders(provider.headers_json);
 
-  if (kind === "anthropic") {
-    return callAnthropic({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
+  const maxAttempts = 3;
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) throw new Error("Mission aborted by user.");
+    const started = Date.now();
+    try {
+      if (kind === "anthropic") {
+        return await callAnthropic({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
+      }
+      if (kind === "gemini") {
+        return await callGemini({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
+      }
+      return await callOpenAICompat({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
+    } catch (err) {
+      lastErr = err;
+      if (signal?.aborted || attempt === maxAttempts || !isRetryableError(err)) {
+        throw err;
+      }
+      await sleepAbortable(1200 * attempt, signal);
+    }
   }
-  if (kind === "gemini") {
-    return callGemini({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
-  }
-  return callOpenAICompat({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function callOpenAICompat(args: {

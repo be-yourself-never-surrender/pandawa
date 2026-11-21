@@ -24,6 +24,7 @@ export interface ToolExecutionContext {
   consultDepth?: number;
   consultPeer?: (peerId: string, question: string) => Promise<string>;
   mcpLookup?: Map<string, DiscoveredMcpTool>;
+  signal?: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
 }
 
@@ -416,6 +417,103 @@ const TOOLS: PandawaTool[] = [
   {
     pack: "web",
     definition: {
+      name: "web_search",
+      description:
+        "Search the live web for up-to-date facts, documentation, news, or references without needing an exact URL first. Returns top result titles, URLs, and snippets.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query keywords" },
+          max_results: { type: "number", description: "Number of results to return (default 6, max 10)" },
+        },
+        required: ["query"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const query = String(args.query || "").trim();
+      if (!query) return "Search query cannot be empty.";
+      const maxResults = Math.min(10, Math.max(1, Number(args.max_results || 6)));
+
+      // Optional Tavily API if configured in env
+      const tavilyKey = process.env.TAVILY_API_KEY?.trim();
+      if (tavilyKey) {
+        const resp = await fetch("https://api.tavily.com/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: tavilyKey, query, max_results: maxResults }),
+          signal: ctx.signal || AbortSignal.timeout(15_000),
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> };
+          const items = (data.results || []).slice(0, maxResults);
+          return JSON.stringify({ engine: "tavily", query, results: items }, null, 2);
+        }
+      }
+
+      // Zero-key web search via DuckDuckGo HTML endpoint
+      const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+      const resp = await fetch(url, {
+        method: "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        signal: ctx.signal || AbortSignal.timeout(15_000),
+      });
+      const html = await resp.text();
+
+      const decodeHtml = (s: string) =>
+        s
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&amp;/g, "&")
+          .replace(/&quot;/g, '"')
+          .replace(/&#x27;|&#39;/g, "'")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/\s+/g, " ")
+          .trim();
+
+      const results: Array<{ title: string; url: string; snippet: string }> = [];
+      const linkRegex = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      const snippetRegex = /<(?:a|div)[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
+
+      const links: Array<{ href: string; title: string }> = [];
+      let m: RegExpExecArray | null;
+      while ((m = linkRegex.exec(html)) !== null && links.length < maxResults) {
+        let href = m[1];
+        const uddg = href.match(/uddg=([^&]+)/);
+        if (uddg) {
+          try {
+            href = decodeURIComponent(uddg[1]);
+          } catch {
+            // keep raw
+          }
+        }
+        links.push({ href, title: decodeHtml(m[2]) });
+      }
+
+      const snippets: string[] = [];
+      while ((m = snippetRegex.exec(html)) !== null && snippets.length < maxResults) {
+        snippets.push(decodeHtml(m[1]));
+      }
+
+      for (let i = 0; i < links.length; i++) {
+        results.push({
+          title: links[i].title,
+          url: links[i].href,
+          snippet: snippets[i] || "",
+        });
+      }
+
+      if (results.length === 0) {
+        return `No search results parsed for "${query}". You can try rephrasing or calling web_fetch on a direct URL.`;
+      }
+      return JSON.stringify({ engine: "duckduckgo", query, results }, null, 2);
+    },
+  },
+  {
+    pack: "web",
+    definition: {
       name: "web_fetch",
       description: "Fetch an HTTP/HTTPS URL and return its readable text or JSON response (up to 16KB).",
       parameters: {
@@ -471,6 +569,7 @@ export async function executeTool(
       agentName: ctx.runtime.agent.name,
       toolName: name,
       args,
+      signal: ctx.signal,
       onEvent: ctx.onEvent,
     });
     if (!decision.approved) {

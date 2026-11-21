@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Loader2,
   History,
+  Square,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BlackboardEntry, MessageItem, SessionItem, TeamItem } from "../../types";
@@ -53,6 +54,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
   const [bbContent, setBbContent] = useState("");
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const loadMeta = useCallback(async () => {
     const [tRes, aRes, sRes] = await Promise.all([
@@ -139,9 +141,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
       },
     ]);
 
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     try {
       const res = await apiFetch<{ sessionId: string }>("/api/chat/send", {
         method: "POST",
+        signal: ac.signal,
         body: JSON.stringify({
           sessionId: activeSessionId || undefined,
           targetType,
@@ -157,6 +163,8 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
         targetType === "team" ? loadBlackboard(targetId) : Promise.resolve(),
       ]);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const stopped = ac.signal.aborted || /abort|stopped/i.test(msg);
       setMessages((prev) => [
         ...prev,
         {
@@ -164,9 +172,9 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
           session_id: activeSessionId,
           role: "system",
           agent_id: "",
-          agent_name: "System",
+          agent_name: stopped ? "Stopped" : "System",
           model_used: "",
-          content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          content: stopped ? "⏹ Mission stopped by user." : `Error: ${msg}`,
           reasoning: "",
           toolCalls: [],
           meta: {},
@@ -174,8 +182,21 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
         },
       ]);
     } finally {
+      abortRef.current = null;
       setSending(false);
       onClearStreams();
+    }
+  }
+
+  async function stopMission() {
+    abortRef.current?.abort();
+    try {
+      await apiFetch("/api/chat/abort", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: activeSessionId || "*" }),
+      });
+    } catch {
+      // ignore
     }
   }
 
@@ -563,13 +584,23 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
               }
               className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none resize-none"
             />
-            <button
-              type="submit"
-              disabled={sending || !prompt.trim()}
-              className="px-5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-950 font-semibold text-sm flex items-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <Send className="w-4 h-4" /> Send
-            </button>
+            {sending ? (
+              <button
+                type="button"
+                onClick={stopMission}
+                className="px-5 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-semibold text-sm flex items-center gap-1.5 cursor-pointer shrink-0 shadow-lg shadow-rose-500/20"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" /> Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!prompt.trim()}
+                className="px-5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-950 font-semibold text-sm flex items-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <Send className="w-4 h-4" /> Send
+              </button>
+            )}
           </div>
         </form>
       </div>

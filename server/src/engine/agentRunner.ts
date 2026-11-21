@@ -75,6 +75,17 @@ function compressHistory(history: LLMMessage[], maxChars = 28_000): LLMMessage[]
   return [...head, compressedMsg, ...tail];
 }
 
+function getBackupProviders(excludeId: string): ProviderRecord[] {
+  const db = getDb();
+  const candidates = db
+    .prepare("SELECT * FROM providers WHERE enabled = 1 AND id != ? AND length(trim(api_key)) > 0 ORDER BY updated_at DESC")
+    .all(excludeId) as unknown as ProviderRecord[];
+  return candidates.filter((c) => {
+    const k = decryptSecret(c.api_key || "");
+    return k.trim().length > 0 && k !== "ollama";
+  });
+}
+
 export async function runAgentTurn(params: {
   agentId: string;
   prompt: string;
@@ -84,11 +95,12 @@ export async function runAgentTurn(params: {
   maxIterations?: number;
   consultDepth?: number;
   extraSystemNote?: string;
+  signal?: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<AgentRunResult> {
   const started = Date.now();
   const runtime = compileAgentRuntime(params.agentId, params.teamId, params.sessionId);
-  const { provider, model, usedFallback } = resolveRunnableProvider(runtime);
+  let { provider, model, usedFallback } = resolveRunnableProvider(runtime);
 
   params.onEvent?.({
     type: "agent_start",
@@ -158,24 +170,71 @@ export async function runAgentTurn(params: {
 
   try {
     for (let step = 0; step < maxIter; step++) {
-      const res = await callLLM({
-        provider,
-        model,
-        messages,
-        tools,
-        temperature: runtime.agent.temperature,
-        maxTokens: runtime.agent.max_tokens,
-        onToken: (delta) => {
-          params.onEvent?.({
-            type: "agent_token",
-            agentId: runtime.agent.id,
-            agentName: runtime.agent.name,
-            avatar: runtime.agent.avatar,
-            model,
-            delta,
-          });
-        },
-      });
+      if (params.signal?.aborted) {
+        throw new Error("Mission stopped by user.");
+      }
+
+      let res;
+      try {
+        res = await callLLM({
+          provider,
+          model,
+          messages,
+          tools,
+          temperature: runtime.agent.temperature,
+          maxTokens: runtime.agent.max_tokens,
+          signal: params.signal,
+          onToken: (delta) => {
+            params.onEvent?.({
+              type: "agent_token",
+              agentId: runtime.agent.id,
+              agentName: runtime.agent.name,
+              avatar: runtime.agent.avatar,
+              model,
+              delta,
+            });
+          },
+        });
+      } catch (primaryErr) {
+        if (params.signal?.aborted) throw primaryErr;
+        const backups = getBackupProviders(provider.id);
+        if (backups.length === 0) throw primaryErr;
+
+        const backup = backups[0];
+        const backupModel = backup.default_model;
+        params.onEvent?.({
+          type: "provider_fallback",
+          agentId: runtime.agent.id,
+          agentName: runtime.agent.name,
+          fromProvider: provider.name,
+          toProvider: backup.name,
+          toModel: backupModel,
+          reason: primaryErr instanceof Error ? primaryErr.message.slice(0, 140) : String(primaryErr),
+        });
+        provider = backup;
+        model = backupModel;
+        usedFallback = true;
+
+        res = await callLLM({
+          provider,
+          model,
+          messages,
+          tools,
+          temperature: runtime.agent.temperature,
+          maxTokens: runtime.agent.max_tokens,
+          signal: params.signal,
+          onToken: (delta) => {
+            params.onEvent?.({
+              type: "agent_token",
+              agentId: runtime.agent.id,
+              agentName: runtime.agent.name,
+              avatar: runtime.agent.avatar,
+              model,
+              delta,
+            });
+          },
+        });
+      }
 
       totalPromptTokens += res.promptTokens;
       totalCompletionTokens += res.completionTokens;
@@ -195,6 +254,7 @@ export async function runAgentTurn(params: {
       });
 
       for (const tc of res.toolCalls) {
+        if (params.signal?.aborted) throw new Error("Mission stopped by user.");
         params.onEvent?.({
           type: "tool_call",
           agentId: runtime.agent.id,
@@ -208,6 +268,7 @@ export async function runAgentTurn(params: {
           teamId: params.teamId,
           sessionId: params.sessionId,
           consultDepth: params.consultDepth ?? 0,
+          signal: params.signal,
           consultPeer: async (peerId: string, question: string) => {
             const peerRes = await runAgentTurn({
               agentId: peerId,
@@ -215,6 +276,7 @@ export async function runAgentTurn(params: {
               sessionId: params.sessionId,
               consultDepth: (params.consultDepth ?? 0) + 1,
               maxIterations: 3,
+              signal: params.signal,
               prompt: `Your Pandawa teammate **${runtime.agent.name}** (${runtime.agent.title}) is consulting you mid-task:\n\n${question}\n\nRespond concisely and directly with your specialist input.`,
               extraSystemNote: "You are responding to a live peer consultation from a Pandawa teammate.",
               onEvent: params.onEvent,

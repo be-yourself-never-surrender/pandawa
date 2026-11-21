@@ -66,6 +66,7 @@ export async function runTeamMission(params: {
   userPrompt: string;
   history?: LLMMessage[];
   activeAgentIds?: string[];
+  signal?: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<TeamMissionResult> {
   const db = getDb();
@@ -102,6 +103,7 @@ export async function runTeamMission(params: {
     // Relay Chain: each teammate builds on the previous peer's contribution
     let runningContext = "";
     for (const member of members) {
+      if (params.signal?.aborted) throw new Error("Mission stopped by user.");
       params.onEvent?.({
         type: "team_phase",
         phase: "relay",
@@ -111,6 +113,7 @@ export async function runTeamMission(params: {
         agentId: member.id,
         teamId: team.id,
         sessionId: params.sessionId,
+        signal: params.signal,
         prompt: runningContext
           ? `User Mission:\n${params.userPrompt}\n\nPrior Teammate Contributions:\n${runningContext}\n\nNow contribute your specialist perspective (${member.title}) concisely and directly.`
           : `User Mission:\n${params.userPrompt}\n\nLead off with your specialist analysis (${member.title}) concisely.`,
@@ -169,11 +172,13 @@ export async function runTeamMission(params: {
 
   const round1Results = await Promise.all(
     activeSpecialists.map(async (member) => {
+      if (params.signal?.aborted) throw new Error("Mission stopped by user.");
       try {
         const res = await runAgentTurn({
           agentId: member.id,
           teamId: team.id,
           sessionId: params.sessionId,
+          signal: params.signal,
           prompt:
             `User Mission:\n${params.userPrompt}\n\n` +
             `As **${member.name}** (${member.title}), provide your focused specialist contribution for the Pandawa Team Blackboard. ` +
@@ -286,6 +291,8 @@ export async function runTeamMission(params: {
     };
   }
 
+  if (params.signal?.aborted) throw new Error("Mission stopped by user.");
+
   // Phase 2 (optional peer critique round if mode === 'deliberate' && reviewer exists)
   const reviewer = activeSpecialists.find((m) => m.purpose === "review" || m.slug === "sadewa");
   if (mode === "deliberate" && team.max_rounds >= 2 && reviewer && activeSpecialists.length >= 2) {
@@ -302,6 +309,7 @@ export async function runTeamMission(params: {
       agentId: reviewer.id,
       teamId: team.id,
       sessionId: params.sessionId,
+      signal: params.signal,
       prompt:
         `User Mission:\n${params.userPrompt}\n\n` +
         `Peer Proposals on Team Blackboard:\n${peerDigest}\n\n` +
@@ -329,6 +337,8 @@ export async function runTeamMission(params: {
     });
   }
 
+  if (params.signal?.aborted) throw new Error("Mission stopped by user.");
+
   // Phase 3: Team Consensus Synthesis
   params.onEvent?.({
     type: "team_phase",
@@ -344,6 +354,7 @@ export async function runTeamMission(params: {
     agentId: synthesizer.id,
     teamId: team.id,
     sessionId: params.sessionId,
+    signal: params.signal,
     prompt:
       `Original User Request:\n${params.userPrompt}\n\n` +
       `Teammate Deliberation & Blackboard Contributions:\n${allPeerNotes}\n\n` +

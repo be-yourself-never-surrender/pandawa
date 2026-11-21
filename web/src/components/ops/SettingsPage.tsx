@@ -1,7 +1,28 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Shield, Server, Activity, KeyRound, CheckCircle2, Package, Download, Upload, Globe, Copy } from "lucide-react";
+import { Shield, Server, Activity, KeyRound, CheckCircle2, Package, Download, Upload, Globe, Copy, BarChart3 } from "lucide-react";
 import { apiFetch, setStoredToken } from "../../api/client";
 import type { TeamItem } from "../../types";
+import { BundlePreviewModal, type PreviewBundleData } from "../BundlePreviewModal";
+
+interface AnalyticsData {
+  byAgent: Array<{
+    agentId: string;
+    agentName: string;
+    avatar: string;
+    calls: number;
+    promptTokens: number;
+    completionTokens: number;
+    avgDurationMs: number;
+  }>;
+  byModel: Array<{
+    model: string;
+    providerName: string;
+    calls: number;
+    promptTokens: number;
+    completionTokens: number;
+    avgDurationMs: number;
+  }>;
+}
 
 interface SystemStatus {
   version: string;
@@ -51,17 +72,22 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
   const [bundleNotice, setBundleNotice] = useState<string>("");
   const [customDomain, setCustomDomain] = useState<string>("pandawa.yourdomain.com");
   const [copiedCaddy, setCopiedCaddy] = useState<boolean>(false);
+  const [previewBundle, setPreviewBundle] = useState<PreviewBundleData | null>(null);
+  const [installingBundle, setInstallingBundle] = useState<boolean>(false);
+  const [analytics, setAnalytics] = useState<AnalyticsData>({ byAgent: [], byModel: [] });
 
   const load = useCallback(async () => {
-    const [st, au, tm] = await Promise.all([
+    const [st, au, tm, an] = await Promise.all([
       apiFetch<SystemStatus>("/api/system/status"),
       apiFetch<{ logs: AuditItem[] }>("/api/system/audit"),
       apiFetch<{ teams: TeamItem[] }>("/api/teams"),
+      apiFetch<AnalyticsData>("/api/system/analytics"),
     ]);
     setStatus(st);
     if (st.approvalMode) setApprovalMode(st.approvalMode);
     setAudits(au.logs);
     setTeams(tm.teams);
+    setAnalytics(an);
     if (tm.teams.length > 0 && !exportTeamId) setExportTeamId(tm.teams[0].id);
   }, [exportTeamId]);
 
@@ -82,16 +108,33 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
   async function handleImportBundle(file: File | null) {
     if (!file) return;
     try {
-      const json = JSON.parse(await file.text());
+      const json = JSON.parse(await file.text()) as PreviewBundleData;
+      if (!json || json.format !== "pandawa-bundle/v1") {
+        setBundleNotice("Invalid bundle file (expected pandawa-bundle/v1).");
+        return;
+      }
+      setPreviewBundle(json);
+    } catch (err) {
+      setBundleNotice(`Import error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function confirmInstallBundle() {
+    if (!previewBundle) return;
+    setInstallingBundle(true);
+    try {
       const res = await apiFetch<{ teamName: string; importedFiles: number; importedAgents: number }>("/api/bundles/import", {
         method: "POST",
-        body: JSON.stringify(json),
+        body: JSON.stringify(previewBundle),
       });
-      setBundleNotice(`Imported "${res.teamName}" (${res.importedAgents} agents, ${res.importedFiles} files)!`);
+      setPreviewBundle(null);
+      setBundleNotice(`Installed "${res.teamName}" (${res.importedAgents} agents, ${res.importedFiles} files)!`);
       setTimeout(() => setBundleNotice(""), 4000);
       await load();
     } catch (err) {
       setBundleNotice(`Import error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setInstallingBundle(false);
     }
   }
 
@@ -305,6 +348,49 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
         </div>
       </div>
 
+      {/* Token & Latency Analytics Breakdown */}
+      <div className="rounded-2xl bg-[#0e1320] border border-slate-800 p-5 space-y-4 text-xs">
+        <h2 className="text-sm font-bold text-white flex items-center gap-2">
+          <BarChart3 className="w-4 h-4 text-emerald-400" /> Token &amp; Multi-AI Usage Breakdown
+        </h2>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div className="rounded-xl bg-[#090c14] border border-slate-800 p-3.5 space-y-2">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-cyan-300">By Agent</div>
+            {analytics.byAgent.length === 0 ? (
+              <div className="text-slate-500">No live LLM calls recorded yet.</div>
+            ) : (
+              analytics.byAgent.map((a) => (
+                <div key={a.agentId} className="flex items-center justify-between gap-2 py-1 border-b border-slate-800/60 last:border-0">
+                  <span className="text-slate-200 font-medium truncate">
+                    {a.avatar} {a.agentName} <span className="text-slate-500">({a.calls} calls)</span>
+                  </span>
+                  <span className="font-mono text-amber-300 shrink-0">
+                    {(a.promptTokens + a.completionTokens).toLocaleString()} tok · {(a.avgDurationMs / 1000).toFixed(1)}s
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="rounded-xl bg-[#090c14] border border-slate-800 p-3.5 space-y-2">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-300">By Model / Provider</div>
+            {analytics.byModel.length === 0 ? (
+              <div className="text-slate-500">No model calls recorded yet.</div>
+            ) : (
+              analytics.byModel.map((m, idx) => (
+                <div key={idx} className="flex items-center justify-between gap-2 py-1 border-b border-slate-800/60 last:border-0">
+                  <span className="text-slate-200 font-mono truncate">
+                    {m.model || "default"} <span className="text-slate-500 font-sans">({m.providerName})</span>
+                  </span>
+                  <span className="font-mono text-emerald-300 shrink-0">
+                    {(m.promptTokens + m.completionTokens).toLocaleString()} tok · {m.calls}x
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Change Password */}
         <form
@@ -411,6 +497,13 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
           </div>
         </div>
       </div>
+
+      <BundlePreviewModal
+        bundle={previewBundle}
+        installing={installingBundle}
+        onCancel={() => setPreviewBundle(null)}
+        onConfirmInstall={confirmInstallBundle}
+      />
     </div>
   );
 };

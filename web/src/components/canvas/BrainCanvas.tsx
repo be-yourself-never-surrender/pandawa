@@ -35,6 +35,7 @@ import {
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BrainItem, BrainTreeNode, ProviderItem, TopologyEdge, TopologyNode } from "../../types";
 import { PandawaNode, type PandawaNodeData } from "./PandawaNode";
+import { BundlePreviewModal, type PreviewBundleData } from "../BundlePreviewModal";
 
 interface BrainCanvasProps {
   onOpenBrainFile: (filePath: string) => void;
@@ -73,6 +74,8 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PandawaNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [spawningTpl, setSpawningTpl] = useState(false);
+  const [previewBundle, setPreviewBundle] = useState<PreviewBundleData | null>(null);
+  const [installingBundle, setInstallingBundle] = useState(false);
 
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [brains, setBrains] = useState<BrainItem[]>([]);
@@ -203,17 +206,43 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
     if (!file) return;
     try {
       const text = await file.text();
-      const json = JSON.parse(text);
+      const json = JSON.parse(text) as PreviewBundleData;
+      if (!json || json.format !== "pandawa-bundle/v1") {
+        window.alert("Invalid bundle file. Expected format: pandawa-bundle/v1");
+        return;
+      }
+      setPreviewBundle(json);
+    } catch (err) {
+      window.alert(`Could not read bundle file: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function confirmInstallBundle() {
+    if (!previewBundle) return;
+    setInstallingBundle(true);
+    try {
       const res = await apiFetch<{ teamName: string; importedFiles: number }>("/api/bundles/import", {
         method: "POST",
-        body: JSON.stringify(json),
+        body: JSON.stringify(previewBundle),
       });
+      setPreviewBundle(null);
       await loadAll();
-      setSavedNotice(`Imported "${res.teamName}" (${res.importedFiles} files)!`);
+      setSavedNotice(`Installed "${res.teamName}" (${res.importedFiles} files)!`);
       setTimeout(() => setSavedNotice(""), 3200);
     } catch (err) {
       window.alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setInstallingBundle(false);
     }
+  }
+
+  async function deleteTeamSquad(teamId: string) {
+    if (!window.confirm("Delete this entire Team, its Team Brain, and its squad agents from Pandawa?")) return;
+    await apiFetch(`/api/teams/${teamId}?cascade=true`, { method: "DELETE" });
+    setSelectedNodeId(null);
+    await loadAll();
+    setSavedNotice("Removed team squad cleanly!");
+    setTimeout(() => setSavedNotice(""), 2500);
   }
 
   const onConnect = useCallback(
@@ -933,6 +962,16 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     >
                       <ExternalLink className="w-3.5 h-3.5" /> Manage Brain Folder
                     </button>
+                    {selectedNode.data.nodeType === "team_brain" &&
+                      typeof selectedNode.data.teamId === "string" &&
+                      selectedNode.data.teamId !== "team_pandawa" && (
+                        <button
+                          onClick={() => deleteTeamSquad(String(selectedNode.data.teamId))}
+                          className="w-full py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Delete Entire Squad
+                        </button>
+                      )}
                   </>
                 )}
 
@@ -1073,6 +1112,12 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
           </div>
         </div>
       )}
+      <BundlePreviewModal
+        bundle={previewBundle}
+        installing={installingBundle}
+        onCancel={() => setPreviewBundle(null)}
+        onConfirmInstall={confirmInstallBundle}
+      />
     </div>
   );
 };

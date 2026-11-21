@@ -52,53 +52,90 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!authed) return;
-    apiFetch<{ pending: PendingApprovalItem[] }>("/api/approvals")
-      .then((r) => setPendingApprovals(r.pending || []))
-      .catch(() => {});
+    let disposed = false;
+    let ws: WebSocket | null = null;
+    let retryTimer: number | null = null;
+    let attempt = 0;
 
-    const ws = createRealtimeSocket((ev) => {
-      const evType = String(ev.type || "");
-      if (evType !== "agent_token") {
-        setLiveEvents((prev) => [...prev.slice(-30), ev]);
-      }
+    function syncPending() {
+      apiFetch<{ pending: PendingApprovalItem[] }>("/api/approvals")
+        .then((r) => {
+          if (!disposed) setPendingApprovals(r.pending || []);
+        })
+        .catch(() => {});
+    }
 
-      if (evType === "agent_start" && typeof ev.agentId === "string") {
-        const aid = ev.agentId;
-        setActiveAgentIds((prev) => new Set([...prev, aid]));
-      } else if (evType === "agent_done" && typeof ev.agentId === "string") {
-        const aid = ev.agentId;
-        setActiveAgentIds((prev) => {
-          const next = new Set(prev);
-          next.delete(aid);
-          return next;
-        });
-      } else if (evType === "agent_token" && typeof ev.agentId === "string") {
-        const aid = ev.agentId;
-        const delta = String(ev.delta || "");
-        setStreamingBuffers((prev) => {
-          const existing = prev[aid] || {
-            agentId: aid,
-            agentName: String(ev.agentName || aid),
-            avatar: String(ev.avatar || "⚡"),
-            model: String(ev.model || ""),
-            text: "",
-          };
-          return {
-            ...prev,
-            [aid]: { ...existing, text: existing.text + delta },
-          };
-        });
-      } else if (evType === "approval_required" && ev.approval) {
-        const item = ev.approval as PendingApprovalItem;
-        setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
-      } else if (evType === "approval_resolved" && typeof ev.id === "string") {
-        setPendingApprovals((prev) => prev.filter((x) => x.id !== ev.id));
-      }
-    });
-    if (!ws) return;
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    return () => ws.close();
+    function connectWs() {
+      if (disposed) return;
+      ws = createRealtimeSocket((ev) => {
+        const evType = String(ev.type || "");
+        if (evType !== "agent_token") {
+          setLiveEvents((prev) => [...prev.slice(-30), ev]);
+        }
+
+        if (evType === "agent_start" && typeof ev.agentId === "string") {
+          const aid = ev.agentId;
+          setActiveAgentIds((prev) => new Set([...prev, aid]));
+        } else if (evType === "agent_done" && typeof ev.agentId === "string") {
+          const aid = ev.agentId;
+          setActiveAgentIds((prev) => {
+            const next = new Set(prev);
+            next.delete(aid);
+            return next;
+          });
+        } else if (evType === "mission_aborted") {
+          setActiveAgentIds(new Set());
+          setStreamingBuffers({});
+        } else if (evType === "agent_token" && typeof ev.agentId === "string") {
+          const aid = ev.agentId;
+          const delta = String(ev.delta || "");
+          setStreamingBuffers((prev) => {
+            const existing = prev[aid] || {
+              agentId: aid,
+              agentName: String(ev.agentName || aid),
+              avatar: String(ev.avatar || "⚡"),
+              model: String(ev.model || ""),
+              text: "",
+            };
+            return {
+              ...prev,
+              [aid]: { ...existing, text: existing.text + delta },
+            };
+          });
+        } else if (evType === "approval_required" && ev.approval) {
+          const item = ev.approval as PendingApprovalItem;
+          setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
+        } else if (evType === "approval_resolved" && typeof ev.id === "string") {
+          setPendingApprovals((prev) => prev.filter((x) => x.id !== ev.id));
+        }
+      });
+
+      if (!ws) return;
+      ws.onopen = () => {
+        attempt = 0;
+        setWsConnected(true);
+        syncPending();
+      };
+      ws.onclose = () => {
+        setWsConnected(false);
+        if (!disposed) {
+          const delay = Math.min(8000, 1000 * Math.pow(2, attempt++));
+          retryTimer = window.setTimeout(connectWs, delay);
+        }
+      };
+      ws.onerror = () => {
+        ws?.close();
+      };
+    }
+
+    syncPending();
+    connectWs();
+
+    return () => {
+      disposed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      ws?.close();
+    };
   }, [authed]);
 
   if (checkingAuth) {

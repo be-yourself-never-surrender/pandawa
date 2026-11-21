@@ -1,4 +1,4 @@
-# Pandawa v2.0 — Visual Agentic Team & Layered Brain Platform
+# Pandawa v3.0 — Visual Agentic Team & Layered Brain Platform
 
 **Pandawa** is a clean-room, commercial-ready **Agentic Team** platform built from scratch in TypeScript (Node.js 24 + native SQLite FTS5 + React + React Flow). Inspired by the Javanese legend of the **Pandawa Lima** (Yudhistira, Bima, Arjuna, Nakula, Sadewa), Pandawa connects diverse specialist AI models into one cohesive peer team through a visual n8n-style **Brain & Team Topology Canvas**.
 
@@ -12,25 +12,25 @@
 
 ---
 
-## Key Features (v2.0)
+## Key Features (v3.0)
 
 1. **n8n-Style Visual Brain & Team Canvas (`@xyflow/react`)**
    - Drag, drop, and wire **Main Brains**, **Team Brains**, **Agents**, **AI Models**, **Files / Folders (`soul.md`, etc.)**, and **Toolpacks**.
    - **Live Active-Node Pulse**: Agent nodes glow and pulse in real time on the canvas while thinking or calling tools.
-   - **1-Click Team Kits**: Spawn complete pre-wired squads (*Software Engineering Squad*, *Growth & Content Squad*, *Deep Research & Alpha Squad*) directly onto the canvas.
-2. **Real-Time Token Streaming + Prompt Caching**
-   - True SSE streaming across OpenAI-compatible, Anthropic Messages (with ephemeral prompt caching), and Google Gemini APIs.
-3. **Multi-AI Provider Hub + AES-256-GCM Vault**
-   - Bind different Official APIs or Custom Base URLs to each teammate by purpose.
-   - All provider API keys are encrypted at rest with **AES-256-GCM**.
-4. **Live MCP Client (Auto-Discovery & Execution)**
-   - Connect any HTTP/SSE MCP server, click **Discover Tools**, and every tool becomes immediately callable by Pandawa agents.
-5. **Live 2-Way Telegram Bot Gateway + Webhooks + Discord + Cron**
-   - Built-in 2-way Telegram long-polling bot wired directly to your Pandawa Teams or Agents, plus Discord webhooks, inbound/outbound webhooks, and a Cron Scheduler.
-6. **Brain Files & Folders Manager + Self-Learning Skills**
-   - Full file/folder explorer & Markdown editor with SQLite **FTS5** instant search, 1-click **+ Brain Kit**, and reusable `SKILL.md` learning loop.
-7. **Built-In Web Auth & Approval Control**
-   - Salted `scrypt` login (default password `11111111`, changeable inside Settings) + live floating Approval Overlay.
+   - **1-Click Team Kits + Team-Clustered Smart Auto-Layout**: Spawn pre-wired squads (*Software Engineering*, *Growth & Content*, *Deep Research*) side-by-side with zero overlap, or remove entire squads cleanly in 1 click.
+2. **Real-Time Token Streaming, Stop Control, Auto-Retry & Fallback**
+   - True SSE streaming with **Markdown + Copy Code** rendering across OpenAI-compatible, Anthropic Messages (with ephemeral prompt caching), and Google Gemini APIs.
+   - Live **Stop / Abort Mission** button, exponential backoff retry on `429`/`5xx`, automatic backup provider fallback, and WebSocket auto-reconnect.
+3. **Dynamic Peer Consultation & Autonomous Web Search**
+   - Teammates can directly consult each other mid-task via `consult_teammate` and research live sources via `web_search` + `web_fetch`.
+4. **Commercial Brain Kit Marketplace Format (`.pandawa.json`)**
+   - Export any Team + layered Brains + `soul.md`/skills + Canvas topology with **API keys stripped**, and inspect packages via the built-in **Brain Kit Preview Modal** before installing.
+5. **Multi-AI Provider Hub + AES-256-GCM Vault + Token Analytics**
+   - Bind different Official APIs or Custom Base URLs to each teammate, encrypted at rest with **AES-256-GCM**, with per-agent & per-model token analytics.
+6. **Live MCP Client, 2-Way Telegram Bot Gateway, Webhooks & Cron**
+   - Auto-discover and invoke tools from HTTP/SSE MCP servers, run live 2-way Telegram polling bots, Discord/HTTP webhooks, and scheduled Cron missions.
+7. **Built-In Web Auth, Approval Gate & Auto-HTTPS (Caddy) Generator**
+   - Salted `scrypt` login (default password `11111111`), live floating **Approval Overlay** (zero hidden guardrails), and ready-to-run Caddy HTTPS setup.
 
 ---
 

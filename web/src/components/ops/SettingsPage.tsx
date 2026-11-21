@@ -4,6 +4,8 @@ import { apiFetch, setStoredToken } from "../../api/client";
 
 interface SystemStatus {
   version: string;
+  approvalMode?: string;
+  pendingApprovals?: number;
   uptimeSeconds: number;
   nodeVersion: string;
   platform: string;
@@ -41,6 +43,8 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [approvalMode, setApprovalMode] = useState<string>("approve_shell");
+  const [approvalNotice, setApprovalNotice] = useState<string>("");
 
   const load = useCallback(async () => {
     const [st, au] = await Promise.all([
@@ -48,8 +52,20 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
       apiFetch<{ logs: AuditItem[] }>("/api/system/audit"),
     ]);
     setStatus(st);
+    if (st.approvalMode) setApprovalMode(st.approvalMode);
     setAudits(au.logs);
   }, []);
+
+  async function updateApprovalMode(next: string) {
+    setApprovalMode(next);
+    await apiFetch("/api/approvals/mode", {
+      method: "PUT",
+      body: JSON.stringify({ mode: next }),
+    });
+    setApprovalNotice(`Approval mode saved: ${next}`);
+    setTimeout(() => setApprovalNotice(""), 2500);
+    await load();
+  }
 
   useEffect(() => {
     load().catch(() => {});
@@ -126,6 +142,50 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
           </div>
         </div>
       )}
+
+      {/* Approval Gate Mode (Full Freedom, User-Controlled Approval Only) */}
+      <div className="rounded-2xl bg-[#0e1320] border border-slate-800 p-5 space-y-3 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <Shield className="w-4 h-4 text-emerald-400" /> Action Approval Control (Zero Hidden Guardrails)
+            </h2>
+            <p className="text-slate-400 mt-0.5">
+              Pandawa imposes no content or command censorship. Choose when you want a live popup approval before tools execute.
+            </p>
+          </div>
+          {approvalNotice && (
+            <span className="text-emerald-400 flex items-center gap-1 font-medium">
+              <CheckCircle2 className="w-3.5 h-3.5" /> {approvalNotice}
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5">
+          {[
+            { id: "auto", title: "Auto (Full Freedom)", desc: "Run all tools & shell immediately with zero popups" },
+            { id: "approve_shell", title: "Approve Shell Only", desc: "Ask approval before shell_exec; all other tools auto" },
+            { id: "approve_sensitive", title: "Approve Sensitive", desc: "Ask approval for shell, file writes & MCP calls" },
+            { id: "approve_all", title: "Approve All Tools", desc: "Ask approval before every single tool execution" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => updateApprovalMode(opt.id)}
+              className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                approvalMode === opt.id
+                  ? "bg-amber-500/15 border-amber-500/60 text-white"
+                  : "bg-[#080a0f] border-slate-800 text-slate-400 hover:border-slate-700"
+              }`}
+            >
+              <div className="font-semibold text-xs">{opt.title}</div>
+              <div className="text-[11px] text-slate-400 mt-1">{opt.desc}</div>
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] text-emerald-400/90 flex items-center gap-1.5 pt-1">
+          <CheckCircle2 className="w-3.5 h-3.5" /> Provider API keys are encrypted at rest with AES-256-GCM vault protection.
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Change Password */}

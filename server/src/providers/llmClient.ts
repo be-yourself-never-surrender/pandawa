@@ -1,3 +1,5 @@
+import { decryptSecret } from "../auth/cryptoVault.js";
+
 export interface LLMMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -60,6 +62,30 @@ function safeJsonParse(raw: string): Record<string, unknown> {
   }
 }
 
+async function* iterateSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, idx).replace(/\r$/, "");
+      buffer = buffer.slice(idx + 1);
+      if (line.startsWith("data:")) {
+        const data = line.slice(5).trim();
+        if (data) yield data;
+      }
+    }
+  }
+  if (buffer.trim().startsWith("data:")) {
+    const data = buffer.trim().slice(5).trim();
+    if (data) yield data;
+  }
+}
+
 export async function callLLM(params: {
   provider: ProviderRecord;
   model?: string;
@@ -67,20 +93,22 @@ export async function callLLM(params: {
   tools?: LLMToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  onToken?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<LLMCompletionResult> {
-  const { provider, messages, tools = [], temperature = 0.6, maxTokens = 4096, signal } = params;
+  const { provider, messages, tools = [], temperature = 0.6, maxTokens = 4096, onToken, signal } = params;
   const model = params.model || provider.default_model;
   const started = Date.now();
+  const apiKey = decryptSecret(provider.api_key || "");
 
   const isLocal =
     provider.base_url.includes("127.0.0.1") ||
     provider.base_url.includes("localhost") ||
     provider.base_url.includes(":11434");
 
-  if (!provider.api_key && !isLocal) {
+  if (!apiKey && !isLocal) {
     throw new Error(
-      `Provider "${provider.name}" has no API key configured. Open Multi-AI Providers to add an API key or assign a configured provider to this agent.`
+      `Provider "${provider.name}" has no API key configured. Open Multi-AI Hub to add an API key or assign a configured provider.`
     );
   }
 
@@ -88,16 +116,17 @@ export async function callLLM(params: {
   const customHeaders = parseCustomHeaders(provider.headers_json);
 
   if (kind === "anthropic") {
-    return callAnthropic({ provider, model, messages, tools, temperature, maxTokens, customHeaders, started, signal });
+    return callAnthropic({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
   }
   if (kind === "gemini") {
-    return callGemini({ provider, model, messages, tools, temperature, maxTokens, customHeaders, started, signal });
+    return callGemini({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
   }
-  return callOpenAICompat({ provider, model, messages, tools, temperature, maxTokens, customHeaders, started, signal });
+  return callOpenAICompat({ provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal });
 }
 
 async function callOpenAICompat(args: {
   provider: ProviderRecord;
+  apiKey: string;
   model: string;
   messages: LLMMessage[];
   tools: LLMToolDefinition[];
@@ -105,9 +134,10 @@ async function callOpenAICompat(args: {
   maxTokens: number;
   customHeaders: Record<string, string>;
   started: number;
+  onToken?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<LLMCompletionResult> {
-  const { provider, model, messages, tools, temperature, maxTokens, customHeaders, started, signal } = args;
+  const { provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal } = args;
   const base = provider.base_url.replace(/\/+$/, "");
   const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
 
@@ -119,49 +149,35 @@ async function callOpenAICompat(args: {
         tool_calls: m.tool_calls.map((tc) => ({
           id: tc.id,
           type: "function",
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments),
-          },
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
         })),
       };
     }
     if (m.role === "tool") {
-      return {
-        role: "tool",
-        tool_call_id: m.tool_call_id || "call_0",
-        content: m.content,
-      };
+      return { role: "tool", tool_call_id: m.tool_call_id || "call_0", content: m.content };
     }
     return { role: m.role, content: m.content };
   });
 
+  const useStream = Boolean(onToken);
   const body: Record<string, unknown> = {
     model,
     messages: formattedMessages,
     temperature,
     max_tokens: maxTokens,
+    ...(useStream ? { stream: true, stream_options: { include_usage: true } } : {}),
   };
 
   if (tools.length > 0) {
     body.tools = tools.map((t) => ({
       type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      },
+      function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
     body.tool_choice = "auto";
   }
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...customHeaders,
-  };
-  if (provider.api_key) {
-    headers.Authorization = `Bearer ${provider.api_key}`;
-  }
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...customHeaders };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const resp = await fetch(endpoint, {
     method: "POST",
@@ -170,27 +186,97 @@ async function callOpenAICompat(args: {
     signal: signal || AbortSignal.timeout(120_000),
   });
 
-  const text = await resp.text();
   if (!resp.ok) {
-    throw new Error(`OpenAI-compat API error (${resp.status}) [${provider.name}]: ${text.slice(0, 500)}`);
+    const errText = await resp.text();
+    throw new Error(`OpenAI-compat API error (${resp.status}) [${provider.name}]: ${errText.slice(0, 500)}`);
   }
 
-  const data = JSON.parse(text) as {
+  const contentType = resp.headers.get("content-type") || "";
+  if (useStream && resp.body && contentType.includes("text/event-stream")) {
+    let content = "";
+    let reasoning = "";
+    let promptTokens = 0;
+    let completionTokens = 0;
+    const tcMap = new Map<number, { id: string; name: string; argsRaw: string }>();
+
+    for await (const data of iterateSseData(resp.body)) {
+      if (data === "[DONE]") break;
+      try {
+        const chunk = JSON.parse(data) as {
+          choices?: Array<{
+            delta?: {
+              content?: string | null;
+              reasoning_content?: string | null;
+              reasoning?: string | null;
+              tool_calls?: Array<{
+                index?: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
+          }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        if (chunk.usage) {
+          promptTokens = chunk.usage.prompt_tokens || promptTokens;
+          completionTokens = chunk.usage.completion_tokens || completionTokens;
+        }
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+        if (delta.content) {
+          content += delta.content;
+          onToken?.(delta.content);
+        }
+        if (delta.reasoning_content || delta.reasoning) {
+          reasoning += delta.reasoning_content || delta.reasoning || "";
+        }
+        for (const tc of delta.tool_calls || []) {
+          const idx = tc.index ?? 0;
+          const cur = tcMap.get(idx) || { id: tc.id || `tc_${Date.now()}_${idx}`, name: "", argsRaw: "" };
+          if (tc.id) cur.id = tc.id;
+          if (tc.function?.name) cur.name += tc.function.name;
+          if (tc.function?.arguments) cur.argsRaw += tc.function.arguments;
+          tcMap.set(idx, cur);
+        }
+      } catch {
+        // ignore partial chunk
+      }
+    }
+
+    const toolCalls: LLMToolCall[] = Array.from(tcMap.values()).map((t) => ({
+      id: t.id,
+      name: t.name || "unknown",
+      arguments: safeJsonParse(t.argsRaw || "{}"),
+    }));
+
+    return {
+      content,
+      reasoning,
+      toolCalls,
+      promptTokens,
+      completionTokens,
+      model,
+      providerId: provider.id,
+      durationMs: Date.now() - started,
+    };
+  }
+
+  // Non-streaming fallback
+  const data = (await resp.json()) as {
     choices?: Array<{
       message?: {
         content?: string | null;
         reasoning_content?: string | null;
         reasoning?: string | null;
-        tool_calls?: Array<{
-          id?: string;
-          function?: { name?: string; arguments?: string };
-        }>;
+        tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>;
       };
     }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
 
   const msg = data.choices?.[0]?.message;
+  const content = msg?.content || "";
+  if (content && onToken) onToken(content);
   const toolCalls: LLMToolCall[] = (msg?.tool_calls || []).map((tc, idx) => ({
     id: tc.id || `tc_${Date.now()}_${idx}`,
     name: tc.function?.name || "unknown",
@@ -198,7 +284,7 @@ async function callOpenAICompat(args: {
   }));
 
   return {
-    content: msg?.content || "",
+    content,
     reasoning: msg?.reasoning_content || msg?.reasoning || "",
     toolCalls,
     promptTokens: data.usage?.prompt_tokens || 0,
@@ -211,6 +297,7 @@ async function callOpenAICompat(args: {
 
 async function callAnthropic(args: {
   provider: ProviderRecord;
+  apiKey: string;
   model: string;
   messages: LLMMessage[];
   tools: LLMToolDefinition[];
@@ -218,9 +305,10 @@ async function callAnthropic(args: {
   maxTokens: number;
   customHeaders: Record<string, string>;
   started: number;
+  onToken?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<LLMCompletionResult> {
-  const { provider, model, messages, tools, temperature, maxTokens, customHeaders, started, signal } = args;
+  const { provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal } = args;
   const base = provider.base_url.replace(/\/+$/, "");
   const endpoint = base.endsWith("/v1/messages") ? base : `${base}/v1/messages`;
 
@@ -244,25 +332,28 @@ async function callAnthropic(args: {
     } else if (m.role === "tool") {
       anthropicMessages.push({
         role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: m.tool_call_id || "tool_0",
-            content: m.content,
-          },
-        ],
+        content: [{ type: "tool_result", tool_use_id: m.tool_call_id || "tool_0", content: m.content }],
       });
     }
   }
 
+  const useStream = Boolean(onToken);
   const body: Record<string, unknown> = {
     model,
     max_tokens: maxTokens,
     temperature,
     messages: anthropicMessages,
+    ...(useStream ? { stream: true } : {}),
   };
   if (systemParts.length > 0) {
-    body.system = systemParts.join("\n\n");
+    // Enable Anthropic ephemeral prompt caching on the compiled Brain system prompt!
+    body.system = [
+      {
+        type: "text",
+        text: systemParts.join("\n\n"),
+        cache_control: { type: "ephemeral" },
+      },
+    ];
   }
   if (tools.length > 0) {
     body.tools = tools.map((t) => ({
@@ -276,7 +367,7 @@ async function callAnthropic(args: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": provider.api_key,
+      "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
       ...customHeaders,
     },
@@ -284,12 +375,74 @@ async function callAnthropic(args: {
     signal: signal || AbortSignal.timeout(120_000),
   });
 
-  const text = await resp.text();
   if (!resp.ok) {
-    throw new Error(`Anthropic API error (${resp.status}) [${provider.name}]: ${text.slice(0, 500)}`);
+    const errText = await resp.text();
+    throw new Error(`Anthropic API error (${resp.status}) [${provider.name}]: ${errText.slice(0, 500)}`);
   }
 
-  const data = JSON.parse(text) as {
+  const contentType = resp.headers.get("content-type") || "";
+  if (useStream && resp.body && contentType.includes("text/event-stream")) {
+    let content = "";
+    let reasoning = "";
+    let promptTokens = 0;
+    let completionTokens = 0;
+    const toolBlocks = new Map<number, { id: string; name: string; jsonBuf: string }>();
+
+    for await (const data of iterateSseData(resp.body)) {
+      try {
+        const ev = JSON.parse(data) as {
+          type?: string;
+          index?: number;
+          message?: { usage?: { input_tokens?: number } };
+          usage?: { output_tokens?: number };
+          content_block?: { type?: string; id?: string; name?: string };
+          delta?: { type?: string; text?: string; thinking?: string; partial_json?: string };
+        };
+        if (ev.type === "message_start" && ev.message?.usage?.input_tokens) {
+          promptTokens = ev.message.usage.input_tokens;
+        } else if (ev.type === "message_delta" && ev.usage?.output_tokens) {
+          completionTokens = ev.usage.output_tokens;
+        } else if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
+          toolBlocks.set(ev.index ?? 0, {
+            id: ev.content_block.id || `atc_${Date.now()}`,
+            name: ev.content_block.name || "unknown",
+            jsonBuf: "",
+          });
+        } else if (ev.type === "content_block_delta" && ev.delta) {
+          if (ev.delta.type === "text_delta" && ev.delta.text) {
+            content += ev.delta.text;
+            onToken?.(ev.delta.text);
+          } else if (ev.delta.type === "thinking_delta" && ev.delta.thinking) {
+            reasoning += ev.delta.thinking;
+          } else if (ev.delta.type === "input_json_delta" && ev.delta.partial_json) {
+            const tb = toolBlocks.get(ev.index ?? 0);
+            if (tb) tb.jsonBuf += ev.delta.partial_json;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const toolCalls: LLMToolCall[] = Array.from(toolBlocks.values()).map((tb) => ({
+      id: tb.id,
+      name: tb.name,
+      arguments: safeJsonParse(tb.jsonBuf || "{}"),
+    }));
+
+    return {
+      content,
+      reasoning,
+      toolCalls,
+      promptTokens,
+      completionTokens,
+      model,
+      providerId: provider.id,
+      durationMs: Date.now() - started,
+    };
+  }
+
+  const data = (await resp.json()) as {
     content?: Array<{
       type: string;
       text?: string;
@@ -316,6 +469,7 @@ async function callAnthropic(args: {
       });
     }
   }
+  if (content && onToken) onToken(content);
 
   return {
     content,
@@ -331,6 +485,7 @@ async function callAnthropic(args: {
 
 async function callGemini(args: {
   provider: ProviderRecord;
+  apiKey: string;
   model: string;
   messages: LLMMessage[];
   tools: LLMToolDefinition[];
@@ -338,11 +493,15 @@ async function callGemini(args: {
   maxTokens: number;
   customHeaders: Record<string, string>;
   started: number;
+  onToken?: (delta: string) => void;
   signal?: AbortSignal;
 }): Promise<LLMCompletionResult> {
-  const { provider, model, messages, tools, temperature, maxTokens, customHeaders, started, signal } = args;
+  const { provider, apiKey, model, messages, tools, temperature, maxTokens, customHeaders, started, onToken, signal } = args;
   const base = provider.base_url.replace(/\/+$/, "");
-  const endpoint = `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(provider.api_key)}`;
+  const useStream = Boolean(onToken);
+  const endpoint = useStream
+    ? `${base}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`
+    : `${base}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const systemParts: string[] = [];
   const contents: Array<{ role: "user" | "model"; parts: unknown[] }> = [];
@@ -364,24 +523,14 @@ async function callGemini(args: {
     } else if (m.role === "tool") {
       contents.push({
         role: "user",
-        parts: [
-          {
-            functionResponse: {
-              name: m.name || "tool",
-              response: { result: m.content },
-            },
-          },
-        ],
+        parts: [{ functionResponse: { name: m.name || "tool", response: { result: m.content } } }],
       });
     }
   }
 
   const body: Record<string, unknown> = {
     contents,
-    generationConfig: {
-      temperature,
-      maxOutputTokens: maxTokens,
-    },
+    generationConfig: { temperature, maxOutputTokens: maxTokens },
   };
   if (systemParts.length > 0) {
     body.systemInstruction = { parts: [{ text: systemParts.join("\n\n") }] };
@@ -400,20 +549,72 @@ async function callGemini(args: {
 
   const resp = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...customHeaders,
-    },
+    headers: { "Content-Type": "application/json", ...customHeaders },
     body: JSON.stringify(body),
     signal: signal || AbortSignal.timeout(120_000),
   });
 
-  const text = await resp.text();
   if (!resp.ok) {
-    throw new Error(`Gemini API error (${resp.status}) [${provider.name}]: ${text.slice(0, 500)}`);
+    const errText = await resp.text();
+    throw new Error(`Gemini API error (${resp.status}) [${provider.name}]: ${errText.slice(0, 500)}`);
   }
 
-  const data = JSON.parse(text) as {
+  let content = "";
+  let reasoning = "";
+  const toolCalls: LLMToolCall[] = [];
+  let promptTokens = 0;
+  let completionTokens = 0;
+
+  const contentType = resp.headers.get("content-type") || "";
+  if (useStream && resp.body && contentType.includes("text/event-stream")) {
+    for await (const data of iterateSseData(resp.body)) {
+      try {
+        const chunk = JSON.parse(data) as {
+          candidates?: Array<{
+            content?: {
+              parts?: Array<{
+                text?: string;
+                thought?: boolean;
+                functionCall?: { name?: string; args?: Record<string, unknown> };
+              }>;
+            };
+          }>;
+          usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+        };
+        if (chunk.usageMetadata) {
+          promptTokens = chunk.usageMetadata.promptTokenCount || promptTokens;
+          completionTokens = chunk.usageMetadata.candidatesTokenCount || completionTokens;
+        }
+        for (const part of chunk.candidates?.[0]?.content?.parts || []) {
+          if (part.thought && part.text) reasoning += part.text;
+          else if (part.text) {
+            content += part.text;
+            onToken?.(part.text);
+          } else if (part.functionCall) {
+            toolCalls.push({
+              id: `gtc_${Date.now()}_${toolCalls.length}`,
+              name: part.functionCall.name || "unknown",
+              arguments: part.functionCall.args || {},
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return {
+      content,
+      reasoning,
+      toolCalls,
+      promptTokens,
+      completionTokens,
+      model,
+      providerId: provider.id,
+      durationMs: Date.now() - started,
+    };
+  }
+
+  const data = (await resp.json()) as {
     candidates?: Array<{
       content?: {
         parts?: Array<{
@@ -426,10 +627,6 @@ async function callGemini(args: {
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
 
-  let content = "";
-  let reasoning = "";
-  const toolCalls: LLMToolCall[] = [];
-
   for (const part of data.candidates?.[0]?.content?.parts || []) {
     if (part.thought && part.text) reasoning += part.text;
     else if (part.text) content += part.text;
@@ -441,6 +638,7 @@ async function callGemini(args: {
       });
     }
   }
+  if (content && onToken) onToken(content);
 
   return {
     content,
@@ -463,12 +661,13 @@ export async function testProviderConnection(provider: ProviderRecord): Promise<
   const started = Date.now();
   const kind = (provider.kind || "openai").toLowerCase();
   const customHeaders = parseCustomHeaders(provider.headers_json);
+  const apiKey = decryptSecret(provider.api_key || "");
 
   try {
     if (kind === "openai") {
       const base = provider.base_url.replace(/\/+$/, "");
       const headers: Record<string, string> = { ...customHeaders };
-      if (provider.api_key) headers.Authorization = `Bearer ${provider.api_key}`;
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
       const resp = await fetch(`${base}/models`, {
         method: "GET",
         headers,
@@ -484,7 +683,6 @@ export async function testProviderConnection(provider: ProviderRecord): Promise<
           discoveredModels: models,
         };
       }
-      // Fallback: try minimal chat completion
       const res = await callLLM({
         provider,
         model: provider.default_model,

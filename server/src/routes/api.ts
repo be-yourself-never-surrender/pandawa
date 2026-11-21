@@ -25,10 +25,23 @@ import { runAgentTurn } from "../engine/agentRunner.js";
 import { runTeamMission } from "../engine/teamEngine.js";
 import { listAllToolPacks } from "../tools/toolRegistry.js";
 import { executeCronJob } from "../scheduler/cronEngine.js";
-import { dispatchChannelNotification } from "../channels/channelManager.js";
+import {
+  dispatchChannelNotification,
+  syncTelegramPollers,
+  getTelegramPollerStatuses,
+} from "../channels/channelManager.js";
+import { encryptSecret, decryptSecret } from "../auth/cryptoVault.js";
+import {
+  getApprovalMode,
+  setApprovalMode,
+  listPendingApprovals,
+  resolveApproval,
+  type ApprovalMode,
+} from "../engine/approvalManager.js";
+import { discoverMcpTools, type McpServerRow } from "../mcp/mcpClient.js";
 
 function maskProvider(p: ProviderRecord) {
-  const key = p.api_key || "";
+  const key = decryptSecret(p.api_key || "");
   const masked =
     key.length > 8
       ? `${key.slice(0, 4)}••••${key.slice(-4)}`
@@ -54,6 +67,7 @@ function maskProvider(p: ProviderRecord) {
     baseUrl: p.base_url,
     hasApiKey: key.trim().length > 0,
     apiKeyMasked: masked,
+    encryptedAtRest: (p.api_key || "").startsWith("enc:v1:"),
     defaultModel: p.default_model,
     models,
     headers,
@@ -396,7 +410,8 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const name = String(req.body?.name || "Custom AI Provider").trim();
     const kind = ["openai", "anthropic", "gemini"].includes(req.body?.kind) ? req.body.kind : "openai";
     const baseUrl = String(req.body?.baseUrl || "https://api.openai.com/v1").trim();
-    const apiKey = String(req.body?.apiKey || "").trim();
+    const apiKeyRaw = String(req.body?.apiKey || "").trim();
+    const apiKey = apiKeyRaw ? encryptSecret(apiKeyRaw) : "";
     const defaultModel = String(req.body?.defaultModel || "").trim();
     const models = Array.isArray(req.body?.models)
       ? req.body.models
@@ -431,7 +446,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       req.body?.clearApiKey === true
         ? ""
         : typeof req.body?.apiKey === "string" && req.body.apiKey.trim().length > 0
-        ? req.body.apiKey.trim()
+        ? encryptSecret(req.body.apiKey.trim())
         : existing.api_key;
     const defaultModel =
       req.body?.defaultModel !== undefined ? String(req.body.defaultModel).trim() : existing.default_model;
@@ -1025,11 +1040,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   router.get("/channels", (_req: Request, res: Response) => {
     const db = getDb();
     const rows = db.prepare("SELECT * FROM channels ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
+    const pollers = getTelegramPollerStatuses();
     res.json({
       channels: rows.map((r) => ({
         ...r,
         config: JSON.parse(String(r.config_json || "{}")),
         enabled: Boolean(r.enabled),
+        poller: pollers.find((p) => p.channelId === String(r.id)) || null,
       })),
     });
   });
@@ -1048,6 +1065,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       String(req.body?.targetType || "team"),
       String(req.body?.targetId || "team_pandawa")
     );
+    syncTelegramPollers(broadcast);
     res.json({ id });
   });
 
@@ -1063,6 +1081,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   router.delete("/channels/:id", (req: Request, res: Response) => {
     const db = getDb();
     db.prepare("DELETE FROM channels WHERE id = ?").run(String(req.params.id));
+    syncTelegramPollers(broadcast);
     res.json({ ok: true });
   });
 
@@ -1094,10 +1113,249 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({ id });
   });
 
+  router.post("/mcp/:id/discover", async (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const srv = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(String(req.params.id)) as unknown as
+        | McpServerRow
+        | undefined;
+      if (!srv) {
+        res.status(404).json({ error: "MCP server not found" });
+        return;
+      }
+      const tools = await discoverMcpTools(srv, true);
+      res.json({ ok: true, count: tools.length, tools });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.delete("/mcp/:id", (req: Request, res: Response) => {
     const db = getDb();
     db.prepare("DELETE FROM mcp_servers WHERE id = ?").run(String(req.params.id));
     res.json({ ok: true });
+  });
+
+  // ========================
+  // USER-CONTROLLED APPROVAL GATE (No Hidden Guardrails)
+  // ========================
+  router.get("/approvals", (_req: Request, res: Response) => {
+    res.json({
+      mode: getApprovalMode(),
+      pending: listPendingApprovals(),
+    });
+  });
+
+  router.put("/approvals/mode", (req: Request, res: Response) => {
+    const mode = String(req.body?.mode || "approve_shell") as ApprovalMode;
+    if (!["auto", "approve_shell", "approve_sensitive", "approve_all"].includes(mode)) {
+      res.status(400).json({ error: "Invalid approval mode" });
+      return;
+    }
+    setApprovalMode(mode);
+    broadcast({ type: "approval_mode_changed", mode });
+    res.json({ ok: true, mode });
+  });
+
+  router.post("/approvals/:id/resolve", (req: Request, res: Response) => {
+    const approved = Boolean(req.body?.approved);
+    const switchToAuto = Boolean(req.body?.switchToAuto);
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
+    const ok = resolveApproval(String(req.params.id), approved, { switchToAuto, reason, broadcast });
+    if (!ok) {
+      res.status(404).json({ error: "Pending approval not found or already resolved" });
+      return;
+    }
+    res.json({ ok: true, mode: getApprovalMode() });
+  });
+
+  // ========================
+  // 1-CLICK TEAM & BRAIN KIT TEMPLATES
+  // ========================
+  router.post("/templates/apply", (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const tpl = String(req.body?.template || "software-squad");
+      const templates: Record<
+        string,
+        {
+          teamName: string;
+          desc: string;
+          agents: Array<{ name: string; title: string; avatar: string; purpose: string; soul: string; packs: string[] }>;
+        }
+      > = {
+        "software-squad": {
+          teamName: "Software Engineering Squad",
+          desc: "Full-stack product engineering team: Architect, Builder, and QA/DevOps.",
+          agents: [
+            {
+              name: "Kresna Architect",
+              title: "System Architect",
+              avatar: "🏛️",
+              purpose: "strategy",
+              packs: ["brain", "team", "workspace"],
+              soul: "# Kresna Architect\nDesign clean, modular architectures, API contracts, and database schemas.",
+            },
+            {
+              name: "Gatutkaca Builder",
+              title: "Full-Stack Engineer",
+              avatar: "🚀",
+              purpose: "coding",
+              packs: ["brain", "team", "workspace", "shell"],
+              soul: "# Gatutkaca Builder\nShip production TypeScript/Python code fast with clean error handling.",
+            },
+            {
+              name: "Antasena QA",
+              title: "Testing & DevOps",
+              avatar: "🧪",
+              purpose: "review",
+              packs: ["brain", "team", "workspace", "shell"],
+              soul: "# Antasena QA\nWrite automated tests, check edge cases, and validate deployments.",
+            },
+          ],
+        },
+        "growth-squad": {
+          teamName: "Growth & Content Squad",
+          desc: "Marketing strategist, viral copywriter, and market researcher.",
+          agents: [
+            {
+              name: "Srikandi Strategist",
+              title: "Growth Lead",
+              avatar: "🎯",
+              purpose: "strategy",
+              packs: ["brain", "team", "web"],
+              soul: "# Srikandi Strategist\nDesign positioning, pricing, go-to-market campaigns, and funnels.",
+            },
+            {
+              name: "Abimanyu Copy",
+              title: "Creative Copywriter",
+              avatar: "✍️",
+              purpose: "creative",
+              packs: ["brain", "team"],
+              soul: "# Abimanyu Copy\nCraft sharp landing pages, hooks, threads, and persuasive product copy.",
+            },
+            {
+              name: "Drupadi Insights",
+              title: "Market Analyst",
+              avatar: "📊",
+              purpose: "research",
+              packs: ["brain", "team", "web"],
+              soul: "# Drupadi Insights\nResearch competitors, customer pain points, and market trends.",
+            },
+          ],
+        },
+        "research-squad": {
+          teamName: "Deep Research & Alpha Squad",
+          desc: "Investigative researcher, quantitative synthesizer, and devil's advocate.",
+          agents: [
+            {
+              name: "Bisma Lead",
+              title: "Principal Investigator",
+              avatar: "🔭",
+              purpose: "strategy",
+              packs: ["brain", "team", "web"],
+              soul: "# Bisma Lead\nFrame high-leverage research questions and synthesize executive reports.",
+            },
+            {
+              name: "Wibisana Scout",
+              title: "Source Gatherer",
+              avatar: "🌐",
+              purpose: "research",
+              packs: ["brain", "team", "web"],
+              soul: "# Wibisana Scout\nFetch primary sources, APIs, and documentation with strict citations.",
+            },
+            {
+              name: "Karna Skeptic",
+              title: "Red-Team Analyst",
+              avatar: "⚖️",
+              purpose: "review",
+              packs: ["brain", "team"],
+              soul: "# Karna Skeptic\nStress-test hypotheses, expose blind spots, and challenge consensus.",
+            },
+          ],
+        },
+      };
+
+      const spec = templates[tpl] || templates["software-squad"];
+      const suffix = Math.random().toString(36).slice(2, 6);
+      const teamId = generateId("team");
+      const brainId = generateId("brain");
+      const folderPath = `teams/${tpl}-${suffix}`;
+      createBrainFolder(folderPath);
+      writeBrainFile(`${folderPath}/team.md`, `# ${spec.teamName}\n\n${spec.desc}\n`);
+      writeBrainFile(`${folderPath}/memory.md`, `# ${spec.teamName} — Shared Memory\n\n`);
+
+      db.prepare(
+        `INSERT INTO brains (id, slug, name, layer, description, folder_path, color, sync_policy)
+         VALUES (?, ?, ?, 'team', ?, ?, '#8b5cf6', 'read_write')`
+      ).run(brainId, `${tpl}-brain-${suffix}`, `Team Brain: ${spec.teamName}`, spec.desc, folderPath);
+
+      db.prepare(
+        `INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, enabled)
+         VALUES (?, ?, ?, ?, ?, 'deliberate', 2, 1)`
+      ).run(teamId, `${tpl}-${suffix}`, spec.teamName, spec.desc, brainId);
+
+      // Add Team Brain node + Agent nodes + edges to Canvas
+      const tbNodeId = `node_tb_${suffix}`;
+      const baseX = 1280;
+      db.prepare(
+        `INSERT INTO canvas_nodes (id, type, ref_id, label, position_x, position_y, data_json)
+         VALUES (?, 'team_brain', ?, ?, ?, ?, ?)`
+      ).run(
+        tbNodeId,
+        brainId,
+        `Team Brain: ${spec.teamName}`,
+        baseX + 220,
+        220,
+        JSON.stringify({ folderPath, teamId, color: "#8b5cf6", subtitle: spec.desc })
+      );
+
+      // Wire from Main Brain if exists
+      const mainNode = db.prepare("SELECT id FROM canvas_nodes WHERE type = 'main_brain' LIMIT 1").get() as
+        | { id?: string }
+        | undefined;
+      if (mainNode?.id) {
+        db.prepare(
+          `INSERT INTO canvas_edges (id, source, target, relation, permission, label, animated)
+           VALUES (?, ?, ?, 'brain_link', 'sync', 'inherits + sync', 1)`
+        ).run(generateId("edge"), mainNode.id, tbNodeId);
+      }
+
+      spec.agents.forEach((ag, idx) => {
+        const agId = generateId("agent");
+        const agSlug = `${ag.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${suffix}`;
+        db.prepare(
+          `INSERT INTO agents (id, slug, name, title, role_description, avatar, color, purpose, temperature, max_tokens, system_prompt, tool_packs_json, enabled)
+           VALUES (?, ?, ?, ?, ?, ?, '#06b6d4', ?, 0.5, 4096, ?, ?, 1)`
+        ).run(agId, agSlug, ag.name, ag.title, ag.title, ag.avatar, ag.purpose, ag.soul, JSON.stringify(ag.packs));
+
+        createBrainFolder(`agents/${agSlug}`);
+        writeBrainFile(`agents/${agSlug}/soul.md`, `${ag.soul}\n`);
+
+        const agNodeId = `node_ag_${suffix}_${idx}`;
+        db.prepare(
+          `INSERT INTO canvas_nodes (id, type, ref_id, label, position_x, position_y, data_json)
+           VALUES (?, 'agent', ?, ?, ?, ?, ?)`
+        ).run(
+          agNodeId,
+          agId,
+          ag.name,
+          baseX + idx * 240,
+          460,
+          JSON.stringify({ agentId: agId, avatar: ag.avatar, role: ag.title, purpose: ag.purpose, color: "#06b6d4" })
+        );
+        db.prepare(
+          `INSERT INTO canvas_edges (id, source, target, relation, permission, label, animated)
+           VALUES (?, ?, ?, 'brain_link', 'read_write', 'team brain', 1)`
+        ).run(generateId("edge"), tbNodeId, agNodeId);
+      });
+
+      logAudit("admin", "template.apply", teamId, spec.teamName);
+      broadcast({ type: "topology_updated" });
+      res.json({ ok: true, teamId, teamName: spec.teamName });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.get("/tools", (_req: Request, res: Response) => {
@@ -1135,7 +1393,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "1.0.0",
+      version: "2.0.0",
+      approvalMode: getApprovalMode(),
+      pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),
       nodeVersion: process.version,
       platform: `${os.platform()} ${os.release()}`,

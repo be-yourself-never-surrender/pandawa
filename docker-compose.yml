@@ -1,0 +1,16 @@
+services:
+  pandawa:
+    build: .
+    container_name: pandawa
+    restart: unless-stopped
+    ports:
+      - "${PANDAWA_PORT:-7777}:7777"
+    environment:
+      - PANDAWA_PORT=7777
+      - PANDAWA_HOST=0.0.0.0
+      - PANDAWA_DEFAULT_PASSWORD=${PANDAWA_DEFAULT_PASSWORD:-11111111}
+    volumes:
+      - pandawa_data:/app/data
+
+volumes:
+  pandawa_data:

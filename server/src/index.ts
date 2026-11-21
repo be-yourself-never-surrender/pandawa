@@ -9,6 +9,7 @@ import { seedInitialData } from "./db/seed.js";
 import { verifyToken } from "./auth/authService.js";
 import { createApiRouter } from "./routes/api.js";
 import { startCronScheduler, stopCronScheduler } from "./scheduler/cronEngine.js";
+import { syncTelegramPollers, stopAllTelegramPollers } from "./channels/channelManager.js";
 
 ensureDirectories();
 seedInitialData();
@@ -45,7 +46,7 @@ function broadcast(event: Record<string, unknown>): void {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pandawa", version: "1.0.0" });
+  res.json({ ok: true, service: "pandawa", version: "2.0.0" });
 });
 
 app.use("/api", createApiRouter(broadcast));
@@ -59,13 +60,15 @@ if (fs.existsSync(WEB_DIST_DIR)) {
 }
 
 startCronScheduler(broadcast);
+syncTelegramPollers(broadcast);
 
 server.listen(PORT, HOST, () => {
-  console.log(`[Pandawa] Server running at http://${HOST}:${PORT}`);
+  console.log(`[Pandawa v2.0] Server running at http://${HOST}:${PORT}`);
 });
 
 function shutdown(): void {
   stopCronScheduler();
+  stopAllTelegramPollers();
   server.close(() => process.exit(0));
 }
 

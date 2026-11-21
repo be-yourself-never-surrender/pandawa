@@ -4,12 +4,13 @@ import type { NavTab } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { Sidebar } from "./components/Sidebar";
 import { BrainCanvas } from "./components/canvas/BrainCanvas";
-import { MissionRoom } from "./components/chat/MissionRoom";
+import { MissionRoom, type LiveStreamBuffer } from "./components/chat/MissionRoom";
 import { BrainExplorer } from "./components/brains/BrainExplorer";
 import { ProvidersPage } from "./components/providers/ProvidersPage";
 import { SkillsPage } from "./components/ops/SkillsPage";
 import { AutomationPage } from "./components/ops/AutomationPage";
 import { SettingsPage } from "./components/ops/SettingsPage";
+import { ApprovalOverlay, type PendingApprovalItem } from "./components/ApprovalOverlay";
 
 export const App: React.FC = () => {
   const [authed, setAuthed] = useState<boolean>(false);
@@ -19,6 +20,9 @@ export const App: React.FC = () => {
   const [openFilePath, setOpenFilePath] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [liveEvents, setLiveEvents] = useState<Array<Record<string, unknown>>>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalItem[]>([]);
+  const [activeAgentIds, setActiveAgentIds] = useState<Set<string>>(new Set());
+  const [streamingBuffers, setStreamingBuffers] = useState<Record<string, LiveStreamBuffer>>({});
 
   useEffect(() => {
     const onUnauthorized = () => {
@@ -48,8 +52,48 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!authed) return;
+    apiFetch<{ pending: PendingApprovalItem[] }>("/api/approvals")
+      .then((r) => setPendingApprovals(r.pending || []))
+      .catch(() => {});
+
     const ws = createRealtimeSocket((ev) => {
-      setLiveEvents((prev) => [...prev.slice(-30), ev]);
+      const evType = String(ev.type || "");
+      if (evType !== "agent_token") {
+        setLiveEvents((prev) => [...prev.slice(-30), ev]);
+      }
+
+      if (evType === "agent_start" && typeof ev.agentId === "string") {
+        const aid = ev.agentId;
+        setActiveAgentIds((prev) => new Set([...prev, aid]));
+      } else if (evType === "agent_done" && typeof ev.agentId === "string") {
+        const aid = ev.agentId;
+        setActiveAgentIds((prev) => {
+          const next = new Set(prev);
+          next.delete(aid);
+          return next;
+        });
+      } else if (evType === "agent_token" && typeof ev.agentId === "string") {
+        const aid = ev.agentId;
+        const delta = String(ev.delta || "");
+        setStreamingBuffers((prev) => {
+          const existing = prev[aid] || {
+            agentId: aid,
+            agentName: String(ev.agentName || aid),
+            avatar: String(ev.avatar || "⚡"),
+            model: String(ev.model || ""),
+            text: "",
+          };
+          return {
+            ...prev,
+            [aid]: { ...existing, text: existing.text + delta },
+          };
+        });
+      } else if (evType === "approval_required" && ev.approval) {
+        const item = ev.approval as PendingApprovalItem;
+        setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
+      } else if (evType === "approval_resolved" && typeof ev.id === "string") {
+        setPendingApprovals((prev) => prev.filter((x) => x.id !== ev.id));
+      }
     });
     if (!ws) return;
     ws.onopen = () => setWsConnected(true);
@@ -60,7 +104,7 @@ export const App: React.FC = () => {
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-[#080a0f] flex items-center justify-center text-sm text-slate-400">
-        Loading Pandawa Studio...
+        Loading Pandawa Studio v2...
       </div>
     );
   }
@@ -94,8 +138,16 @@ export const App: React.FC = () => {
         }}
       />
       <main className="flex-1 min-w-0 h-screen overflow-hidden">
-        {tab === "canvas" && <BrainCanvas onOpenBrainFile={handleOpenBrainFile} />}
-        {tab === "chat" && <MissionRoom liveEvents={liveEvents} />}
+        {tab === "canvas" && (
+          <BrainCanvas onOpenBrainFile={handleOpenBrainFile} activeAgentIds={activeAgentIds} />
+        )}
+        {tab === "chat" && (
+          <MissionRoom
+            liveEvents={liveEvents}
+            streamingBuffers={streamingBuffers}
+            onClearStreams={() => setStreamingBuffers({})}
+          />
+        )}
         {tab === "brains" && (
           <BrainExplorer
             initialFilePath={openFilePath}
@@ -107,6 +159,11 @@ export const App: React.FC = () => {
         {tab === "automation" && <AutomationPage />}
         {tab === "settings" && <SettingsPage onPasswordChanged={() => setUsingDefaultPassword(false)} />}
       </main>
+
+      <ApprovalOverlay
+        approvals={pendingApprovals}
+        onResolved={(id) => setPendingApprovals((prev) => prev.filter((x) => x.id !== id))}
+      />
     </div>
   );
 };

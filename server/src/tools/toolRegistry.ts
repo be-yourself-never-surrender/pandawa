@@ -12,6 +12,8 @@ import {
 } from "../brains/brainFs.js";
 import type { LLMToolDefinition } from "../providers/llmClient.js";
 import type { CompiledAgentRuntime } from "../engine/contextCompiler.js";
+import { toolRequiresApproval, requestApproval } from "../engine/approvalManager.js";
+import { invokeMcpTool, type DiscoveredMcpTool } from "../mcp/mcpClient.js";
 
 const execAsync = promisify(exec);
 
@@ -19,6 +21,7 @@ export interface ToolExecutionContext {
   runtime: CompiledAgentRuntime;
   teamId?: string;
   sessionId?: string;
+  mcpLookup?: Map<string, DiscoveredMcpTool>;
   onEvent?: (event: Record<string, unknown>) => void;
 }
 
@@ -30,7 +33,7 @@ interface PandawaTool {
 
 function resolveWorkspacePath(rel: string): string {
   const cleaned = rel.replace(/\\/g, "/").replace(/^\/+/, "");
-  if (cleaned.includes("..")) throw new Error("Path traversal blocked.");
+  if (cleaned.includes("..")) throw new Error("Path traversal not allowed inside workspace_read/write.");
   const full = path.resolve(WORKSPACE_DIR, cleaned);
   const root = path.resolve(WORKSPACE_DIR);
   if (full !== root && !full.startsWith(root + path.sep)) {
@@ -38,14 +41,6 @@ function resolveWorkspacePath(rel: string): string {
   }
   return full;
 }
-
-const BLOCKED_SHELL_PATTERNS = [
-  /rm\s+-rf\s+\/(\s|$)/i,
-  /mkfs\./i,
-  /dd\s+if=/i,
-  /:\(\)\s*\{\s*:\|:\s*&\s*\};:/,
-  /shutdown|reboot|poweroff/i,
-];
 
 const TOOLS: PandawaTool[] = [
   // === BRAIN & SELF-LEARNING PACK ===
@@ -95,8 +90,7 @@ const TOOLS: PandawaTool[] = [
       },
     },
     execute: async (args) => {
-      const p = String(args.path || "");
-      const file = readBrainFile(p);
+      const file = readBrainFile(String(args.path || ""));
       return file.content;
     },
   },
@@ -104,7 +98,7 @@ const TOOLS: PandawaTool[] = [
     pack: "brain",
     definition: {
       name: "brain_write",
-      description: "Create or update a file inside a writable Brain folder connected to this agent (e.g., teams/pandawa-core/memory.md).",
+      description: "Create or update a file inside a writable Brain folder connected to this agent.",
       parameters: {
         type: "object",
         properties: {
@@ -136,10 +130,10 @@ const TOOLS: PandawaTool[] = [
       parameters: {
         type: "object",
         properties: {
-          scope: { type: "string", enum: ["team", "main"], description: "Which brain layer to store the memory in" },
-          category: { type: "string", description: "Category (fact, decision, preference, lesson)" },
-          content: { type: "string", description: "Concise memory entry" },
-          importance: { type: "number", description: "Importance 1-10 (default 6)" },
+          scope: { type: "string", enum: ["team", "main"] },
+          category: { type: "string" },
+          content: { type: "string" },
+          importance: { type: "number" },
         },
         required: ["content"],
       },
@@ -169,15 +163,15 @@ const TOOLS: PandawaTool[] = [
     pack: "brain",
     definition: {
       name: "learn_skill",
-      description: "Self-improvement loop: distill a repeatable workflow or procedure into a reusable SKILL.md inside the Team or Main Brain.",
+      description: "Distill a repeatable workflow or procedure into a reusable SKILL.md inside the Team or Main Brain.",
       parameters: {
         type: "object",
         properties: {
-          slug: { type: "string", description: "Short kebab-case skill folder name (e.g., api-security-audit)" },
-          title: { type: "string", description: "Human-readable skill title" },
-          description: { type: "string", description: "When to use this skill" },
-          instructions: { type: "string", description: "Detailed Markdown instructions & steps" },
-          scope: { type: "string", enum: ["team", "main"], description: "Store in Team Brain or Main Brain" },
+          slug: { type: "string" },
+          title: { type: "string" },
+          description: { type: "string" },
+          instructions: { type: "string" },
+          scope: { type: "string", enum: ["team", "main"] },
         },
         required: ["slug", "title", "description", "instructions"],
       },
@@ -202,7 +196,7 @@ const TOOLS: PandawaTool[] = [
     pack: "team",
     definition: {
       name: "blackboard_post",
-      description: "Post a structured proposal, finding, critique, decision, or artifact onto the shared Team Blackboard for peer agents.",
+      description: "Post a structured proposal, finding, critique, decision, or artifact onto the shared Team Blackboard.",
       parameters: {
         type: "object",
         properties: {
@@ -238,9 +232,7 @@ const TOOLS: PandawaTool[] = [
       description: "Read the latest entries on the shared Team Blackboard from teammates.",
       parameters: {
         type: "object",
-        properties: {
-          limit: { type: "number", description: "Max entries to fetch (default 10)" },
-        },
+        properties: { limit: { type: "number" } },
       },
     },
     execute: async (args, ctx) => {
@@ -265,9 +257,7 @@ const TOOLS: PandawaTool[] = [
       description: "List files and directories inside the Pandawa agent workspace.",
       parameters: {
         type: "object",
-        properties: {
-          subdir: { type: "string", description: "Optional relative subdirectory" },
-        },
+        properties: { subdir: { type: "string" } },
       },
     },
     execute: async (args) => {
@@ -287,16 +277,14 @@ const TOOLS: PandawaTool[] = [
       description: "Read a file inside the Pandawa agent workspace.",
       parameters: {
         type: "object",
-        properties: {
-          path: { type: "string" },
-        },
+        properties: { path: { type: "string" } },
         required: ["path"],
       },
     },
     execute: async (args) => {
       const full = resolveWorkspacePath(String(args.path || ""));
       if (!fs.existsSync(full)) return "File not found.";
-      return fs.readFileSync(full, "utf8").slice(0, 20_000);
+      return fs.readFileSync(full, "utf8").slice(0, 24_000);
     },
   },
   {
@@ -306,10 +294,7 @@ const TOOLS: PandawaTool[] = [
       description: "Write or update a file inside the Pandawa agent workspace.",
       parameters: {
         type: "object",
-        properties: {
-          path: { type: "string" },
-          content: { type: "string" },
-        },
+        properties: { path: { type: "string" }, content: { type: "string" } },
         required: ["path", "content"],
       },
     },
@@ -321,16 +306,17 @@ const TOOLS: PandawaTool[] = [
     },
   },
 
-  // === SHELL PACK ===
+  // === SHELL PACK (Full freedom — governed ONLY by optional User Approval Gate, no hardcoded guardrails) ===
   {
     pack: "shell",
     definition: {
       name: "shell_exec",
-      description: "Execute a shell command inside the Pandawa workspace directory (timeout 20s).",
+      description: "Execute any shell command inside the workspace (or custom cwd). Governed by user's Approval setting.",
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Shell command to execute" },
+          command: { type: "string", description: "Shell command to run" },
+          cwd: { type: "string", description: "Optional working directory (defaults to workspace)" },
         },
         required: ["command"],
       },
@@ -338,21 +324,17 @@ const TOOLS: PandawaTool[] = [
     execute: async (args) => {
       const command = String(args.command || "").trim();
       if (!command) return "Empty command.";
-      for (const pat of BLOCKED_SHELL_PATTERNS) {
-        if (pat.test(command)) {
-          return "Blocked dangerous command by Pandawa safety policy.";
-        }
-      }
+      const cwd = args.cwd ? String(args.cwd) : WORKSPACE_DIR;
       try {
         const { stdout, stderr } = await execAsync(command, {
-          cwd: WORKSPACE_DIR,
-          timeout: 20_000,
-          maxBuffer: 1024 * 1024,
+          cwd,
+          timeout: 60_000,
+          maxBuffer: 2 * 1024 * 1024,
         });
-        return `STDOUT:\n${stdout.slice(0, 8000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();
+        return `STDOUT:\n${stdout.slice(0, 12_000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();
       } catch (err: unknown) {
         const e = err as { message?: string; stdout?: string; stderr?: string };
-        return `Command failed: ${e.message || String(err)}\nSTDOUT: ${(e.stdout || "").slice(0, 2000)}\nSTDERR: ${(e.stderr || "").slice(0, 2000)}`;
+        return `Command exited with error: ${e.message || String(err)}\nSTDOUT: ${(e.stdout || "").slice(0, 4000)}\nSTDERR: ${(e.stderr || "").slice(0, 4000)}`;
       }
     },
   },
@@ -362,12 +344,13 @@ const TOOLS: PandawaTool[] = [
     pack: "web",
     definition: {
       name: "web_fetch",
-      description: "Fetch an HTTP/HTTPS URL and return its readable text or JSON response (up to 12KB).",
+      description: "Fetch an HTTP/HTTPS URL and return its readable text or JSON response (up to 16KB).",
       parameters: {
         type: "object",
         properties: {
-          url: { type: "string", description: "Full http:// or https:// URL" },
-          method: { type: "string", enum: ["GET", "POST"], description: "HTTP method (default GET)" },
+          url: { type: "string" },
+          method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE"] },
+          body: { type: "string", description: "Optional JSON body for POST/PUT" },
         },
         required: ["url"],
       },
@@ -375,10 +358,15 @@ const TOOLS: PandawaTool[] = [
     execute: async (args) => {
       const url = String(args.url || "").trim();
       if (!/^https?:\/\//i.test(url)) return "Invalid URL: must start with http:// or https://";
+      const method = String(args.method || "GET");
       const resp = await fetch(url, {
-        method: String(args.method || "GET"),
-        signal: AbortSignal.timeout(15_000),
-        headers: { "User-Agent": "Pandawa-Agentic-Team/1.0" },
+        method,
+        signal: AbortSignal.timeout(20_000),
+        headers: {
+          "User-Agent": "Pandawa-Agentic-Team/2.0",
+          ...(args.body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: args.body ? String(args.body) : undefined,
       });
       const raw = await resp.text();
       const cleaned = raw
@@ -387,14 +375,15 @@ const TOOLS: PandawaTool[] = [
         .replace(/<[^>]+>/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-      return `HTTP ${resp.status}\n${cleaned.slice(0, 12_000)}`;
+      return `HTTP ${resp.status}\n${cleaned.slice(0, 16_000)}`;
     },
   },
 ];
 
-export function getToolsForPacks(packs: string[]): LLMToolDefinition[] {
+export function getToolsForPacks(packs: string[], extraMcpTools: LLMToolDefinition[] = []): LLMToolDefinition[] {
   const set = new Set(packs);
-  return TOOLS.filter((t) => set.has(t.pack)).map((t) => t.definition);
+  const builtin = TOOLS.filter((t) => set.has(t.pack)).map((t) => t.definition);
+  return [...builtin, ...extraMcpTools];
 }
 
 export async function executeTool(
@@ -402,6 +391,29 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: ToolExecutionContext
 ): Promise<string> {
+  // User-controlled Approval Gate (no hidden guardrails — user chooses Auto or Approve)
+  if (toolRequiresApproval(name)) {
+    const decision = await requestApproval({
+      agentId: ctx.runtime.agent.id,
+      agentName: ctx.runtime.agent.name,
+      toolName: name,
+      args,
+      onEvent: ctx.onEvent,
+    });
+    if (!decision.approved) {
+      return `Action rejected by user${decision.reason ? `: ${decision.reason}` : "."}`;
+    }
+  }
+
+  // Live MCP tool dispatch
+  if (ctx.mcpLookup && ctx.mcpLookup.has(name)) {
+    try {
+      return await invokeMcpTool(ctx.mcpLookup.get(name)!, args);
+    } catch (err) {
+      return `MCP tool error (${name}): ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   const tool = TOOLS.find((t) => t.definition.name === name);
   if (!tool) return `Unknown tool: ${name}`;
   try {

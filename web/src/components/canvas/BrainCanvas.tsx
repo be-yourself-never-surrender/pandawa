@@ -34,6 +34,7 @@ import { PandawaNode, type PandawaNodeData } from "./PandawaNode";
 
 interface BrainCanvasProps {
   onOpenBrainFile: (filePath: string) => void;
+  activeAgentIds: Set<string>;
 }
 
 const RELATION_COLORS: Record<string, string> = {
@@ -62,11 +63,12 @@ function inferRelation(srcType: string, dstType: string): { relation: string; la
   return { relation: "brain_link", label: "brain sync" };
 }
 
-export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile }) => {
+export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activeAgentIds }) => {
   const nodeTypes = useMemo(() => ({ pandawa: PandawaNode }), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PandawaNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [spawningTpl, setSpawningTpl] = useState(false);
 
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [brains, setBrains] = useState<BrainItem[]>([]);
@@ -141,6 +143,33 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile }) => 
   useEffect(() => {
     loadAll().catch(() => {});
   }, [loadAll]);
+
+  useEffect(() => {
+    setNodes((prev) =>
+      prev.map((n) => {
+        const aid = String(n.data.agentId || n.data.refId || "");
+        const nextActive = n.data.nodeType === "agent" && activeAgentIds.has(aid);
+        if (Boolean(n.data.isActive) === nextActive) return n;
+        return { ...n, data: { ...n.data, isActive: nextActive } };
+      })
+    );
+  }, [activeAgentIds, setNodes]);
+
+  async function applyTemplate(template: string) {
+    if (!template) return;
+    setSpawningTpl(true);
+    try {
+      await apiFetch("/api/templates/apply", {
+        method: "POST",
+        body: JSON.stringify({ template }),
+      });
+      await loadAll();
+      setSavedNotice("Team Kit spawned & wired!");
+      setTimeout(() => setSavedNotice(""), 2500);
+    } finally {
+      setSpawningTpl(false);
+    }
+  }
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -463,6 +492,19 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile }) => 
           >
             <Wrench className="w-3.5 h-3.5" /> Toolpack
           </button>
+          <select
+            disabled={spawningTpl}
+            value=""
+            onChange={(e) => {
+              if (e.target.value) applyTemplate(e.target.value);
+            }}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 border border-slate-700 text-amber-300 text-xs font-medium cursor-pointer shrink-0"
+          >
+            <option value="">{spawningTpl ? "Spawning..." : "+ 1-Click Team Kit"}</option>
+            <option value="software-squad">🚀 Software Engineering Squad</option>
+            <option value="growth-squad">🎯 Growth & Content Squad</option>
+            <option value="research-squad">🔭 Deep Research & Alpha Squad</option>
+          </select>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">

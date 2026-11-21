@@ -24,6 +24,7 @@ interface ChannelItem {
   target_type: string;
   target_id: string;
   enabled: boolean;
+  poller?: { active: boolean; lastPollAt: string; lastError: string } | null;
 }
 
 interface McpItem {
@@ -32,6 +33,12 @@ interface McpItem {
   transport: string;
   url_or_cmd: string;
   enabled: boolean;
+}
+
+interface DiscoveredToolItem {
+  qualifiedName: string;
+  rawName: string;
+  description: string;
 }
 
 export const AutomationPage: React.FC = () => {
@@ -56,6 +63,9 @@ export const AutomationPage: React.FC = () => {
   const [mcpName, setMcpName] = useState("");
   const [mcpTransport, setMcpTransport] = useState("http");
   const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpDiscovered, setMcpDiscovered] = useState<
+    Record<string, { loading?: boolean; tools?: DiscoveredToolItem[]; error?: string }>
+  >({});
 
   const load = useCallback(async () => {
     const [jRes, cRes, mRes, tRes] = await Promise.all([
@@ -280,8 +290,18 @@ export const AutomationPage: React.FC = () => {
             {channels.map((c) => (
               <div key={c.id} className="p-3 rounded-xl bg-[#090c14] border border-slate-800 text-xs space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-white">
-                    {c.name} <span className="text-[10px] uppercase text-sky-400 ml-1">({c.type})</span>
+                  <span className="font-semibold text-white flex items-center gap-1.5">
+                    {c.name} <span className="text-[10px] uppercase text-sky-400">({c.type})</span>
+                    {c.type === "telegram" && c.poller?.active && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        2-Way Bot Live
+                      </span>
+                    )}
+                    {c.type === "telegram" && c.poller?.lastError && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300">
+                        {c.poller.lastError}
+                      </span>
+                    )}
                   </span>
                   <div className="flex items-center gap-1.5">
                     <button
@@ -352,25 +372,71 @@ export const AutomationPage: React.FC = () => {
           </form>
 
           <div className="space-y-2">
-            {mcps.map((m) => (
-              <div key={m.id} className="p-3 rounded-xl bg-[#090c14] border border-slate-800 flex items-center justify-between text-xs">
-                <div className="min-w-0">
-                  <div className="font-semibold text-white">
-                    {m.name} <span className="text-[10px] text-pink-400 uppercase ml-1">({m.transport})</span>
+            {mcps.map((m) => {
+              const disc = mcpDiscovered[m.id];
+              return (
+                <div key={m.id} className="p-3 rounded-xl bg-[#090c14] border border-slate-800 space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-white">
+                        {m.name} <span className="text-[10px] text-pink-400 uppercase ml-1">({m.transport})</span>
+                      </div>
+                      <div className="text-[11px] font-mono text-slate-500 truncate">{m.url_or_cmd}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={async () => {
+                          setMcpDiscovered((p) => ({ ...p, [m.id]: { loading: true } }));
+                          try {
+                            const r = await apiFetch<{ ok: boolean; tools: DiscoveredToolItem[] }>(
+                              `/api/mcp/${m.id}/discover`,
+                              { method: "POST" }
+                            );
+                            setMcpDiscovered((p) => ({ ...p, [m.id]: { tools: r.tools } }));
+                          } catch (err) {
+                            setMcpDiscovered((p) => ({
+                              ...p,
+                              [m.id]: { error: err instanceof Error ? err.message : "Failed" },
+                            }));
+                          }
+                        }}
+                        className="px-2.5 py-1 rounded bg-pink-500/15 hover:bg-pink-500/25 border border-pink-500/35 text-pink-300 cursor-pointer"
+                      >
+                        {disc?.loading ? "Scanning..." : "Discover Tools"}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await apiFetch(`/api/mcp/${m.id}`, { method: "DELETE" });
+                          await load();
+                        }}
+                        className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="text-[11px] font-mono text-slate-500 truncate">{m.url_or_cmd}</div>
+                  {disc?.error && <div className="text-[11px] text-rose-400">{disc.error}</div>}
+                  {disc?.tools && (
+                    <div className="pt-1 border-t border-slate-800/80 space-y-1">
+                      <div className="text-[10px] text-emerald-400 font-semibold">
+                        Live Tools Ready for Agents ({disc.tools.length}):
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {disc.tools.map((t) => (
+                          <span
+                            key={t.qualifiedName}
+                            title={t.description}
+                            className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300"
+                          >
+                            {t.rawName}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={async () => {
-                    await apiFetch(`/api/mcp/${m.id}`, { method: "DELETE" });
-                    await load();
-                  }}
-                  className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>

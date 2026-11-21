@@ -15,11 +15,21 @@ import {
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BlackboardEntry, MessageItem, SessionItem, TeamItem } from "../../types";
 
-interface MissionRoomProps {
-  liveEvents: Array<Record<string, unknown>>;
+export interface LiveStreamBuffer {
+  agentId: string;
+  agentName: string;
+  avatar: string;
+  model: string;
+  text: string;
 }
 
-export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents }) => {
+interface MissionRoomProps {
+  liveEvents: Array<Record<string, unknown>>;
+  streamingBuffers: Record<string, LiveStreamBuffer>;
+  onClearStreams: () => void;
+}
+
+export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingBuffers, onClearStreams }) => {
   const [teams, setTeams] = useState<TeamItem[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
@@ -106,6 +116,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents }) => {
     const text = prompt.trim();
     setPrompt("");
     setSending(true);
+    onClearStreams();
 
     // Optimistic user bubble
     setMessages((prev) => [
@@ -161,6 +172,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents }) => {
       ]);
     } finally {
       setSending(false);
+      onClearStreams();
     }
   }
 
@@ -472,14 +484,40 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents }) => {
           })}
 
           {sending && (
-            <div className="max-w-2xl rounded-2xl bg-[#101625] border border-amber-500/35 p-4 space-y-2">
-              <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Pandawa Team is collaborating across wired Brains...
+            <div className="space-y-3 max-w-3xl">
+              <div className="rounded-2xl bg-[#101625] border border-amber-500/35 p-4 space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Pandawa Team is streaming & collaborating live...
+                </div>
+                {recentLiveStatus.map((ev, i) => (
+                  <div key={i} className="text-[11px] font-mono text-slate-400 truncate">
+                    › {String(ev.type)}: {String(ev.detail || ev.agentName || ev.toolName || ev.phase || "")}
+                  </div>
+                ))}
               </div>
-              {recentLiveStatus.map((ev, i) => (
-                <div key={i} className="text-[11px] font-mono text-slate-400 truncate">
-                  › {String(ev.type)}: {String(ev.detail || ev.agentName || ev.toolName || ev.phase || "")}
+
+              {Object.values(streamingBuffers).map((buf) => (
+                <div
+                  key={buf.agentId}
+                  className="rounded-2xl bg-[#0e1422] border border-emerald-500/40 p-4 space-y-2 shadow-lg"
+                >
+                  <div className="flex items-center gap-2 text-xs">
+                    <span>{buf.avatar || "⚡"}</span>
+                    <span className="font-bold text-white">{buf.agentName}</span>
+                    {buf.model && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-emerald-300">
+                        {buf.model}
+                      </span>
+                    )}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 animate-pulse">
+                      STREAMING
+                    </span>
+                  </div>
+                  <div className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                    {buf.text}
+                    <span className="inline-block w-2 h-4 bg-amber-400 ml-0.5 animate-pulse align-middle" />
+                  </div>
                 </div>
               ))}
             </div>

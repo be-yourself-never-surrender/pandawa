@@ -16,6 +16,7 @@ export interface PandawaNodeData extends Record<string, unknown> {
   isFolder?: boolean;
   color?: string;
   packs?: string[];
+  isActive?: boolean;
 }
 
 const STYLE_MAP: Record<
@@ -104,7 +105,9 @@ export const PandawaNode: React.FC<NodeProps> = ({ data, selected }) => {
     <div
       className={`min-w-[205px] max-w-[250px] rounded-xl bg-[#111623]/95 backdrop-blur-md border transition-all ${
         theme.border
-      } ${theme.glow} ${selected ? "ring-2 ring-white/80 scale-[1.02]" : ""}`}
+      } ${theme.glow} ${selected ? "ring-2 ring-white/80 scale-[1.02]" : ""} ${
+        d.isActive ? "ring-2 ring-emerald-400 shadow-[0_0_32px_rgba(16,185,129,0.55)] animate-pulse" : ""
+      }`}
     >
       {/* Top Target Handle */}
       <Handle
@@ -129,11 +132,15 @@ export const PandawaNode: React.FC<NodeProps> = ({ data, selected }) => {
             {theme.badge}
           </span>
         </div>
-        {d.purpose && (
+        {d.isActive ? (
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/25 text-emerald-300 border border-emerald-400/50 font-bold uppercase">
+            LIVE
+          </span>
+        ) : d.purpose ? (
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-900/70 text-slate-300 font-medium uppercase">
             {d.purpose}
           </span>
-        )}
+        ) : null}
       </div>
 
       {/* Body */}

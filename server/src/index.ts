@@ -29,7 +29,7 @@ seedInitialData();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 const server = http.createServer(app);
 

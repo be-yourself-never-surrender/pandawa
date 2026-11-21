@@ -12,7 +12,7 @@ function getPythonBin(): string {
 }
 
 export async function runPythonWorker<T = Record<string, unknown>>(
-  action: "status" | "doc_read" | "browser_run",
+  action: "status" | "doc_read" | "browser_run" | "import_zip",
   payload: Record<string, unknown> = {},
   timeoutMs = 90_000
 ): Promise<T> {

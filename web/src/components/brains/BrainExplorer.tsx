@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   Edit3,
   Upload,
+  FolderUp,
   Eye,
   Code,
   PanelLeft,
@@ -42,6 +43,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   const [content, setContent] = useState<string>("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchMode, setSearchMode] = useState<"fts" | "semantic">("semantic");
@@ -127,21 +129,147 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
     }
   }
 
+  async function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        resolve(res.replace(/^data:[^;]+;base64,/, ""));
+      };
+      reader.onerror = () => reject(new Error(`Failed reading ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function importEntries(
+    entries: Array<{ file: File; relPath: string }>,
+    targetDir = uploadFolder
+  ) {
+    if (entries.length === 0) return;
+    setImporting(true);
+    setNotice(`Importing ${entries.length} item(s)...`);
+    try {
+      const binaryExts = [".zip", ".pdf", ".docx", ".xlsx", ".xlsm"];
+      const skipSegs = new Set([".git", "node_modules", "__macosx", ".obsidian", ".ds_store"]);
+      const payload: Array<{ name: string; content?: string; base64?: string }> = [];
+
+      for (const { file, relPath } of entries) {
+        const norm = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+        const parts = norm.split("/").filter(Boolean);
+        if (parts.length === 0 || parts.some((p) => skipSegs.has(p.toLowerCase()) || p.startsWith("._"))) {
+          continue;
+        }
+        const low = norm.toLowerCase();
+        if (binaryExts.some((ext) => low.endsWith(ext))) {
+          const base64 = await fileToBase64(file);
+          payload.push({ name: norm, base64 });
+        } else {
+          // Skip giant binary blobs (> 3 MB non-text)
+          if (file.size > 3 * 1024 * 1024) continue;
+          const text = await file.text();
+          if (text.includes("\u0000")) continue;
+          payload.push({ name: norm, content: text });
+        }
+      }
+
+      if (payload.length === 0) {
+        setNotice("No supported text, ZIP, PDF, DOCX, or XLSX files found.");
+        setTimeout(() => setNotice(""), 3000);
+        return;
+      }
+
+      const res = await apiFetch<{
+        count: number;
+        convertedDocs?: number;
+        skipped?: number;
+        paths: string[];
+      }>("/api/files/upload", {
+        method: "POST",
+        body: JSON.stringify({ folder: targetDir, files: payload }),
+      });
+
+      await loadTree();
+      if (targetDir) setExpanded((prev) => new Set([...prev, targetDir]));
+      if (res.paths?.[0]) {
+        const firstDir = res.paths[0].split("/").slice(0, -1).join("/");
+        if (firstDir) setExpanded((prev) => new Set([...prev, firstDir]));
+        await openFile(res.paths[0]);
+      }
+      const docNote = res.convertedDocs ? ` (${res.convertedDocs} PDF/Office converted)` : "";
+      setNotice(`Imported ${res.count} file(s)${docNote} & indexed!`);
+      setTimeout(() => setNotice(""), 3800);
+    } catch (err) {
+      setNotice(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+      setTimeout(() => setNotice(""), 4200);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   async function uploadFileList(fileList: FileList | null, targetDir = uploadFolder) {
     if (!fileList || fileList.length === 0) return;
-    const payload: Array<{ name: string; content: string }> = [];
-    for (const file of Array.from(fileList)) {
-      const text = await file.text();
-      payload.push({ name: file.name, content: text });
+    const entries = Array.from(fileList).map((file) => ({
+      file,
+      relPath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+    }));
+    await importEntries(entries, targetDir);
+  }
+
+  async function collectDroppedEntries(dataTransfer: DataTransfer): Promise<Array<{ file: File; relPath: string }>> {
+    const out: Array<{ file: File; relPath: string }> = [];
+    const items = Array.from(dataTransfer.items || []);
+
+    type FsEntry = {
+      isFile: boolean;
+      isDirectory: boolean;
+      name: string;
+      fullPath: string;
+      file?: (cb: (f: File) => void, err?: (e: unknown) => void) => void;
+      createReader?: () => { readEntries: (cb: (entries: FsEntry[]) => void, err?: (e: unknown) => void) => void };
+    };
+
+    async function walkEntry(entry: FsEntry, prefix = ""): Promise<void> {
+      if (entry.isFile && entry.file) {
+        const file = await new Promise<File | null>((resolve) => {
+          entry.file!((f) => resolve(f), () => resolve(null));
+        });
+        if (file) out.push({ file, relPath: prefix ? `${prefix}/${entry.name}` : entry.name });
+      } else if (entry.isDirectory && entry.createReader) {
+        const reader = entry.createReader();
+        const dirPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const readBatch = (): Promise<FsEntry[]> =>
+          new Promise((resolve) => reader.readEntries((batch) => resolve(batch), () => resolve([])));
+        while (true) {
+          const batch = await readBatch();
+          if (!batch.length) break;
+          for (const child of batch) {
+            await walkEntry(child, dirPath);
+          }
+        }
+      }
     }
-    const res = await apiFetch<{ count: number; paths: string[] }>("/api/files/upload", {
-      method: "POST",
-      body: JSON.stringify({ folder: targetDir, files: payload }),
-    });
-    await loadTree();
-    if (res.paths[0]) await openFile(res.paths[0]);
-    setNotice(`Uploaded ${res.count} file(s) to ${targetDir || "root"}!`);
-    setTimeout(() => setNotice(""), 2800);
+
+    let usedEntries = false;
+    for (const item of items) {
+      const getEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => FsEntry | null }).webkitGetAsEntry;
+      if (getEntry) {
+        const entry = getEntry.call(item);
+        if (entry) {
+          usedEntries = true;
+          await walkEntry(entry, "");
+        }
+      }
+    }
+
+    if (!usedEntries && dataTransfer.files.length > 0) {
+      for (const file of Array.from(dataTransfer.files)) {
+        out.push({
+          file,
+          relPath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+        });
+      }
+    }
+    return out;
   }
 
   async function createNewFile(prefix = "") {
@@ -354,16 +482,23 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
         setIsDragging(true);
       }}
       onDragLeave={() => setIsDragging(false)}
-      onDrop={(e) => {
+      onDrop={async (e) => {
         e.preventDefault();
         setIsDragging(false);
-        uploadFileList(e.dataTransfer.files, uploadFolder);
+        const entries = await collectDroppedEntries(e.dataTransfer);
+        await importEntries(entries, uploadFolder);
       }}
     >
       {isDragging && (
         <div className="pointer-events-none absolute inset-0 z-40 bg-amber-500/10 border-2 border-dashed border-amber-400 flex items-center justify-center backdrop-blur-xs">
-          <div className="px-6 py-4 rounded-2xl bg-[#0d111b] border border-amber-500/50 text-amber-300 font-semibold text-sm shadow-2xl">
-            Drop files here to upload into <code className="text-white">{uploadFolder || "root"}</code>
+          <div className="px-6 py-4 rounded-2xl bg-[#0d111b] border border-amber-500/50 text-amber-300 font-semibold text-sm shadow-2xl text-center space-y-1">
+            <div>
+              Drop <strong>Files, Entire Folders, .ZIP, or PDF/DOCX/XLSX</strong> into{" "}
+              <code className="text-white">{uploadFolder || "root"}</code>
+            </div>
+            <div className="text-[11px] text-slate-400 font-normal">
+              Subfolder hierarchy &amp; Obsidian vaults are preserved automatically
+            </div>
           </div>
         </div>
       )}
@@ -378,14 +513,34 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               </h2>
               <div className="flex items-center gap-1 shrink-0">
                 <label
-                  title={`Upload documents into ${uploadFolder || "root"}`}
-                  className="p-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/35 text-cyan-300 cursor-pointer"
+                  title={`Import Files, .ZIP, PDF, DOCX, XLSX into ${uploadFolder || "root"}`}
+                  className={`p-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/35 text-cyan-300 cursor-pointer ${
+                    importing ? "opacity-50 pointer-events-none" : ""
+                  }`}
                 >
                   <Upload className="w-3.5 h-3.5" />
                   <input
                     type="file"
                     multiple
-                    accept=".md,.txt,.json,.yaml,.yml,.csv,.ts,.tsx,.js,.py,.sql,.sh,.xml,.html,.css"
+                    accept=".md,.txt,.json,.yaml,.yml,.csv,.zip,.pdf,.docx,.xlsx,.xlsm,.ts,.tsx,.js,.py,.sql,.sh,.xml,.html,.css"
+                    className="hidden"
+                    onChange={(e) => {
+                      uploadFileList(e.target.files, uploadFolder);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+                <label
+                  title={`Import Entire Folder / Obsidian Vault into ${uploadFolder || "root"}`}
+                  className={`p-1.5 rounded-lg bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/35 text-violet-300 cursor-pointer ${
+                    importing ? "opacity-50 pointer-events-none" : ""
+                  }`}
+                >
+                  <FolderUp className="w-3.5 h-3.5" />
+                  <input
+                    type="file"
+                    multiple
+                    {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
                     className="hidden"
                     onChange={(e) => {
                       uploadFileList(e.target.files, uploadFolder);
@@ -461,7 +616,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             </div>
 
             <div className="text-[10px] text-slate-500 truncate">
-              Upload target: <code className="text-amber-300/90">{uploadFolder || "root"}</code> (or drag &amp; drop)
+              Import target: <code className="text-amber-300/90">{uploadFolder || "root"}</code> (Files · Folder · .ZIP · PDF)
             </div>
             <div className="grid grid-cols-3 gap-1 text-[9px] text-center">
               <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">main-brain</span>

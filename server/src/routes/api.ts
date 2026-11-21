@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import os from "node:os";
 import { Router, type Request, type Response } from "express";
 import { generateId } from "../config.js";
@@ -19,6 +21,8 @@ import {
   searchBrainFiles,
   listSkills,
   getBrainLinkGraph,
+  resolveBrainPath,
+  reindexAllBrainFiles,
 } from "../brains/brainFs.js";
 import {
   testProviderConnection,
@@ -69,7 +73,7 @@ import {
   readTerminal,
   closeTerminal,
 } from "../tools/terminalManager.js";
-import { getPythonWorkerStatus } from "../tools/pythonWorker.js";
+import { getPythonWorkerStatus, runPythonWorker } from "../tools/pythonWorker.js";
 import {
   getSemanticBrainStatus,
   reindexSemanticBrain,
@@ -437,25 +441,111 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({ results: searchBrainFiles(q, 20) });
   });
 
-  router.post("/files/upload", (req: Request, res: Response) => {
+  router.post("/files/upload", async (req: Request, res: Response) => {
     try {
       const folder = String(req.body?.folder || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
       const files = Array.isArray(req.body?.files)
-        ? (req.body.files as Array<{ name: string; content: string }>)
+        ? (req.body.files as Array<{ name: string; content?: string; base64?: string }>)
         : [];
       if (files.length === 0) {
         res.status(400).json({ error: "No files provided" });
         return;
       }
+
       const saved: string[] = [];
+      let convertedDocs = 0;
+      let skipped = 0;
+      const richExts = new Set([".pdf", ".docx", ".xlsx", ".xlsm"]);
+
       for (const f of files) {
         const cleanName = String(f.name || "untitled.md").replace(/\\/g, "/").replace(/^\/+/, "");
+        if (!cleanName || cleanName.includes("..")) {
+          skipped++;
+          continue;
+        }
+        const ext = path.extname(cleanName).toLowerCase();
+
+        // 1. ZIP Archive Import (safe extraction preserving subfolders + auto-converting PDF/DOCX/XLSX!)
+        if (ext === ".zip" && f.base64) {
+          const buf = Buffer.from(String(f.base64).replace(/^data:[^;]+;base64,/, ""), "base64");
+          const tmpZip = path.join(os.tmpdir(), `pandawa_import_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.zip`);
+          fs.writeFileSync(tmpZip, buf);
+          try {
+            const targetDir = resolveBrainPath(folder);
+            const zRes = await runPythonWorker<{
+              ok?: boolean;
+              count?: number;
+              convertedDocs?: number;
+              skipped?: number;
+              paths?: string[];
+              error?: string;
+            }>(
+              "import_zip",
+              { zipPath: tmpZip, targetDir, relPrefix: folder },
+              120_000
+            );
+            if (!zRes.ok) {
+              throw new Error(zRes.error || "ZIP import failed");
+            }
+            for (const p of zRes.paths || []) saved.push(p);
+            convertedDocs += Number(zRes.convertedDocs || 0);
+            skipped += Number(zRes.skipped || 0);
+          } finally {
+            try {
+              fs.unlinkSync(tmpZip);
+            } catch {
+              // ignore
+            }
+          }
+          continue;
+        }
+
+        // 2. Standalone Rich Document Import (PDF / DOCX / XLSX -> clean Markdown)
+        if (richExts.has(ext) && f.base64) {
+          const buf = Buffer.from(String(f.base64).replace(/^data:[^;]+;base64,/, ""), "base64");
+          const tmpDoc = path.join(os.tmpdir(), `pandawa_doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`);
+          fs.writeFileSync(tmpDoc, buf);
+          try {
+            const parsed = await runPythonWorker<{ ok?: boolean; format?: string; text?: string; error?: string }>(
+              "doc_read",
+              { path: tmpDoc, maxChars: 80_000 },
+              60_000
+            );
+            if (!parsed.ok) {
+              skipped++;
+              continue;
+            }
+            const mdName = cleanName.slice(0, -ext.length) + ".md";
+            const relPath = folder ? `${folder}/${mdName}` : mdName;
+            const mdBody = `# ${path.basename(cleanName)}\n\n> Converted automatically from \`${cleanName}\` (${parsed.format || ext})\n\n${parsed.text || ""}\n`;
+            writeBrainFile(relPath, mdBody);
+            saved.push(relPath);
+            convertedDocs++;
+          } finally {
+            try {
+              fs.unlinkSync(tmpDoc);
+            } catch {
+              // ignore
+            }
+          }
+          continue;
+        }
+
+        // 3. Regular Text / Markdown / Code File (supports full folder relative paths e.g. my-vault/sub/note.md)
         const relPath = folder ? `${folder}/${cleanName}` : cleanName;
         writeBrainFile(relPath, String(f.content ?? ""));
         saved.push(relPath);
       }
-      logAudit("admin", "brain_file.upload", folder || "root", `${saved.length} file(s) uploaded`);
-      res.json({ ok: true, count: saved.length, paths: saved });
+
+      reindexAllBrainFiles();
+      reindexSemanticBrain().catch(() => {});
+      logAudit(
+        "admin",
+        "brain_file.upload",
+        folder || "root",
+        `${saved.length} file(s) imported (${convertedDocs} rich docs converted, ${skipped} skipped)`
+      );
+      res.json({ ok: true, count: saved.length, convertedDocs, skipped, paths: saved.slice(0, 200) });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }

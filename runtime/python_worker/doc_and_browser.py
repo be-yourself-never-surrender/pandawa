@@ -7,7 +7,17 @@ full Python ecosystem power (PDF/DOCX/XLSX parsing + interactive Playwright brow
 import json
 import os
 import sys
+import tempfile
 import traceback
+import zipfile
+
+TEXT_EXTS = {
+    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".tsv",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".sh", ".sql",
+    ".xml", ".html", ".css", ".env", ".ini", ".cfg", ".log",
+}
+RICH_DOC_EXTS = {".pdf", ".docx", ".xlsx", ".xlsm"}
+SKIP_SEGMENTS = {".git", "node_modules", "__macosx", ".obsidian", ".venv", "__pycache__", ".ds_store"}
 
 
 def action_status() -> dict:
@@ -217,6 +227,107 @@ def action_browser_run(payload: dict) -> dict:
         return {"ok": False, "error": f"{ex}\n{traceback.format_exc()[-400:]}"}
 
 
+def action_import_zip(payload: dict) -> dict:
+    zip_path = str(payload.get("zipPath", "")).strip()
+    target_dir = str(payload.get("targetDir", "")).strip()
+    rel_prefix = str(payload.get("relPrefix", "")).strip().strip("/")
+    max_files = int(payload.get("maxFiles", 500))
+    max_total_bytes = int(payload.get("maxTotalBytes", 60 * 1024 * 1024))
+
+    if not zip_path or not os.path.exists(zip_path):
+        return {"ok": False, "error": f"ZIP file not found: {zip_path}"}
+    if not target_dir:
+        return {"ok": False, "error": "targetDir is required"}
+
+    os.makedirs(target_dir, exist_ok=True)
+    target_real = os.path.realpath(target_dir)
+    saved_paths = []
+    converted_docs = 0
+    skipped = 0
+    total_bytes = 0
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            infos = zf.infolist()
+            for info in infos:
+                if info.is_dir():
+                    continue
+                if len(saved_paths) >= max_files:
+                    skipped += 1
+                    continue
+
+                raw_name = info.filename.replace("\\", "/").lstrip("/")
+                parts = [p for p in raw_name.split("/") if p and p != "."]
+                if not parts or any(p == ".." or ":" in p for p in parts):
+                    skipped += 1
+                    continue
+                if any(p.lower() in SKIP_SEGMENTS or p.startswith("._") for p in parts):
+                    skipped += 1
+                    continue
+
+                clean_rel = "/".join(parts)
+                ext = os.path.splitext(clean_rel)[1].lower()
+
+                if ext not in TEXT_EXTS and ext not in RICH_DOC_EXTS:
+                    skipped += 1
+                    continue
+
+                if info.file_size > 15 * 1024 * 1024 or total_bytes + info.file_size > max_total_bytes:
+                    skipped += 1
+                    continue
+
+                data = zf.read(info)
+                total_bytes += len(data)
+
+                if ext in RICH_DOC_EXTS:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tf:
+                        tf.write(data)
+                        tmp_doc = tf.name
+                    try:
+                        parsed = action_doc_read({"path": tmp_doc, "maxChars": 80000})
+                    finally:
+                        try:
+                            os.unlink(tmp_doc)
+                        except OSError:
+                            pass
+                    if not parsed.get("ok"):
+                        skipped += 1
+                        continue
+                    stem_rel = os.path.splitext(clean_rel)[0] + ".md"
+                    out_full = os.path.realpath(os.path.join(target_real, stem_rel))
+                    if not (out_full == target_real or out_full.startswith(target_real + os.sep)):
+                        skipped += 1
+                        continue
+                    os.makedirs(os.path.dirname(out_full), exist_ok=True)
+                    md_body = f"# {os.path.basename(clean_rel)}\n\n> Converted automatically from `{clean_rel}` ({parsed.get('format', ext)})\n\n{parsed.get('text', '')}\n"
+                    with open(out_full, "w", encoding="utf-8") as outf:
+                        outf.write(md_body)
+                    saved_paths.append(f"{rel_prefix}/{stem_rel}" if rel_prefix else stem_rel)
+                    converted_docs += 1
+                else:
+                    out_full = os.path.realpath(os.path.join(target_real, clean_rel))
+                    if not (out_full == target_real or out_full.startswith(target_real + os.sep)):
+                        skipped += 1
+                        continue
+                    os.makedirs(os.path.dirname(out_full), exist_ok=True)
+                    text = data.decode("utf-8", errors="replace")
+                    with open(out_full, "w", encoding="utf-8") as outf:
+                        outf.write(text)
+                    saved_paths.append(f"{rel_prefix}/{clean_rel}" if rel_prefix else clean_rel)
+
+        return {
+            "ok": True,
+            "count": len(saved_paths),
+            "convertedDocs": converted_docs,
+            "skipped": skipped,
+            "paths": saved_paths[:200],
+        }
+    except zipfile.BadZipFile:
+        return {"ok": False, "error": "Invalid or corrupted ZIP archive."}
+    except Exception as ex:
+        return {"ok": False, "error": f"ZIP extraction failed: {ex}"}
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
     raw = sys.stdin.read().strip() if not sys.stdin.isatty() else ""
@@ -228,6 +339,8 @@ def main():
         out = action_doc_read(payload)
     elif action == "browser_run":
         out = action_browser_run(payload)
+    elif action == "import_zip":
+        out = action_import_zip(payload)
     else:
         out = {"ok": False, "error": f"Unknown worker action: {action}"}
 

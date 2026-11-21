@@ -2,6 +2,13 @@ import { generateId } from "../config.js";
 import { getDb } from "../db/database.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
 import { runTeamMission } from "../engine/teamEngine.js";
+import {
+  getApprovalMode,
+  listPendingApprovals,
+  resolveApproval,
+  setApprovalRequestedHook,
+} from "../engine/approvalManager.js";
+import { listTerminals } from "../tools/terminalManager.js";
 
 interface ChannelRow {
   id: string;
@@ -135,6 +142,54 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
         if (!text || chatId === undefined) continue;
         if (allowedChatId && String(chatId) !== allowedChatId) continue;
 
+        // Instant Remote OS Control Commands from Telegram (Approval Gate, Terminals, Jobs, Status)
+        if (text.startsWith("/")) {
+          const [cmdRaw, arg1] = text.split(/\s+/);
+          const cmd = cmdRaw.toLowerCase();
+          if (cmd === "/approve" || cmd === "/auto" || cmd === "/reject") {
+            const pending = listPendingApprovals();
+            const targetId = arg1 || pending[0]?.id;
+            if (!targetId) {
+              await sendTelegramText(botToken, chatId, "No pending approval requests right now.").catch(() => {});
+              continue;
+            }
+            const ok = resolveApproval(targetId, cmd !== "/reject", {
+              switchToAuto: cmd === "/auto",
+              reason: cmd === "/reject" ? "Rejected via Telegram" : undefined,
+              broadcast: _broadcast,
+            });
+            await sendTelegramText(
+              botToken,
+              chatId,
+              ok
+                ? `✅ Approval ${targetId} -> ${cmd === "/reject" ? "REJECTED" : cmd === "/auto" ? "APPROVED + AUTO MODE" : "APPROVED"}`
+                : `Approval ${targetId} not found or already resolved.`
+            ).catch(() => {});
+            continue;
+          }
+          if (cmd === "/term" || cmd === "/terminals") {
+            const tRes = await listTerminals();
+            const msgOut =
+              tRes.sessions.length === 0
+                ? "No active shared terminals."
+                : tRes.sessions
+                    .map((s) => `• ${s.name} [${s.ownerAgent}] cwd=${s.cwd} cmd=${s.currentCommand}`)
+                    .join("\n");
+            await sendTelegramText(botToken, chatId, `🖥️ Active Pandawa Terminals:\n${msgOut}`).catch(() => {});
+            continue;
+          }
+          if (cmd === "/status") {
+            const pending = listPendingApprovals();
+            const tRes = await listTerminals();
+            await sendTelegramText(
+              botToken,
+              chatId,
+              `⚡ Pandawa v6.0 Live Status\n• Approval Mode: ${getApprovalMode()}\n• Pending Approvals: ${pending.length}\n• Active Terminals: ${tRes.sessions.length}\nCommands: /approve [id], /auto [id], /reject [id], /term, /status`
+            ).catch(() => {});
+            continue;
+          }
+        }
+
         const db = getDb();
         const sessionId = generateId("ses");
         const sender = msg?.from?.username || msg?.from?.first_name || "Telegram";
@@ -186,6 +241,31 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
 
 export function syncTelegramPollers(broadcast?: (ev: Record<string, unknown>) => void): void {
   if (broadcast) _broadcast = broadcast;
+
+  // Bridge live Approval Gate requests out to enabled Telegram bots so users can approve from mobile!
+  setApprovalRequestedHook((record) => {
+    try {
+      const db = getDb();
+      const tgChannels = db
+        .prepare("SELECT * FROM channels WHERE type = 'telegram' AND enabled = 1")
+        .all() as unknown as ChannelRow[];
+      for (const ch of tgChannels) {
+        const cfg = JSON.parse(ch.config_json || "{}") as Record<string, string>;
+        if (!cfg.botToken?.trim() || !cfg.chatId?.trim()) continue;
+        const preview = JSON.stringify(record.args).slice(0, 320);
+        const body =
+          `🛡️ Pandawa Approval Required (${record.id})\n` +
+          `Agent: ${record.agentName}\n` +
+          `Tool: ${record.toolName}\n` +
+          `Args: ${preview}\n\n` +
+          `Reply:\n/approve ${record.id}\n/auto ${record.id}\n/reject ${record.id}`;
+        sendTelegramText(cfg.botToken.trim(), cfg.chatId.trim(), body).catch(() => {});
+      }
+    } catch {
+      // ignore notification error
+    }
+  });
+
   const db = getDb();
   const rows = db
     .prepare("SELECT * FROM channels WHERE type = 'telegram' AND enabled = 1")

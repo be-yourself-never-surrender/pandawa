@@ -15,6 +15,7 @@ import {
   Rocket,
   Trash2,
   Plus,
+  Terminal,
 } from "lucide-react";
 import { apiFetch } from "../api/client";
 import type { NavTab, ProviderItem, TeamItem } from "../types";
@@ -80,22 +81,35 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const [status, setStatus] = useState<SystemSummary | null>(null);
   const [teams, setTeams] = useState<TeamItem[]>([]);
   const [providers, setProviders] = useState<ProviderItem[]>([]);
-  const [toolCount, setToolCount] = useState<number>(32);
+  const [toolCount, setToolCount] = useState<number>(44);
   const [spawning, setSpawning] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
+  const [runtime, setRuntime] = useState<{
+    tmuxAvailable?: boolean;
+    activeTerminals?: number;
+    runningJobs?: number;
+    pythonWorker?: { ok?: boolean; python?: string; capabilities?: Record<string, boolean> };
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [st, tm, pv, tl] = await Promise.all([
+      const [st, tm, pv, tl, rt] = await Promise.all([
         apiFetch<SystemSummary>("/api/system/status"),
         apiFetch<{ teams: TeamItem[] }>("/api/teams"),
         apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
         apiFetch<{ packs: Array<{ tools: unknown[] }> }>("/api/tools"),
+        apiFetch<{
+          tmuxAvailable?: boolean;
+          activeTerminals?: number;
+          runningJobs?: number;
+          pythonWorker?: { ok?: boolean; python?: string; capabilities?: Record<string, boolean> };
+        }>("/api/system/runtime").catch(() => null),
       ]);
       setStatus(st);
       setTeams(tm.teams);
       setProviders(pv.providers);
       setToolCount(tl.packs.reduce((acc, p) => acc + p.tools.length, 0));
+      if (rt) setRuntime(rt);
     } finally {
       setLoading(false);
     }
@@ -137,29 +151,52 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         <div className="pointer-events-none absolute -top-20 -right-20 w-72 h-72 rounded-full bg-amber-500/10 blur-3xl" />
         <div className="space-y-1.5 relative z-10 max-w-2xl">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-[11px] font-semibold text-amber-300">
-            <Sparkles className="w-3 h-3" /> Pandawa Studio v{status?.version || "5.0.0"}
+            <Sparkles className="w-3 h-3" /> Pandawa Living OS v{status?.version || "6.0.0"}
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Command Center — Your Visual Agentic Team HQ
+            Command Center — Living Agentic OS &amp; Brain HQ
           </h1>
           <p className="text-xs text-slate-400 leading-relaxed">
-            Connect multiple AI models, wire layered <strong>Main Brain → Team Brain → soul.md</strong> files visually,
-            and unleash peer squads with <strong>{toolCount}+ power tools</strong> and zero hidden guardrails.
+            Hybrid <strong>TypeScript + Python</strong> Agentic OS: visual <strong>[[wikilink]] Layered Brains</strong>,
+            multi-model teams with <strong>35–100 step Execute &amp; Verify loops</strong>, persistent shared{" "}
+            <strong>tmux terminals</strong>, Playwright vision, and <strong>{toolCount}+ power tools</strong> with zero hidden guardrails.
           </p>
+          {runtime && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px]">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                tmux PTY: {runtime.tmuxAvailable ? `${runtime.activeTerminals || 0} active` : "off"}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
+                Python Worker: {runtime.pythonWorker?.python || "3.x"}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-300">
+                Playwright: {runtime.pythonWorker?.capabilities?.playwright ? "Ready" : "Standby"}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                Daemon Jobs: {runtime.runningJobs || 0} running
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2 relative z-10">
           <button
-            onClick={() => onNavigate("canvas")}
-            className="px-4 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            onClick={() => onNavigate("terminal")}
+            className="px-3.5 py-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
           >
-            <Network className="w-4 h-4 text-amber-400" /> Open Brain Canvas
+            <Terminal className="w-4 h-4" /> Live Terminal
+          </button>
+          <button
+            onClick={() => onNavigate("canvas")}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+          >
+            <Network className="w-4 h-4 text-amber-400" /> Brain Canvas
           </button>
           <button
             onClick={() => onStartMission(teams[0]?.id || "team_pandawa")}
             className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-amber-500/20 cursor-pointer"
           >
-            <MessageSquare className="w-4 h-4" /> Launch Mission Room
+            <MessageSquare className="w-4 h-4" /> Launch Mission
           </button>
         </div>
       </div>

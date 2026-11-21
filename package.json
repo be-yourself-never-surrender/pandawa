@@ -1,7 +1,7 @@
 {
   "name": "pandawa",
-  "version": "5.0.0",
-  "description": "Pandawa — Visual Agentic Team & Layered Brain Platform with Multi-AI Routing",
+  "version": "6.0.0",
+  "description": "Pandawa OS — Hybrid TypeScript + Python Living Agentic Team OS with Visual [[Wikilink]] Brains, Shared PTY/tmux Terminals, Execute & Verify Loops & Multi-AI Routing",
   "private": false,
   "type": "module",
   "license": "MIT",

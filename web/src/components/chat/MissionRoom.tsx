@@ -18,17 +18,22 @@ import {
   RefreshCw,
   Shield,
   Zap,
+  ImagePlus,
+  X,
+  MessageCircle,
+  Clock,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BlackboardEntry, BrainTreeNode, MessageItem, SessionItem, TeamItem } from "../../types";
 import { MarkdownView } from "../MarkdownView";
 
 const SLASH_SUGGESTIONS = [
-  { cmd: "/new", desc: "Start a fresh mission session" },
+  { cmd: "/mode execute", desc: "Execute & Verify (Plan -> Build in PTY -> Test -> Fix Loop)" },
   { cmd: "/mode deliberate", desc: "Musyawarah peer deliberation + cross-review" },
   { cmd: "/mode parallel", desc: "Parallel co-execution across all active peers" },
   { cmd: "/mode sequential", desc: "Sequential relay chain between peers" },
   { cmd: "/mode consensus", desc: "Rapid council synthesis" },
+  { cmd: "/new", desc: "Start a fresh mission session" },
   { cmd: "/auto", desc: "Switch Approval Gate -> Auto (Full Freedom)" },
   { cmd: "/approve", desc: "Switch Approval Gate -> Approve Shell Only" },
   { cmd: "/tasks", desc: "Open Shared Team Task Board" },
@@ -76,6 +81,22 @@ export interface LiveStreamBuffer {
   text: string;
 }
 
+interface TeamChatMsg {
+  id: string;
+  from_agent: string;
+  to_agent: string;
+  kind: string;
+  content: string;
+  created_at: string;
+}
+
+interface AttachedImage {
+  name: string;
+  mimeType: string;
+  base64: string;
+  previewUrl: string;
+}
+
 interface MissionRoomProps {
   liveEvents: Array<Record<string, unknown>>;
   streamingBuffers: Record<string, LiveStreamBuffer>;
@@ -85,6 +106,7 @@ interface MissionRoomProps {
   initialTeamId?: string | null;
   initialPrompt?: string | null;
   onConsumeInitialPrompt?: () => void;
+  onOpenTerminal?: () => void;
 }
 
 export const MissionRoom: React.FC<MissionRoomProps> = ({
@@ -96,6 +118,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
   initialTeamId,
   initialPrompt,
   onConsumeInitialPrompt,
+  onOpenTerminal,
 }) => {
   const [teams, setTeams] = useState<TeamItem[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
@@ -112,8 +135,11 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
   const [sending, setSending] = useState(false);
   const [showHistory, setShowHistory] = useState(() => window.innerWidth >= 1280);
   const [showBlackboard, setShowBlackboard] = useState(() => window.innerWidth >= 1360);
-  const [rightTab, setRightTab] = useState<"blackboard" | "tasks" | "processes">("blackboard");
+  const [rightTab, setRightTab] = useState<"blackboard" | "teamchat" | "tasks" | "processes">("blackboard");
   const [expandedPeers, setExpandedPeers] = useState<Set<string>>(new Set());
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+  const [backgroundMode, setBackgroundMode] = useState<boolean>(false);
+  const [teamChat, setTeamChat] = useState<TeamChatMsg[]>([]);
 
   // Team tasks & managed background processes
   const [tasks, setTasks] = useState<TeamTaskItem[]>([]);
@@ -171,15 +197,50 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
 
   const loadBlackboard = useCallback(async (tid: string) => {
     if (!tid) return;
-    const [bbRes, tRes, pRes] = await Promise.all([
+    const [bbRes, tRes, pRes, mRes] = await Promise.all([
       apiFetch<{ entries: BlackboardEntry[] }>(`/api/teams/${tid}/blackboard`),
       apiFetch<{ tasks: TeamTaskItem[] }>(`/api/teams/${tid}/tasks`),
       apiFetch<{ processes: ManagedProcItem[] }>("/api/processes"),
+      apiFetch<{ messages: TeamChatMsg[] }>(`/api/teams/${tid}/messages`).catch(() => ({ messages: [] })),
     ]);
     setBlackboard(bbRes.entries);
     setTasks(tRes.tasks);
     setProcesses(pRes.processes);
+    setTeamChat(mRes.messages || []);
   }, []);
+
+  // Auto-refresh inter-agent chat & completed background jobs from realtime WebSocket events
+  useEffect(() => {
+    const latest = liveEvents[liveEvents.length - 1];
+    if (!latest) return;
+    const t = String(latest.type || "");
+    if ((t === "team_message" || t === "blackboard_post" || t === "team_task_updated") && targetType === "team") {
+      loadBlackboard(targetId).catch(() => {});
+    } else if (t === "background_job_updated" && latest.status === "completed") {
+      if (typeof latest.sessionId === "string" && latest.sessionId === activeSessionId) {
+        loadMessages(activeSessionId).catch(() => {});
+        if (targetType === "team") loadBlackboard(targetId).catch(() => {});
+      }
+      loadMeta().catch(() => {});
+    }
+  }, [liveEvents, targetType, targetId, activeSessionId, loadBlackboard, loadMessages, loadMeta]);
+
+  async function addImageFiles(files: FileList | File[] | null) {
+    if (!files) return;
+    const list = Array.from(files).filter((f) => f.type.startsWith("image/")).slice(0, 4);
+    for (const file of list) {
+      const dataUrl = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.readAsDataURL(file);
+      });
+      const base64 = dataUrl.replace(/^data:[^;]+;base64,/, "");
+      setAttachedImages((prev) => [
+        ...prev.slice(0, 3),
+        { name: file.name || "pasted.png", mimeType: file.type || "image/png", base64, previewUrl: dataUrl },
+      ]);
+    }
+  }
 
   useEffect(() => {
     loadMeta().catch(() => {});
@@ -224,7 +285,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
         setMessages([]);
         return;
       }
-      if (slash === "/mode" && arg && ["deliberate", "parallel", "sequential", "consensus"].includes(arg)) {
+      if (slash === "/mode" && arg && ["execute", "deliberate", "parallel", "sequential", "consensus"].includes(arg)) {
         await updateTeamMode(arg as TeamItem["collaboration_mode"]);
         return;
       }
@@ -281,6 +342,12 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
       }
     }
 
+    const imagesPayload = attachedImages.map((img) => ({
+      name: img.name,
+      mimeType: img.mimeType,
+      base64: img.base64,
+    }));
+    setAttachedImages([]);
     setPrompt("");
     setSending(true);
     onClearStreams();
@@ -295,7 +362,10 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
         agent_id: "",
         agent_name: "You",
         model_used: "",
-        content: text,
+        content:
+          imagesPayload.length > 0
+            ? `${text}\n\n[Attached ${imagesPayload.length} image(s): ${imagesPayload.map((i) => i.name).join(", ")}]`
+            : text,
         reasoning: "",
         toolCalls: [],
         meta: {},
@@ -307,7 +377,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
     abortRef.current = ac;
 
     try {
-      const res = await apiFetch<{ sessionId: string }>("/api/chat/send", {
+      const res = await apiFetch<{ sessionId: string; background?: boolean; jobId?: string }>("/api/chat/send", {
         method: "POST",
         signal: ac.signal,
         body: JSON.stringify({
@@ -315,15 +385,37 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
           targetType,
           targetId,
           prompt: text,
+          images: imagesPayload.length > 0 ? imagesPayload : undefined,
+          background: backgroundMode || undefined,
           activeAgentIds: targetType === "team" ? Array.from(selectedPeers) : undefined,
         }),
       });
       setActiveSessionId(res.sessionId);
-      await Promise.all([
-        loadMessages(res.sessionId),
-        loadMeta(),
-        targetType === "team" ? loadBlackboard(targetId) : Promise.resolve(),
-      ]);
+      if (res.background) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `bg_${Date.now()}`,
+            session_id: res.sessionId,
+            role: "system",
+            agent_id: "",
+            agent_name: "Background Daemon",
+            model_used: "",
+            content: `🚀 Mission queued in **Pandawa Background Daemon** (\`${res.jobId}\`). You can close this tab or switch to **Live Terminal** — results will stream live and save automatically.`,
+            reasoning: "",
+            toolCalls: [],
+            meta: {},
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        await loadMeta();
+      } else {
+        await Promise.all([
+          loadMessages(res.sessionId),
+          loadMeta(),
+          targetType === "team" ? loadBlackboard(targetId) : Promise.resolve(),
+        ]);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const stopped = ac.signal.aborted || /abort|stopped/i.test(msg);
@@ -512,6 +604,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                     onChange={(e) => updateTeamMode(e.target.value as TeamItem["collaboration_mode"])}
                     className="bg-[#080a0f] border border-violet-500/40 rounded-lg px-2.5 py-1.5 text-xs text-violet-200"
                   >
+                    <option value="execute">Mode: Execute &amp; Verify (Plan → PTY Build → Test)</option>
                     <option value="deliberate">Mode: Musyawarah (Peer Deliberation + Review)</option>
                     <option value="parallel">Mode: Parallel Co-Execution</option>
                     <option value="sequential">Mode: Sequential Relay Chain</option>
@@ -535,6 +628,15 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onOpenTerminal && (
+              <button
+                onClick={onOpenTerminal}
+                title="Open Live Shared Agent Terminal"
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/35 text-emerald-300 cursor-pointer"
+              >
+                <Terminal className="w-3.5 h-3.5" /> Terminal
+              </button>
+            )}
             <button
               onClick={() => onChangeApprovalMode(approvalMode === "auto" ? "approve_shell" : "auto")}
               title="Toggle Approval Gate mode"
@@ -800,11 +902,72 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             </div>
           )}
 
-          <div className="flex gap-2">
+          {/* Attached Multimodal Vision Images */}
+          {attachedImages.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {attachedImages.map((img, idx) => (
+                <div
+                  key={`${img.name}_${idx}`}
+                  className="relative group flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#080a0f] border border-cyan-500/40 text-[11px] text-cyan-200"
+                >
+                  <img src={img.previewUrl} alt={img.name} className="w-7 h-7 rounded object-cover" />
+                  <span className="max-w-[120px] truncate">{img.name}</span>
+                  <button
+                    type="button"
+                    aria-label="Remove image"
+                    onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-slate-400 hover:text-rose-400 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2 items-stretch">
+            <div className="flex flex-col gap-1.5 shrink-0">
+              <label
+                title="Attach screenshot or image for Multimodal Vision (or paste Ctrl+V)"
+                className="flex-1 px-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-cyan-300 flex items-center justify-center cursor-pointer"
+              >
+                <ImagePlus className="w-4 h-4" />
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    addImageFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => setBackgroundMode((b) => !b)}
+                title="Toggle 24/7 Background Daemon mode (continues running even if you close this tab)"
+                className={`px-2 py-1 rounded-lg border text-[10px] font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+                  backgroundMode
+                    ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                    : "bg-[#080a0f] border-slate-800 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Clock className="w-3 h-3" /> {backgroundMode ? "BG" : "Live"}
+              </button>
+            </div>
             <textarea
               rows={2}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
+              onPaste={(e) => {
+                const items = Array.from(e.clipboardData.items || []);
+                const imgs = items
+                  .filter((it) => it.type.startsWith("image/"))
+                  .map((it) => it.getAsFile())
+                  .filter(Boolean) as File[];
+                if (imgs.length > 0) addImageFiles(imgs);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -813,8 +976,8 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               }}
               placeholder={
                 targetType === "team"
-                  ? "Give Team Pandawa a mission... Use @main-brain/soul.md to inline files, or /new /mode /auto /tasks /processes"
-                  : "Message this agent directly... (@file.md supported)"
+                  ? "Give Team Pandawa a mission... Paste screenshots, use @file.md, or /mode execute /auto /tasks"
+                  : "Message this agent directly... (paste images or @file.md supported)"
               }
               className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none resize-none"
             />
@@ -842,35 +1005,68 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
       {/* Right Team Ops Panel: Blackboard | Tasks | Processes */}
       {targetType === "team" && showBlackboard && (
         <aside className="w-80 shrink-0 bg-[#0d111b] border-l border-slate-800/80 flex flex-col">
-          <div className="px-3 py-2.5 border-b border-slate-800/80 flex items-center gap-1 text-[11px]">
+          <div className="px-2.5 py-2 border-b border-slate-800/80 grid grid-cols-4 gap-1 text-[10px]">
             <button
               onClick={() => setRightTab("blackboard")}
-              className={`flex-1 py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+              className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
                 rightTab === "blackboard" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:bg-slate-800/60"
               }`}
             >
-              <ClipboardList className="w-3.5 h-3.5" /> Board ({blackboard.length})
+              <ClipboardList className="w-3 h-3" /> Board
+            </button>
+            <button
+              onClick={() => setRightTab("teamchat")}
+              className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+                rightTab === "teamchat" ? "bg-violet-500/20 text-violet-300" : "text-slate-400 hover:bg-slate-800/60"
+              }`}
+            >
+              <MessageCircle className="w-3 h-3" /> Chat ({teamChat.length})
             </button>
             <button
               onClick={() => setRightTab("tasks")}
-              className={`flex-1 py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+              className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
                 rightTab === "tasks" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:bg-slate-800/60"
               }`}
             >
-              <CheckSquare className="w-3.5 h-3.5" /> Tasks ({tasks.length})
+              <CheckSquare className="w-3 h-3" /> Tasks
             </button>
             <button
               onClick={() => {
                 setRightTab("processes");
                 if (activeTeam) loadBlackboard(activeTeam.id);
               }}
-              className={`flex-1 py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+              className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
                 rightTab === "processes" ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:bg-slate-800/60"
               }`}
             >
-              <Terminal className="w-3.5 h-3.5" /> Proc ({processes.filter((p) => p.status === "running").length})
+              <Terminal className="w-3 h-3" /> Proc
             </button>
           </div>
+
+          {rightTab === "teamchat" && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
+              <div className="text-[11px] text-slate-400">
+                Live Inter-Agent Channel (agents talk mid-execution via <code>team_message</code>)
+              </div>
+              {teamChat.map((m) => (
+                <div key={m.id} className="p-2.5 rounded-xl bg-[#090c14] border border-violet-500/25 space-y-1">
+                  <div className="flex items-center justify-between gap-1 text-[10px]">
+                    <span className="font-bold text-violet-300">
+                      {m.from_agent} → {m.to_agent}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 uppercase">{m.kind}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-200 whitespace-pre-wrap">{m.content}</div>
+                </div>
+              ))}
+              {teamChat.length === 0 && (
+                <div className="text-slate-500 p-2">
+                  No inter-agent messages yet. In <strong>Execute &amp; Verify</strong> or <strong>Musyawarah</strong>{" "}
+                  mode, teammates message each other live here (ports, terminal names, handoffs).
+                </div>
+              )}
+            </div>
+          )}
 
           {rightTab === "blackboard" && (
             <>

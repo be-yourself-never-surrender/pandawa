@@ -19,9 +19,24 @@ interface InternalApproval {
 }
 
 const SETTING_KEY = "approval_mode";
-const SENSITIVE_TOOLS = new Set(["shell_exec", "workspace_write", "brain_write"]);
+const SHELL_TOOLS = new Set(["shell_exec", "term_exec", "term_send", "code_execute", "process_start"]);
+const SENSITIVE_TOOLS = new Set([
+  "shell_exec",
+  "term_exec",
+  "term_send",
+  "code_execute",
+  "process_start",
+  "workspace_write",
+  "workspace_patch",
+  "brain_write",
+]);
 
 const pendingMap = new Map<string, InternalApproval>();
+let _onApprovalRequestedHook: ((record: PendingApproval) => void) | undefined;
+
+export function setApprovalRequestedHook(fn: (record: PendingApproval) => void): void {
+  _onApprovalRequestedHook = fn;
+}
 
 export function getApprovalMode(): ApprovalMode {
   const val = getSetting(SETTING_KEY);
@@ -40,7 +55,7 @@ export function toolRequiresApproval(toolName: string): boolean {
   const mode = getApprovalMode();
   if (mode === "auto") return false;
   if (mode === "approve_all") return true;
-  if (mode === "approve_shell") return toolName === "shell_exec";
+  if (mode === "approve_shell") return SHELL_TOOLS.has(toolName);
   if (mode === "approve_sensitive") {
     return SENSITIVE_TOOLS.has(toolName) || toolName.startsWith("mcp__");
   }
@@ -99,6 +114,11 @@ export function requestApproval(params: {
       timer,
     });
     params.onEvent?.({ type: "approval_required", approval: record });
+    try {
+      _onApprovalRequestedHook?.(record);
+    } catch {
+      // ignore hook error
+    }
   });
 }
 

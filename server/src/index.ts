@@ -11,6 +11,7 @@ import { createApiRouter } from "./routes/api.js";
 import { startCronScheduler, stopCronScheduler } from "./scheduler/cronEngine.js";
 import { syncTelegramPollers, stopAllTelegramPollers } from "./channels/channelManager.js";
 import { killAllManagedProcesses } from "./tools/processManager.js";
+import { setTerminalBroadcast } from "./tools/terminalManager.js";
 import { shutdownAllStdioMcp } from "./mcp/mcpClient.js";
 
 ensureDirectories();
@@ -48,9 +49,10 @@ function broadcast(event: Record<string, unknown>): void {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pandawa", version: "5.0.0" });
+  res.json({ ok: true, service: "pandawa", version: "6.0.0" });
 });
 
+setTerminalBroadcast(broadcast);
 app.use("/api", createApiRouter(broadcast));
 
 // Serve built React SPA if present
@@ -65,7 +67,7 @@ startCronScheduler(broadcast);
 syncTelegramPollers(broadcast);
 
 server.listen(PORT, HOST, () => {
-  console.log(`[Pandawa v5.0] Server running at http://${HOST}:${PORT}`);
+  console.log(`[Pandawa v6.0] Living Agentic OS running at http://${HOST}:${PORT}`);
 });
 
 function shutdown(): void {

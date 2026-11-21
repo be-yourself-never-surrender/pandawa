@@ -318,3 +318,235 @@ export function listSkills(): Array<{
   walk(BRAINS_DIR, "");
   return results;
 }
+
+// ======================================================
+// LIVING BRAIN VAULT: [[wikilink]] Graph & Progressive Disclosure
+// ======================================================
+
+export function extractWikilinks(content: string): string[] {
+  const links: string[] = [];
+  const seen = new Set<string>();
+  const re = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const raw = m[1].trim();
+    if (raw && !seen.has(raw.toLowerCase())) {
+      seen.add(raw.toLowerCase());
+      links.push(raw);
+    }
+  }
+  return links;
+}
+
+export function listAllBrainFilesFlat(): Array<{ path: string; name: string; stem: string; size: number }> {
+  ensureDirectories();
+  const out: Array<{ path: string; name: string; stem: string; size: number }> = [];
+  function walk(dirFull: string, relPrefix: string) {
+    if (!fs.existsSync(dirFull)) return;
+    for (const entry of fs.readdirSync(dirFull, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const full = path.join(dirFull, entry.name);
+      const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(full, rel);
+      } else {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (TEXT_EXTENSIONS.has(ext)) {
+          const stat = fs.statSync(full);
+          const stem = entry.name.replace(/\.[^.]+$/, "");
+          out.push({ path: rel, name: entry.name, stem, size: stat.size });
+        }
+      }
+    }
+  }
+  walk(BRAINS_DIR, "");
+  return out;
+}
+
+export function resolveWikilinkTarget(
+  target: string,
+  allFiles: Array<{ path: string; name: string; stem: string }>
+): string | null {
+  const q = target.trim().replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  if (!q) return null;
+  const qWithMd = q.endsWith(".md") ? q : `${q}.md`;
+
+  // 1. Exact relative path match
+  const exact = allFiles.find((f) => f.path.toLowerCase() === q || f.path.toLowerCase() === qWithMd);
+  if (exact) return exact.path;
+
+  // 2. Suffix path match (e.g. "skills/deploy/SKILL" or "rules")
+  const suffix = allFiles.find(
+    (f) => f.path.toLowerCase().endsWith(`/${q}`) || f.path.toLowerCase().endsWith(`/${qWithMd}`)
+  );
+  if (suffix) return suffix.path;
+
+  // 3. Stem/basename match (Obsidian style [[architecture]] -> main-brain/architecture.md)
+  const byStem = allFiles.find((f) => f.stem.toLowerCase() === q || f.name.toLowerCase() === q);
+  if (byStem) return byStem.path;
+
+  return null;
+}
+
+export function getBrainLinkGraph(): {
+  files: Array<{ path: string; title: string; outgoing: string[]; backlinks: string[] }>;
+  edges: Array<{ source: string; target: string; raw: string }>;
+} {
+  const allFiles = listAllBrainFilesFlat();
+  const outgoingMap = new Map<string, string[]>();
+  const backlinksMap = new Map<string, string[]>();
+  const titlesMap = new Map<string, string>();
+  const edges: Array<{ source: string; target: string; raw: string }> = [];
+
+  for (const f of allFiles) {
+    outgoingMap.set(f.path, []);
+    backlinksMap.set(f.path, []);
+  }
+
+  for (const f of allFiles) {
+    try {
+      const content = fs.readFileSync(resolveBrainPath(f.path), "utf8");
+      const h1 = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || f.name;
+      titlesMap.set(f.path, h1);
+      const rawLinks = extractWikilinks(content);
+      for (const raw of rawLinks) {
+        const resolved = resolveWikilinkTarget(raw, allFiles);
+        if (resolved && resolved !== f.path) {
+          outgoingMap.get(f.path)!.push(resolved);
+          backlinksMap.get(resolved)!.push(f.path);
+          edges.push({ source: f.path, target: resolved, raw });
+        }
+      }
+    } catch {
+      // skip unreadable
+    }
+  }
+
+  return {
+    files: allFiles.map((f) => ({
+      path: f.path,
+      title: titlesMap.get(f.path) || f.name,
+      outgoing: Array.from(new Set(outgoingMap.get(f.path) || [])),
+      backlinks: Array.from(new Set(backlinksMap.get(f.path) || [])),
+    })),
+    edges,
+  };
+}
+
+export function collectProgressiveBrainContext(
+  relPath: string,
+  coreCharBudget = 16_000
+): {
+  coreFiles: Array<{ path: string; content: string; viaLink?: boolean }>;
+  indexedFiles: Array<{ path: string; title: string; summary: string; links: string[] }>;
+  totalFiles: number;
+} {
+  const norm = normalizeRelPath(relPath);
+  const full = resolveBrainPath(norm);
+  if (!fs.existsSync(full)) {
+    return { coreFiles: [], indexedFiles: [], totalFiles: 0 };
+  }
+
+  const stat = fs.statSync(full);
+  if (stat.isFile()) {
+    const content = fs.readFileSync(full, "utf8").slice(0, coreCharBudget);
+    return { coreFiles: [{ path: norm, content }], indexedFiles: [], totalFiles: 1 };
+  }
+
+  const coreNames = new Set(["soul.md", "identity.md", "rules.md", "team.md", "memory.md"]);
+  const coreOrder = ["soul.md", "identity.md", "rules.md", "team.md", "memory.md"];
+  const allVaultFiles = listAllBrainFilesFlat();
+  const folderFiles = allVaultFiles.filter((f) => f.path === norm || f.path.startsWith(`${norm}/`));
+
+  const coreCandidates: typeof folderFiles = [];
+  const otherFiles: typeof folderFiles = [];
+  for (const f of folderFiles) {
+    const isTopLevel = f.path.slice(norm.length + 1).indexOf("/") === -1;
+    if (isTopLevel && coreNames.has(f.name.toLowerCase())) {
+      coreCandidates.push(f);
+    } else {
+      otherFiles.push(f);
+    }
+  }
+  coreCandidates.sort((a, b) => coreOrder.indexOf(a.name.toLowerCase()) - coreOrder.indexOf(b.name.toLowerCase()));
+
+  const coreFiles: Array<{ path: string; content: string; viaLink?: boolean }> = [];
+  const loadedPaths = new Set<string>();
+  const linkedTargets = new Set<string>();
+  let usedChars = 0;
+
+  for (const f of coreCandidates) {
+    try {
+      let content = fs.readFileSync(resolveBrainPath(f.path), "utf8");
+      for (const raw of extractWikilinks(content)) {
+        const target = resolveWikilinkTarget(raw, allVaultFiles);
+        if (target) linkedTargets.add(target);
+      }
+      if (usedChars + content.length > coreCharBudget) {
+        const remain = Math.max(0, coreCharBudget - usedChars);
+        if (remain > 300) {
+          content = content.slice(0, remain) + "\n...[use brain_read for full file]";
+        } else {
+          continue;
+        }
+      }
+      usedChars += content.length;
+      loadedPaths.add(f.path);
+      coreFiles.push({ path: f.path, content });
+    } catch {
+      // skip
+    }
+  }
+
+  // Automatically follow 1-hop [[wikilinks]] referenced from soul.md / rules.md / team.md!
+  for (const targetPath of linkedTargets) {
+    if (loadedPaths.has(targetPath) || usedChars >= coreCharBudget) continue;
+    try {
+      let content = fs.readFileSync(resolveBrainPath(targetPath), "utf8");
+      const remain = Math.max(0, coreCharBudget - usedChars);
+      if (remain < 300) break;
+      if (content.length > Math.min(remain, 3500)) {
+        content = content.slice(0, Math.min(remain, 3500)) + "\n...[use brain_read for full linked note]";
+      }
+      usedChars += content.length;
+      loadedPaths.add(targetPath);
+      coreFiles.push({ path: targetPath, content, viaLink: true });
+    } catch {
+      // skip
+    }
+  }
+
+  // Progressive disclosure index for all remaining docs & SKILL.md files (never lost!)
+  const indexedFiles: Array<{ path: string; title: string; summary: string; links: string[] }> = [];
+  for (const f of otherFiles) {
+    if (loadedPaths.has(f.path)) continue;
+    try {
+      const content = fs.readFileSync(resolveBrainPath(f.path), "utf8");
+      const titleMatch = content.match(/^#\s+(.+)$/m) || content.match(/^name:\s*(.+)$/m);
+      const descMatch = content.match(/^description:\s*(.+)$/m);
+      const title = titleMatch ? titleMatch[1].trim() : f.name;
+      const summary = descMatch
+        ? descMatch[1].trim()
+        : content
+            .replace(/^---[\s\S]*?---/m, "")
+            .replace(/^#.*$/gm, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 140);
+      indexedFiles.push({
+        path: f.path,
+        title,
+        summary,
+        links: extractWikilinks(content).slice(0, 6),
+      });
+    } catch {
+      // skip
+    }
+  }
+
+  return {
+    coreFiles,
+    indexedFiles,
+    totalFiles: folderFiles.length,
+  };
+}

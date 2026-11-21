@@ -11,6 +11,7 @@ import { ProvidersPage } from "./components/providers/ProvidersPage";
 import { SkillsPage } from "./components/ops/SkillsPage";
 import { AutomationPage } from "./components/ops/AutomationPage";
 import { SettingsPage } from "./components/ops/SettingsPage";
+import { TerminalPage } from "./components/ops/TerminalPage";
 import { ApprovalOverlay, type PendingApprovalItem } from "./components/ApprovalOverlay";
 
 export const App: React.FC = () => {
@@ -160,7 +161,7 @@ export const App: React.FC = () => {
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-[#080a0f] flex items-center justify-center text-sm text-slate-400">
-        Loading Pandawa Studio v5...
+        Loading Pandawa OS v6.0...
       </div>
     );
   }
@@ -228,8 +229,10 @@ export const App: React.FC = () => {
             initialTeamId={chatInitialTeamId}
             initialPrompt={chatStarterPrompt}
             onConsumeInitialPrompt={() => setChatStarterPrompt(null)}
+            onOpenTerminal={() => setTab("terminal")}
           />
         )}
+        {tab === "terminal" && <TerminalPage liveEvents={liveEvents} />}
         {tab === "brains" && (
           <BrainExplorer
             initialFilePath={openFilePath}

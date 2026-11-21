@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Network,
   MessageSquare,
+  Terminal,
   FolderTree,
   Cpu,
   BookOpen,
@@ -34,7 +35,8 @@ const SECTIONS: Array<{
     items: [
       { id: "overview", label: "Command Center", desc: "Quick Start & Teams", icon: LayoutDashboard },
       { id: "canvas", label: "Brain Canvas", desc: "Visual Wiring (n8n)", icon: Network },
-      { id: "chat", label: "Mission Room", desc: "Team Chat & Tasks", icon: MessageSquare },
+      { id: "chat", label: "Mission Room", desc: "Team Chat & Execute", icon: MessageSquare },
+      { id: "terminal", label: "Live Terminal", desc: "Shared PTY & Jobs", icon: Terminal },
     ],
   },
   {
@@ -154,7 +156,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
             {wsConnected ? "Realtime Live" : "Connecting..."}
           </span>
-          <span className="text-slate-600 font-mono">v5.0</span>
+          <span className="text-slate-600 font-mono">v6.0</span>
         </div>
 
         <button

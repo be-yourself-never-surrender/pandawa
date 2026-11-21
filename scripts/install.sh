@@ -49,9 +49,10 @@ if [ -w /usr/local/bin ]; then
 fi
 
 echo ""
-echo "  ✅ Pandawa installed successfully!"
+echo "  ✅ Pandawa OS v6.0 installed successfully!"
 echo ""
 echo "  Start Web Studio : cd $INSTALL_DIR && PANDAWA_PORT=$PORT npm start"
 echo "  Open Browser     : http://localhost:$PORT (default password: 11111111)"
-echo "  Interactive CLI  : pandawa chat | pandawa status | pandawa doctor"
+echo "  Live Terminal OS : pandawa live | pandawa term list | pandawa doctor"
+echo "  Optional Python  : bash $INSTALL_DIR/runtime/python_worker/setup.sh (Playwright + PDF/DOCX/XLSX)"
 echo ""

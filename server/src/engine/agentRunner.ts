@@ -1,7 +1,12 @@
 import { generateId } from "../config.js";
 import { getDb } from "../db/database.js";
 import { decryptSecret } from "../auth/cryptoVault.js";
-import { callLLM, type LLMMessage, type ProviderRecord } from "../providers/llmClient.js";
+import {
+  callLLM,
+  type LLMImageAttachment,
+  type LLMMessage,
+  type ProviderRecord,
+} from "../providers/llmClient.js";
 import { compileAgentRuntime, type CompiledAgentRuntime } from "./contextCompiler.js";
 import { getToolsForPacks, executeTool } from "../tools/toolRegistry.js";
 import { getAllLiveMcpTools } from "../mcp/mcpClient.js";
@@ -18,6 +23,7 @@ export interface AgentRunResult {
   promptTokens: number;
   completionTokens: number;
   durationMs: number;
+  stepsUsed?: number;
   usedFallbackProvider?: boolean;
   dryRun?: boolean;
 }
@@ -58,21 +64,96 @@ function resolveRunnableProvider(runtime: CompiledAgentRuntime): {
   return { provider: null, model: runtime.model || "unconfigured", usedFallback: false };
 }
 
-function compressHistory(history: LLMMessage[], maxChars = 28_000): LLMMessage[] {
-  const total = history.reduce((acc, m) => acc + (m.content?.length || 0), 0);
-  if (total <= maxChars || history.length <= 6) return history;
+function totalMessageChars(msgs: LLMMessage[]): number {
+  return msgs.reduce((acc, m) => acc + (m.content?.length || 0), 0);
+}
 
-  const head = history.slice(0, 2);
-  const tail = history.slice(-6);
-  const middle = history.slice(2, -6);
-  const summaryLines = middle
-    .filter((m) => m.role !== "tool")
-    .map((m) => `[${m.role}${m.name ? `/${m.name}` : ""}]: ${m.content.slice(0, 280)}`);
-  const compressedMsg: LLMMessage = {
-    role: "system",
-    content: `[Compressed Earlier Context — ${middle.length} messages condensed]\n${summaryLines.join("\n").slice(0, 4500)}`,
+/**
+ * LLM-Powered Semantic Compaction (replaces naive truncation):
+ * Preserves system prompt + original mission + recent coherent tool pairs,
+ * while asking the model to distill older steps into a high-signal checkpoint.
+ */
+async function compactMessagesWithLLM(params: {
+  messages: LLMMessage[];
+  provider: ProviderRecord;
+  model: string;
+  signal?: AbortSignal;
+  charLimit?: number;
+  onEvent?: (ev: Record<string, unknown>) => void;
+  agentName: string;
+}): Promise<LLMMessage[]> {
+  const limit = params.charLimit ?? 54_000;
+  const { messages } = params;
+  if (totalMessageChars(messages) <= limit || messages.length <= 10) return messages;
+
+  // Keep messages[0] (system) and messages[1] (initial user prompt or early context)
+  const head = messages.slice(0, 2);
+  // Find a safe tail cut boundary that never starts on an orphaned 'tool' message
+  let tailStart = Math.max(2, messages.length - 8);
+  while (tailStart < messages.length && messages[tailStart].role === "tool") {
+    tailStart++;
+  }
+  const middle = messages.slice(2, tailStart);
+  const tail = messages.slice(tailStart);
+  if (middle.length < 3) return messages;
+
+  const transcript = middle
+    .map((m) => {
+      if (m.role === "tool") return `[TOOL ${m.name || "result"}]: ${m.content.slice(0, 800)}`;
+      if (m.tool_calls?.length) {
+        const calls = m.tool_calls.map((c) => `${c.name}(${JSON.stringify(c.arguments).slice(0, 180)})`).join(", ");
+        return `[ASSISTANT]: ${m.content.slice(0, 500)} | calls: ${calls}`;
+      }
+      return `[${m.role.toUpperCase()}]: ${m.content.slice(0, 700)}`;
+    })
+    .join("\n")
+    .slice(0, 24_000);
+
+  let summary = "";
+  try {
+    const res = await callLLM({
+      provider: params.provider,
+      model: params.model,
+      temperature: 0.2,
+      maxTokens: 1200,
+      signal: params.signal,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a precision execution state compactor for an autonomous AI agent. Compress the prior work log into a dense, lossless checkpoint.",
+        },
+        {
+          role: "user",
+          content:
+            `Summarize these ${middle.length} earlier execution steps into concise bullet sections:\n` +
+            `1. Goal & Decisions\n2. Files Created / Modified (exact paths)\n3. Active Terminal Sessions & Running Processes\n4. Verified Outputs & Remaining Errors/Blockers\n5. Next Steps\n\n` +
+            `WORK LOG:\n${transcript}`,
+        },
+      ],
+    });
+    summary = res.content.trim();
+  } catch {
+    // Graceful fallback if compaction call fails
+    summary = middle
+      .filter((m) => m.role !== "tool")
+      .map((m) => `- [${m.role}]: ${m.content.slice(0, 320)}`)
+      .join("\n")
+      .slice(0, 5000);
+  }
+
+  params.onEvent?.({
+    type: "context_compacted",
+    agentName: params.agentName,
+    compactedCount: middle.length,
+    summaryChars: summary.length,
+  });
+
+  const compactedNote: LLMMessage = {
+    role: "user",
+    content: `[PANDAWA SEMANTIC COMPACTION — ${middle.length} earlier steps distilled to keep context sharp]\n\n${summary}`,
   };
-  return [...head, compressedMsg, ...tail];
+  return [...head, compactedNote, ...tail];
 }
 
 function getBackupProviders(excludeId: string): ProviderRecord[] {
@@ -86,9 +167,47 @@ function getBackupProviders(excludeId: string): ProviderRecord[] {
   });
 }
 
+function fetchUnreadTeamMessages(params: {
+  teamId?: string;
+  sessionId?: string;
+  agentName: string;
+  seenIds: Set<string>;
+}): Array<{ id: string; from_agent: string; to_agent: string; kind: string; content: string }> {
+  if (!params.teamId || !params.sessionId) return [];
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT id, from_agent, to_agent, kind, content
+       FROM team_messages
+       WHERE team_id = ? AND session_id = ?
+       ORDER BY created_at ASC`
+    )
+    .all(params.teamId, params.sessionId) as Array<{
+    id: string;
+    from_agent: string;
+    to_agent: string;
+    kind: string;
+    content: string;
+  }>;
+
+  const myName = params.agentName.toLowerCase();
+  const fresh: typeof rows = [];
+  for (const r of rows) {
+    if (params.seenIds.has(r.id)) continue;
+    params.seenIds.add(r.id);
+    if (r.from_agent.toLowerCase() === myName) continue;
+    const to = r.to_agent.toLowerCase();
+    if (to === "all" || to === myName || myName.includes(to) || to.includes(myName)) {
+      fresh.push(r);
+    }
+  }
+  return fresh;
+}
+
 export async function runAgentTurn(params: {
   agentId: string;
   prompt: string;
+  images?: LLMImageAttachment[];
   history?: LLMMessage[];
   teamId?: string;
   sessionId?: string;
@@ -119,7 +238,8 @@ export async function runAgentTurn(params: {
       `- **Assigned Model:** \`${runtime.model || "not set"}\` (purpose: \`${runtime.agent.purpose}\`)\n` +
       `- **Connected Brains:** ${runtime.summary.brainNames.join(", ") || "None"}\n` +
       `- **Mounted Knowledge Files:** ${runtime.summary.mountedPaths.join(", ") || "None"} (${runtime.summary.totalFiles} files, ${runtime.summary.totalChars} chars compiled)\n` +
-      `- **Active Tool Packs:** ${runtime.toolPacks.join(", ")}\n\n` +
+      `- **Active Tool Packs:** ${runtime.toolPacks.join(", ")}\n` +
+      `- **Max Autonomous Steps:** ${runtime.agent.max_iterations || 35}\n\n` +
       `Open **Multi-AI Hub** in the sidebar to add an API key (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama, or any Custom Base URL).`;
 
     params.onEvent?.({
@@ -142,6 +262,7 @@ export async function runAgentTurn(params: {
       promptTokens: 0,
       completionTokens: 0,
       durationMs: Date.now() - started,
+      stepsUsed: 0,
       dryRun: true,
     };
   }
@@ -154,24 +275,63 @@ export async function runAgentTurn(params: {
     ? `${runtime.systemPrompt}\n\n---\n\n${params.extraSystemNote}`
     : runtime.systemPrompt;
 
-  const baseHistory = compressHistory(params.history || []);
-  const messages: LLMMessage[] = [
+  // Track already-existing team messages so we only inject NEW mid-turn peer updates
+  const seenTeamMsgIds = new Set<string>();
+  fetchUnreadTeamMessages({
+    teamId: params.teamId,
+    sessionId: params.sessionId,
+    agentName: runtime.agent.name,
+    seenIds: seenTeamMsgIds,
+  });
+
+  let messages: LLMMessage[] = [
     { role: "system", content: systemText },
-    ...baseHistory,
-    { role: "user", content: params.prompt },
+    ...(params.history || []),
+    {
+      role: "user",
+      content: params.prompt,
+      ...(params.images && params.images.length > 0 ? { images: params.images } : {}),
+    },
   ];
 
-  const maxIter = params.maxIterations ?? 6;
+  // Compact initial history if already huge
+  if (totalMessageChars(messages) > 54_000) {
+    messages = await compactMessagesWithLLM({
+      messages,
+      provider,
+      model,
+      signal: params.signal,
+      onEvent: params.onEvent,
+      agentName: runtime.agent.name,
+    });
+  }
+
+  const configuredMax = Number(runtime.agent.max_iterations || 35);
+  const maxIter = Math.min(100, Math.max(1, params.maxIterations ?? configuredMax));
   const toolTrace: Array<{ name: string; args: Record<string, unknown>; result: string }> = [];
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let finalContent = "";
   let combinedReasoning = "";
+  let stepsUsed = 0;
 
   try {
     for (let step = 0; step < maxIter; step++) {
       if (params.signal?.aborted) {
         throw new Error("Mission stopped by user.");
+      }
+      stepsUsed = step + 1;
+
+      // Dynamic LLM Semantic Compaction during long multi-step executions (35-100 steps)
+      if (step >= 3 && totalMessageChars(messages) > 58_000) {
+        messages = await compactMessagesWithLLM({
+          messages,
+          provider,
+          model,
+          signal: params.signal,
+          onEvent: params.onEvent,
+          agentName: runtime.agent.name,
+        });
       }
 
       let res;
@@ -253,12 +413,16 @@ export async function runAgentTurn(params: {
         tool_calls: res.toolCalls,
       });
 
+      const attachedImagesThisStep: LLMImageAttachment[] = [];
+
       for (const tc of res.toolCalls) {
         if (params.signal?.aborted) throw new Error("Mission stopped by user.");
         params.onEvent?.({
           type: "tool_call",
           agentId: runtime.agent.id,
           agentName: runtime.agent.name,
+          step: stepsUsed,
+          maxSteps: maxIter,
           toolName: tc.name,
           args: tc.arguments,
         });
@@ -269,15 +433,16 @@ export async function runAgentTurn(params: {
           sessionId: params.sessionId,
           consultDepth: params.consultDepth ?? 0,
           signal: params.signal,
+          onImageCaptured: (img) => attachedImagesThisStep.push(img),
           consultPeer: async (peerId: string, question: string) => {
             const peerRes = await runAgentTurn({
               agentId: peerId,
               teamId: params.teamId,
               sessionId: params.sessionId,
               consultDepth: (params.consultDepth ?? 0) + 1,
-              maxIterations: 3,
+              maxIterations: 10,
               signal: params.signal,
-              prompt: `Your Pandawa teammate **${runtime.agent.name}** (${runtime.agent.title}) is consulting you mid-task:\n\n${question}\n\nRespond concisely and directly with your specialist input.`,
+              prompt: `Your Pandawa teammate **${runtime.agent.name}** (${runtime.agent.title}) is consulting you mid-execution:\n\n${question}\n\nYou have full access to shared terminals, workspace, and brain tools if you need to inspect or verify anything. Respond concisely and directly.`,
               extraSystemNote: "You are responding to a live peer consultation from a Pandawa teammate.",
               onEvent: params.onEvent,
             });
@@ -294,7 +459,7 @@ export async function runAgentTurn(params: {
           agentId: runtime.agent.id,
           agentName: runtime.agent.name,
           toolName: tc.name,
-          preview: toolOutput.slice(0, 300),
+          preview: toolOutput.slice(0, 320),
         });
 
         messages.push({
@@ -305,8 +470,33 @@ export async function runAgentTurn(params: {
         });
       }
 
+      // If any tool captured a visual screenshot/image, feed it directly to the vision model!
+      if (attachedImagesThisStep.length > 0) {
+        messages.push({
+          role: "user",
+          content: `[Visual Capture Attached: ${attachedImagesThisStep.map((i) => i.name || "screenshot.png").join(", ")}] Inspect the image(s) carefully to verify UI layout, errors, or page content.`,
+          images: attachedImagesThisStep,
+        });
+      }
+
+      // Deliver any live mid-execution teammate messages sent while we were running tools!
+      const newPeerMsgs = fetchUnreadTeamMessages({
+        teamId: params.teamId,
+        sessionId: params.sessionId,
+        agentName: runtime.agent.name,
+        seenIds: seenTeamMsgIds,
+      });
+      if (newPeerMsgs.length > 0) {
+        messages.push({
+          role: "user",
+          content:
+            `[LIVE TEAMMATE MESSAGE(S) RECEIVED MID-EXECUTION]\n` +
+            newPeerMsgs.map((m) => `- **[${m.kind}] ${m.from_agent} → ${m.to_agent}:** ${m.content}`).join("\n"),
+        });
+      }
+
       if (step === maxIter - 1) {
-        finalContent = res.content || "Completed tool execution steps.";
+        finalContent = res.content || `Completed ${stepsUsed} autonomous tool execution steps.`;
       }
     }
   } finally {
@@ -317,6 +507,7 @@ export async function runAgentTurn(params: {
       model,
       providerName: provider.name,
       content: finalContent,
+      stepsUsed,
       durationMs: Date.now() - started,
     });
   }
@@ -354,6 +545,7 @@ export async function runAgentTurn(params: {
     promptTokens: totalPromptTokens,
     completionTokens: totalCompletionTokens,
     durationMs,
+    stepsUsed,
     usedFallbackProvider: usedFallback,
   };
 }

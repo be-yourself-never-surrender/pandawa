@@ -937,15 +937,36 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1.5">Enabled Tool Packs (32 Built-In Tools)</label>
+                      <label className="text-slate-400 block mb-1">
+                        Max Autonomous Steps ({selectedAgent.max_iterations || 35} steps/turn)
+                      </label>
+                      <input
+                        type="range"
+                        min={5}
+                        max={100}
+                        step={5}
+                        value={selectedAgent.max_iterations || 35}
+                        onChange={(e) => saveSelectedAgent({ max_iterations: Number(e.target.value) })}
+                        className="w-full accent-amber-400"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>5 (quick)</span>
+                        <span>35 (deep build)</span>
+                        <span>100 (autonomous)</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-slate-400 block mb-1.5">Enabled Tool Packs (44+ Built-In Tools)</label>
                       <div className="grid grid-cols-2 gap-1.5 bg-[#090c14] border border-slate-800 rounded-xl p-2.5">
                         {[
                           { id: "brain", label: "Brain & FTS5" },
-                          { id: "team", label: "Team & Tasks" },
-                          { id: "workspace", label: "Files & Patch" },
+                          { id: "team", label: "Team & Chat" },
+                          { id: "workspace", label: "Files & Docs" },
+                          { id: "terminal", label: "Shared PTY" },
                           { id: "shell", label: "Shell & Code" },
                           { id: "web", label: "Web Search" },
-                          { id: "browser", label: "Browser" },
+                          { id: "browser", label: "Playwright" },
                           { id: "automation", label: "Cron & Bots" },
                         ].map((pk) => {
                           const checked = selectedAgent.toolPacks.includes(pk.id);
@@ -1135,7 +1156,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                   <div>
                     <label className="text-slate-400 block mb-2">Included Tool Packs</label>
                     <div className="space-y-1.5">
-                      {["brain", "team", "workspace", "shell", "web", "browser", "automation"].map((pk) => {
+                      {["brain", "team", "workspace", "terminal", "shell", "web", "browser", "automation"].map((pk) => {
                         const current = Array.isArray(selectedNode.data.packs)
                           ? (selectedNode.data.packs as string[])
                           : [];

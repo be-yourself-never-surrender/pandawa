@@ -43,10 +43,23 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   const [notice, setNotice] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<{ rel_path: string; title: string; snippet: string }>>([]);
+  const [linkGraph, setLinkGraph] = useState<
+    Record<string, { outgoing: string[]; backlinks: string[] }>
+  >({});
 
   const loadTree = useCallback(async () => {
-    const res = await apiFetch<{ tree: BrainTreeNode[] }>("/api/files/tree");
+    const [res, gRes] = await Promise.all([
+      apiFetch<{ tree: BrainTreeNode[] }>("/api/files/tree"),
+      apiFetch<{ files: Array<{ path: string; outgoing: string[]; backlinks: string[] }> }>("/api/files/graph").catch(
+        () => ({ files: [] })
+      ),
+    ]);
     setTree(res.tree);
+    const map: Record<string, { outgoing: string[]; backlinks: string[] }> = {};
+    for (const f of gRes.files || []) {
+      map[f.path] = { outgoing: f.outgoing || [], backlinks: f.backlinks || [] };
+    }
+    setLinkGraph(map);
   }, []);
 
   const openFile = useCallback(async (relPath: string) => {
@@ -471,6 +484,64 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             </button>
           </div>
         </div>
+
+        {/* Living Brain [[wikilink]] & Backlinks Bar (Beyond Obsidian) */}
+        {activeFile && (
+          <div className="px-4 py-1.5 bg-[#0a0d15] border-b border-slate-800/70 flex flex-wrap items-center gap-2 text-[11px]">
+            {(() => {
+              const baseName = activeFile.split("/").pop()?.toLowerCase() || "";
+              const isCore = ["soul.md", "identity.md", "rules.md", "team.md", "memory.md"].includes(baseName);
+              const links = linkGraph[activeFile] || { outgoing: [], backlinks: [] };
+              return (
+                <>
+                  <span
+                    className={`px-2 py-0.5 rounded-full font-semibold ${
+                      isCore
+                        ? "bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                        : "bg-cyan-500/15 text-cyan-300 border border-cyan-500/30"
+                    }`}
+                  >
+                    {isCore ? "Core Auto-Loaded + 1-Hop [[Links]]" : "Progressive On-Demand Index"}
+                  </span>
+                  {links.outgoing.length > 0 && (
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className="text-slate-500">Links →</span>
+                      {links.outgoing.map((target) => (
+                        <button
+                          key={target}
+                          onClick={() => openFile(target)}
+                          className="px-2 py-0.5 rounded bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/30 text-violet-300 font-mono text-[10px] cursor-pointer"
+                        >
+                          [[{target.split("/").pop()?.replace(/\.md$/i, "")}]]
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {links.backlinks.length > 0 && (
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <span className="text-slate-500">Backlinks ←</span>
+                      {links.backlinks.map((src) => (
+                        <button
+                          key={src}
+                          onClick={() => openFile(src)}
+                          className="px-2 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-mono text-[10px] cursor-pointer"
+                        >
+                          {src}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {links.outgoing.length === 0 && links.backlinks.length === 0 && (
+                    <span className="text-slate-500">
+                      Tip: Reference other notes with <code className="text-amber-300">[[rules]]</code> or{" "}
+                      <code className="text-amber-300">[[note-name]]</code> — Pandawa follows them automatically at runtime.
+                    </span>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+        )}
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {(viewMode === "edit" || viewMode === "split") && (

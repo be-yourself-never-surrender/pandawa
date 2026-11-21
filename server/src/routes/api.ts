@@ -18,8 +18,14 @@ import {
   deleteBrainEntry,
   searchBrainFiles,
   listSkills,
+  getBrainLinkGraph,
 } from "../brains/brainFs.js";
-import { testProviderConnection, type ProviderRecord, type LLMMessage } from "../providers/llmClient.js";
+import {
+  testProviderConnection,
+  type ProviderRecord,
+  type LLMMessage,
+  type LLMImageAttachment,
+} from "../providers/llmClient.js";
 import { compileAgentRuntime, getTeamMembers } from "../engine/contextCompiler.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
 import { runTeamMission } from "../engine/teamEngine.js";
@@ -46,10 +52,24 @@ import {
   abortMission,
 } from "../engine/missionController.js";
 import {
+  listBackgroundJobs,
+  cancelBackgroundJob,
+  enqueueBackgroundMission,
+} from "../engine/backgroundRunner.js";
+import {
   listManagedProcesses,
   getManagedProcessLogs,
   killManagedProcess,
 } from "../tools/processManager.js";
+import {
+  listTerminals,
+  openTerminal,
+  execInTerminal,
+  sendKeysToTerminal,
+  readTerminal,
+  closeTerminal,
+} from "../tools/terminalManager.js";
+import { getPythonWorkerStatus } from "../tools/pythonWorker.js";
 
 function maskProvider(p: ProviderRecord) {
   const key = decryptSecret(p.api_key || "");
@@ -626,6 +646,17 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         : req.body?.maxTokens !== undefined
         ? Number(req.body.maxTokens)
         : Number(cur.max_tokens);
+    const maxIterations = Math.min(
+      100,
+      Math.max(
+        1,
+        req.body?.max_iterations !== undefined
+          ? Number(req.body.max_iterations)
+          : req.body?.maxIterations !== undefined
+          ? Number(req.body.maxIterations)
+          : Number(cur.max_iterations || 35)
+      )
+    );
     const systemPrompt =
       req.body?.system_prompt !== undefined
         ? String(req.body.system_prompt)
@@ -639,7 +670,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
     db.prepare(
       `UPDATE agents
-       SET name=?, title=?, role_description=?, avatar=?, color=?, provider_id=?, model=?, purpose=?, temperature=?, max_tokens=?, system_prompt=?, tool_packs_json=?, enabled=?, updated_at=datetime('now')
+       SET name=?, title=?, role_description=?, avatar=?, color=?, provider_id=?, model=?, purpose=?, temperature=?, max_tokens=?, max_iterations=?, system_prompt=?, tool_packs_json=?, enabled=?, updated_at=datetime('now')
        WHERE id=?`
     ).run(
       name,
@@ -652,6 +683,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       purpose,
       temperature,
       maxTokens,
+      maxIterations,
       systemPrompt,
       toolPacksJson,
       enabled,
@@ -1086,11 +1118,29 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         }
       }
 
+      // Parse optional Multimodal Vision image attachments
+      const rawImages = Array.isArray(req.body?.images) ? req.body.images : [];
+      const images: LLMImageAttachment[] = rawImages
+        .filter((img: unknown) => img && typeof img === "object" && typeof (img as Record<string, unknown>).base64 === "string")
+        .slice(0, 4)
+        .map((img: Record<string, unknown>) => ({
+          mimeType: String(img.mimeType || "image/png"),
+          base64: String(img.base64).replace(/^data:[^;]+;base64,/, ""),
+          name: img.name ? String(img.name) : undefined,
+        }));
+
+      const modeOverride = typeof req.body?.modeOverride === "string" ? req.body.modeOverride : undefined;
+      const runInBackground = Boolean(req.body?.background);
+      const notifyChannelId = typeof req.body?.notifyChannelId === "string" ? req.body.notifyChannelId : "";
+      const activeAgentIds = Array.isArray(req.body?.activeAgentIds) ? (req.body.activeAgentIds as string[]) : undefined;
+
       // Save user message & index in messages_fts for session_search recall
       const userMsgId = generateId("msg");
+      const userContentLabel =
+        images.length > 0 ? `${prompt}\n\n[Attached ${images.length} image(s): ${images.map((i) => i.name || "image").join(", ")}]` : prompt;
       db.prepare(
         `INSERT INTO messages (id, session_id, role, agent_name, content) VALUES (?, ?, 'user', 'You', ?)`
-      ).run(userMsgId, sessionId, prompt);
+      ).run(userMsgId, sessionId, userContentLabel);
       try {
         db.prepare(`INSERT INTO messages_fts (message_id, session_id, agent_name, content) VALUES (?, ?, 'You', ?)`).run(
           userMsgId,
@@ -1101,11 +1151,32 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         // ignore FTS error
       }
 
+      // Decoupled Always-On Background Daemon execution (survives browser close!)
+      if (runInBackground) {
+        clearMissionController(sessionId, controller);
+        const queued = enqueueBackgroundMission({
+          sessionId,
+          targetType: targetType === "agent" ? "agent" : "team",
+          targetId,
+          prompt,
+          enrichedPrompt,
+          images,
+          history,
+          activeAgentIds,
+          modeOverride,
+          notifyChannelId,
+          broadcast,
+        });
+        res.json({ ok: true, background: true, ...queued });
+        return;
+      }
+
       if (targetType === "agent") {
         const result = await runAgentTurn({
           agentId: targetId,
           sessionId,
           prompt: enrichedPrompt,
+          images,
           history,
           signal: controller.signal,
           onEvent: (ev) => broadcast({ ...ev, sessionId }),
@@ -1127,6 +1198,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           JSON.stringify({
             avatar: result.avatar,
             providerName: result.providerName,
+            stepsUsed: result.stepsUsed,
             durationMs: result.durationMs,
             promptTokens: result.promptTokens,
             completionTokens: result.completionTokens,
@@ -1149,14 +1221,15 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         return;
       }
 
-      // Team Mission (Musyawarah & Eksekusi)
-      const activeAgentIds = Array.isArray(req.body?.activeAgentIds) ? (req.body.activeAgentIds as string[]) : undefined;
+      // Team Mission (Execute & Verify / Musyawarah)
       const teamResult = await runTeamMission({
         teamId: targetId,
         sessionId,
         userPrompt: enrichedPrompt,
+        images,
         history,
         activeAgentIds,
+        modeOverride,
         signal: controller.signal,
         onEvent: (ev) => broadcast({ ...ev, sessionId }),
       });
@@ -1800,6 +1873,124 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   });
 
   // ========================
+  // LIVING BRAIN WIKILINK GRAPH (Beyond Obsidian)
+  // ========================
+  router.get("/files/graph", (_req: Request, res: Response) => {
+    res.json(getBrainLinkGraph());
+  });
+
+  // ========================
+  // LIVE TEAM INTER-AGENT MESSAGES
+  // ========================
+  router.get("/teams/:id/messages", (req: Request, res: Response) => {
+    const db = getDb();
+    const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : "";
+    const rows = sessionId
+      ? db
+          .prepare(
+            `SELECT * FROM team_messages WHERE team_id = ? AND (session_id = ? OR session_id = '') ORDER BY created_at DESC LIMIT 60`
+          )
+          .all(String(req.params.id), sessionId)
+      : db
+          .prepare(`SELECT * FROM team_messages WHERE team_id = ? ORDER BY created_at DESC LIMIT 60`)
+          .all(String(req.params.id));
+    res.json({ messages: rows.reverse() });
+  });
+
+  // ========================
+  // PERSISTENT SHARED TERMINALS (Python PTY / tmux)
+  // ========================
+  router.get("/terminals", async (_req: Request, res: Response) => {
+    res.json(await listTerminals());
+  });
+
+  router.post("/terminals", async (req: Request, res: Response) => {
+    try {
+      const out = await openTerminal({
+        name: String(req.body?.name || "main"),
+        cwd: req.body?.cwd ? String(req.body.cwd) : undefined,
+        ownerAgent: String(req.body?.ownerAgent || "user"),
+      });
+      res.json(out);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/terminals/:name/output", async (req: Request, res: Response) => {
+    try {
+      const lines = Number(req.query.lines || 250);
+      res.json(await readTerminal(String(req.params.name), lines));
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/terminals/:name/exec", async (req: Request, res: Response) => {
+    try {
+      const out = await execInTerminal({
+        name: String(req.params.name),
+        command: String(req.body?.command || ""),
+        timeoutSec: req.body?.timeoutSec ? Number(req.body.timeoutSec) : 35,
+        actor: "user",
+      });
+      res.json(out);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/terminals/:name/send", async (req: Request, res: Response) => {
+    try {
+      const out = await sendKeysToTerminal({
+        name: String(req.params.name),
+        text: req.body?.text !== undefined ? String(req.body.text) : undefined,
+        key: req.body?.key !== undefined ? String(req.body.key) : undefined,
+        enter: req.body?.enter !== undefined ? Boolean(req.body.enter) : true,
+        actor: "user",
+      });
+      res.json(out);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/terminals/:name", async (req: Request, res: Response) => {
+    try {
+      res.json(await closeTerminal(String(req.params.name)));
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ========================
+  // ALWAYS-ON BACKGROUND MISSION JOBS (Beyond OpenClaw)
+  // ========================
+  router.get("/jobs", (_req: Request, res: Response) => {
+    res.json({ jobs: listBackgroundJobs(50) });
+  });
+
+  router.post("/jobs/:id/cancel", (req: Request, res: Response) => {
+    const ok = cancelBackgroundJob(String(req.params.id), broadcast);
+    res.json({ ok });
+  });
+
+  // ========================
+  // HYBRID PYTHON / TMUX / PLAYWRIGHT RUNTIME STATUS
+  // ========================
+  router.get("/system/runtime", async (_req: Request, res: Response) => {
+    const [pyStatus, termStatus] = await Promise.all([getPythonWorkerStatus(), listTerminals()]);
+    res.json({
+      version: "6.0.0",
+      nodeVersion: process.version,
+      pythonWorker: pyStatus,
+      tmuxAvailable: termStatus.tmux,
+      activeTerminals: termStatus.sessions.length,
+      runningJobs: listBackgroundJobs(50).filter((j) => j.status === "running" || j.status === "queued").length,
+    });
+  });
+
+  // ========================
   // SYSTEM HEALTH, USAGE & AUDIT
   // ========================
   router.get("/system/status", (_req: Request, res: Response) => {
@@ -1821,6 +2012,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       memories: (db.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c,
       skills: listSkills().length,
       cronJobs: (db.prepare("SELECT COUNT(*) as c FROM cron_jobs").get() as { c: number }).c,
+      runningJobs: (
+        db.prepare("SELECT COUNT(*) as c FROM background_jobs WHERE status IN ('queued','running')").get() as { c: number }
+      ).c,
     };
 
     const usage = db
@@ -1833,7 +2027,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "5.0.0",
+      version: "6.0.0",
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),

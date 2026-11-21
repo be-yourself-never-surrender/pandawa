@@ -1,11 +1,18 @@
 import { decryptSecret } from "../auth/cryptoVault.js";
 
+export interface LLMImageAttachment {
+  mimeType: string;
+  base64: string;
+  name?: string;
+}
+
 export interface LLMMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   name?: string;
   tool_call_id?: string;
   tool_calls?: LLMToolCall[];
+  images?: LLMImageAttachment[];
 }
 
 export interface LLMToolCall {
@@ -192,6 +199,18 @@ async function callOpenAICompat(args: {
     if (m.role === "tool") {
       return { role: "tool", tool_call_id: m.tool_call_id || "call_0", content: m.content };
     }
+    if (m.role === "user" && m.images && m.images.length > 0) {
+      return {
+        role: "user",
+        content: [
+          { type: "text", text: m.content },
+          ...m.images.map((img) => ({
+            type: "image_url",
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ],
+      };
+    }
     return { role: m.role, content: m.content };
   });
 
@@ -357,7 +376,16 @@ async function callAnthropic(args: {
       continue;
     }
     if (m.role === "user") {
-      anthropicMessages.push({ role: "user", content: m.content });
+      if (m.images && m.images.length > 0) {
+        const blocks: unknown[] = m.images.map((img) => ({
+          type: "image",
+          source: { type: "base64", media_type: img.mimeType, data: img.base64 },
+        }));
+        if (m.content) blocks.push({ type: "text", text: m.content });
+        anthropicMessages.push({ role: "user", content: blocks });
+      } else {
+        anthropicMessages.push({ role: "user", content: m.content });
+      }
     } else if (m.role === "assistant") {
       const blocks: unknown[] = [];
       if (m.content) blocks.push({ type: "text", text: m.content });
@@ -548,7 +576,11 @@ async function callGemini(args: {
       continue;
     }
     if (m.role === "user") {
-      contents.push({ role: "user", parts: [{ text: m.content }] });
+      const parts: unknown[] = [{ text: m.content }];
+      for (const img of m.images || []) {
+        parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+      }
+      contents.push({ role: "user", parts });
     } else if (m.role === "assistant") {
       const parts: unknown[] = [];
       if (m.content) parts.push({ text: m.content });

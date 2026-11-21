@@ -62,6 +62,7 @@ function initSchema(db: DatabaseSync): void {
       purpose TEXT NOT NULL DEFAULT 'general',
       temperature REAL NOT NULL DEFAULT 0.6,
       max_tokens INTEGER NOT NULL DEFAULT 4096,
+      max_iterations INTEGER NOT NULL DEFAULT 35,
       system_prompt TEXT NOT NULL DEFAULT '',
       tool_packs_json TEXT NOT NULL DEFAULT '["brain","team","workspace"]',
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -240,7 +241,45 @@ function initSchema(db: DatabaseSync): void {
       agent_name,
       content
     );
+
+    CREATE TABLE IF NOT EXISTS team_messages (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      session_id TEXT NOT NULL DEFAULT '',
+      from_agent TEXT NOT NULL,
+      to_agent TEXT NOT NULL DEFAULT 'all',
+      kind TEXT NOT NULL DEFAULT 'update',
+      content TEXT NOT NULL,
+      read_by_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS background_jobs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      target_type TEXT NOT NULL DEFAULT 'team',
+      target_id TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      progress_text TEXT NOT NULL DEFAULT '',
+      result_preview TEXT NOT NULL DEFAULT '',
+      error_text TEXT NOT NULL DEFAULT '',
+      notify_channel_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      started_at TEXT NOT NULL DEFAULT '',
+      finished_at TEXT NOT NULL DEFAULT ''
+    );
   `);
+
+  // Safe idempotent column migrations for upgraded databases
+  try {
+    const cols = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "max_iterations")) {
+      db.exec("ALTER TABLE agents ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 35;");
+    }
+  } catch {
+    // ignore migration error if already present
+  }
 }
 
 export function getSetting(key: string): string | null {

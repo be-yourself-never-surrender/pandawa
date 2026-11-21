@@ -2,6 +2,7 @@ export type NavTab =
   | "overview"
   | "canvas"
   | "chat"
+  | "terminal"
   | "brains"
   | "providers"
   | "skills"
@@ -45,6 +46,7 @@ export interface AgentItem {
   purpose: string;
   temperature: number;
   max_tokens: number;
+  max_iterations?: number;
   system_prompt: string;
   toolPacks: string[];
   enabled: boolean;
@@ -56,7 +58,7 @@ export interface TeamItem {
   name: string;
   description: string;
   team_brain_id: string | null;
-  collaboration_mode: "deliberate" | "parallel" | "sequential" | "consensus";
+  collaboration_mode: "execute" | "deliberate" | "parallel" | "sequential" | "consensus";
   max_rounds: number;
   enabled: boolean;
   members: Array<{

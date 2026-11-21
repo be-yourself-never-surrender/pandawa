@@ -12,7 +12,7 @@ import {
   searchBrainFiles,
   normalizeRelPath,
 } from "../brains/brainFs.js";
-import type { LLMToolDefinition } from "../providers/llmClient.js";
+import type { LLMImageAttachment, LLMToolDefinition } from "../providers/llmClient.js";
 import type { CompiledAgentRuntime } from "../engine/contextCompiler.js";
 import { toolRequiresApproval, requestApproval } from "../engine/approvalManager.js";
 import { invokeMcpTool, type DiscoveredMcpTool } from "../mcp/mcpClient.js";
@@ -22,10 +22,42 @@ import {
   getManagedProcessLogs,
   killManagedProcess,
 } from "./processManager.js";
+import {
+  listTerminals,
+  openTerminal,
+  execInTerminal,
+  sendKeysToTerminal,
+  readTerminal,
+  closeTerminal,
+} from "./terminalManager.js";
+import { runPythonWorker } from "./pythonWorker.js";
 import { dispatchChannelNotification } from "../channels/channelManager.js";
 
 const execAsync = promisify(exec);
 const CHECKPOINTS_DIR = path.join(DATA_DIR, "checkpoints");
+
+// Lightweight advisory file ownership tracker per active mission session to prevent silent parallel overwrites
+const workspaceFileLocks = new Map<string, { owner: string; updatedAt: number }>();
+
+export function clearSessionFileLocks(sessionId: string): void {
+  const prefix = `${sessionId}::`;
+  for (const key of workspaceFileLocks.keys()) {
+    if (key.startsWith(prefix)) workspaceFileLocks.delete(key);
+  }
+}
+
+function checkOrClaimFileLock(sessionId: string | undefined, relPath: string, agentName: string): string | null {
+  if (!sessionId) return null;
+  const key = `${sessionId}::${relPath.replace(/\\/g, "/").replace(/^\/+/, "")}`;
+  const now = Date.now();
+  const existing = workspaceFileLocks.get(key);
+  // Expire locks after 10 minutes
+  if (existing && existing.owner !== agentName && now - existing.updatedAt < 600_000) {
+    return existing.owner;
+  }
+  workspaceFileLocks.set(key, { owner: agentName, updatedAt: now });
+  return null;
+}
 
 export interface ToolExecutionContext {
   runtime: CompiledAgentRuntime;
@@ -33,6 +65,7 @@ export interface ToolExecutionContext {
   sessionId?: string;
   consultDepth?: number;
   consultPeer?: (peerId: string, question: string) => Promise<string>;
+  onImageCaptured?: (img: LLMImageAttachment) => void;
   mcpLookup?: Map<string, DiscoveredMcpTool>;
   signal?: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
@@ -454,6 +487,80 @@ const TOOLS: PandawaTool[] = [
       return "Invalid team_todo_manage parameters.";
     },
   },
+  {
+    pack: "team",
+    definition: {
+      name: "team_message",
+      description:
+        "Send a live direct message to a specific Pandawa teammate (or 'all' for broadcast) while working in parallel—e.g. sharing an API port, terminal name, file path, or blocker.",
+      parameters: {
+        type: "object",
+        properties: {
+          to_agent: { type: "string", description: "Target teammate name (e.g. 'Arjuna', 'Sadewa') or 'all'" },
+          message: { type: "string", description: "Concise message for your teammate(s)" },
+          kind: { type: "string", enum: ["update", "handoff", "question", "alert", "result"] },
+        },
+        required: ["to_agent", "message"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const db = getDb();
+      const id = generateId("tmsg");
+      const teamId = ctx.teamId || "team_pandawa";
+      const toAgent = String(args.to_agent || "all").trim();
+      const kind = String(args.kind || "update");
+      const content = String(args.message || "").trim();
+      if (!content) return "Message content cannot be empty.";
+      db.prepare(
+        `INSERT INTO team_messages (id, team_id, session_id, from_agent, to_agent, kind, content)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(id, teamId, ctx.sessionId || "", ctx.runtime.agent.name, toAgent, kind, content);
+      ctx.onEvent?.({
+        type: "team_message",
+        id,
+        teamId,
+        fromAgent: ctx.runtime.agent.name,
+        toAgent,
+        kind,
+        content,
+      });
+      return `Sent [${kind}] message to ${toAgent} (${id}).`;
+    },
+  },
+  {
+    pack: "team",
+    definition: {
+      name: "team_inbox",
+      description: "Check live messages sent by teammates during this mission (ports, terminal sessions, handoffs, blockers).",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Max recent messages (default 15)" },
+        },
+      },
+    },
+    execute: async (args, ctx) => {
+      const db = getDb();
+      const teamId = ctx.teamId || "team_pandawa";
+      const limit = Math.min(40, Math.max(1, Number(args.limit || 15)));
+      const rows = ctx.sessionId
+        ? db
+            .prepare(
+              `SELECT id, from_agent, to_agent, kind, content, created_at
+               FROM team_messages
+               WHERE team_id = ? AND (session_id = ? OR session_id = '')
+               ORDER BY created_at DESC LIMIT ?`
+            )
+            .all(teamId, ctx.sessionId, limit)
+        : db
+            .prepare(
+              `SELECT id, from_agent, to_agent, kind, content, created_at
+               FROM team_messages WHERE team_id = ? ORDER BY created_at DESC LIMIT ?`
+            )
+            .all(teamId, limit);
+      return JSON.stringify({ agent: ctx.runtime.agent.name, messages: rows.reverse() }, null, 2);
+    },
+  },
 
   // =============================================
   // PACK 3: WORKSPACE ENGINEERING, PATCH, GREP & CHECKPOINTS
@@ -518,11 +625,16 @@ const TOOLS: PandawaTool[] = [
         required: ["path", "content"],
       },
     },
-    execute: async (args) => {
-      const full = resolveWorkspacePath(String(args.path || ""));
+    execute: async (args, ctx) => {
+      const rel = String(args.path || "");
+      const full = resolveWorkspacePath(rel);
+      const otherOwner = checkOrClaimFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, String(args.content || ""), "utf8");
-      return `Wrote workspace file ${args.path}.`;
+      const warn = otherOwner
+        ? ` (Note: ${otherOwner} also edited this file recently — consider posting a team_message to coordinate.)`
+        : "";
+      return `Wrote workspace file ${args.path}.${warn}`;
     },
   },
   {
@@ -541,9 +653,11 @@ const TOOLS: PandawaTool[] = [
         required: ["path", "target", "replacement"],
       },
     },
-    execute: async (args) => {
-      const full = resolveWorkspacePath(String(args.path || ""));
+    execute: async (args, ctx) => {
+      const rel = String(args.path || "");
+      const full = resolveWorkspacePath(rel);
       if (!fs.existsSync(full)) return `File not found: ${args.path}`;
+      const otherOwner = checkOrClaimFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
       const orig = fs.readFileSync(full, "utf8");
       const target = String(args.target || "");
       const replacement = String(args.replacement ?? "");
@@ -552,7 +666,10 @@ const TOOLS: PandawaTool[] = [
       }
       const next = args.replace_all ? orig.split(target).join(replacement) : orig.replace(target, replacement);
       fs.writeFileSync(full, next, "utf8");
-      return `Patched ${args.path} successfully.`;
+      const warn = otherOwner
+        ? ` (Note: ${otherOwner} also edited this file recently — sync via team_message.)`
+        : "";
+      return `Patched ${args.path} successfully.${warn}`;
     },
   },
   {
@@ -647,6 +764,58 @@ const TOOLS: PandawaTool[] = [
       if (!fs.existsSync(src)) return `Checkpoint not found: ${cid}`;
       const restored = copyDirRecursive(src, WORKSPACE_DIR);
       return `Restored workspace from checkpoint "${cid}" (${restored} files).`;
+    },
+  },
+  {
+    pack: "workspace",
+    definition: {
+      name: "doc_read",
+      description:
+        "Extract clean readable text from PDF, DOCX, XLSX/Excel, CSV, or text files inside the workspace using Pandawa's Python Document Worker.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path inside workspace (e.g. report.pdf, sheet.xlsx)" },
+          max_chars: { type: "number", description: "Max characters to extract (default 24000)" },
+        },
+        required: ["path"],
+      },
+    },
+    execute: async (args) => {
+      const full = resolveWorkspacePath(String(args.path || ""));
+      const res = await runPythonWorker("doc_read", {
+        path: full,
+        maxChars: Number(args.max_chars || 24000),
+      });
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "workspace",
+    definition: {
+      name: "vision_inspect",
+      description:
+        "Load an image file (PNG, JPG, WEBP) from the workspace directly into your Multimodal Vision context so you can visually inspect screenshots, charts, or UI errors.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative path to PNG/JPG/WEBP image inside workspace" },
+        },
+        required: ["path"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const rel = String(args.path || "");
+      const full = resolveWorkspacePath(rel);
+      if (!fs.existsSync(full)) return `Image file not found: ${rel}`;
+      const stat = fs.statSync(full);
+      if (stat.size > 6 * 1024 * 1024) return `Image too large (${Math.round(stat.size / 1024)} KB, max 6 MB).`;
+      const ext = path.extname(full).toLowerCase();
+      const mimeType =
+        ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+      const base64 = fs.readFileSync(full).toString("base64");
+      ctx.onImageCaptured?.({ mimeType, base64, name: rel });
+      return `Attached visual image "${rel}" (${mimeType}, ${Math.round(stat.size / 1024)} KB) into your next reasoning step.`;
     },
   },
 
@@ -945,13 +1114,86 @@ const TOOLS: PandawaTool[] = [
   },
 
   // =============================================
-  // PACK 6: BROWSER INSPECTION & SCREENSHOTS
+  // PACK 6: REAL INTERACTIVE BROWSER (PLAYWRIGHT + VISION)
   // =============================================
   {
     pack: "browser",
     definition: {
+      name: "browser_open",
+      description:
+        "Open a live webpage in real headless Chromium (Playwright), execute JavaScript/SPA rendering, inspect visible text, interactive selectors, console errors, and optionally capture a screenshot into your Vision context.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          wait_ms: { type: "number", description: "Wait time after load for JS rendering (default 1200ms)" },
+          screenshot: { type: "boolean", description: "Capture PNG screenshot and attach to Vision LLM (default false)" },
+        },
+        required: ["url"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const url = String(args.url || "").trim();
+      const wantShot = Boolean(args.screenshot);
+      const shotRel = wantShot ? `screenshots/open_${Date.now()}.png` : "";
+      const shotFull = wantShot ? resolveWorkspacePath(shotRel) : "";
+      const res = await runPythonWorker<Record<string, unknown>>("browser_run", {
+        url,
+        waitMs: Number(args.wait_ms || 1200),
+        screenshotPath: shotFull,
+      });
+      if (res.ok && wantShot && shotFull && fs.existsSync(shotFull)) {
+        const base64 = fs.readFileSync(shotFull).toString("base64");
+        ctx.onImageCaptured?.({ mimeType: "image/png", base64, name: shotRel });
+        res.screenshotWorkspacePath = shotRel;
+      }
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "browser",
+    definition: {
+      name: "browser_interact",
+      description:
+        "Run interactive actions in a real headless Chromium browser (click buttons, fill inputs, press keys, evaluate JS, take screenshot for Vision verification).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          actions: {
+            type: "array",
+            description: "List of actions: {type: 'click'|'fill'|'press'|'wait'|'eval', selector?: string, value?: string}",
+            items: { type: "object" },
+          },
+          screenshot: { type: "boolean", description: "Capture screenshot after actions and feed to Vision (default true)" },
+        },
+        required: ["url", "actions"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const url = String(args.url || "").trim();
+      const actions = Array.isArray(args.actions) ? args.actions : [];
+      const wantShot = args.screenshot !== false;
+      const shotRel = wantShot ? `screenshots/act_${Date.now()}.png` : "";
+      const shotFull = wantShot ? resolveWorkspacePath(shotRel) : "";
+      const res = await runPythonWorker<Record<string, unknown>>("browser_run", {
+        url,
+        actions,
+        screenshotPath: shotFull,
+      });
+      if (res.ok && wantShot && shotFull && fs.existsSync(shotFull)) {
+        const base64 = fs.readFileSync(shotFull).toString("base64");
+        ctx.onImageCaptured?.({ mimeType: "image/png", base64, name: shotRel });
+        res.screenshotWorkspacePath = shotRel;
+      }
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "browser",
+    definition: {
       name: "browser_extract",
-      description: "Load a web page and extract structured metadata: title, meta description, headings, links, and clean main text.",
+      description: "Fast lightweight HTML metadata & text extraction without launching Chromium (great for static docs/APIs).",
       parameters: {
         type: "object",
         properties: { url: { type: "string" } },
@@ -962,7 +1204,7 @@ const TOOLS: PandawaTool[] = [
       const url = String(args.url || "").trim();
       if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
       const resp = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0 PandawaBrowser/4.0" },
+        headers: { "User-Agent": "Mozilla/5.0 PandawaBrowser/6.0" },
         signal: ctx.signal || AbortSignal.timeout(20_000),
       });
       const html = await resp.text();
@@ -996,28 +1238,61 @@ const TOOLS: PandawaTool[] = [
     pack: "browser",
     definition: {
       name: "browser_screenshot",
-      description: "Capture a headless Chromium screenshot of a URL into the Pandawa workspace (requires chromium/google-chrome on host).",
+      description:
+        "Capture a real headless Chromium screenshot of a URL into the workspace AND automatically attach it to your Vision LLM so you can inspect the page visually.",
       parameters: {
         type: "object",
         properties: {
           url: { type: "string" },
-          output_path: { type: "string", description: "Relative PNG path inside workspace (default screenshot.png)" },
+          output_path: { type: "string", description: "Relative PNG path inside workspace (default screenshots/shot_*.png)" },
+          full_page: { type: "boolean", description: "Capture full scrollable page (default false)" },
         },
         required: ["url"],
       },
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
       if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
       const outRel = String(args.output_path || `screenshots/shot_${Date.now()}.png`);
       const outFull = resolveWorkspacePath(outRel);
       fs.mkdirSync(path.dirname(outFull), { recursive: true });
+
+      // Prefer Playwright worker first
+      try {
+        const pwRes = await runPythonWorker<{ ok?: boolean; title?: string; consoleErrors?: string[]; error?: string }>(
+          "browser_run",
+          { url, screenshotPath: outFull, fullPage: Boolean(args.full_page), waitMs: 1200 }
+        );
+        if (pwRes.ok && fs.existsSync(outFull)) {
+          const base64 = fs.readFileSync(outFull).toString("base64");
+          ctx.onImageCaptured?.({ mimeType: "image/png", base64, name: outRel });
+          return JSON.stringify(
+            {
+              ok: true,
+              engine: "playwright",
+              path: outRel,
+              title: pwRes.title || "",
+              consoleErrors: pwRes.consoleErrors || [],
+              visionAttached: true,
+            },
+            null,
+            2
+          );
+        }
+      } catch {
+        // fall through to host chromium binary fallback
+      }
+
       const cmd = `(which chromium || which chromium-browser || which google-chrome) && $(which chromium || which chromium-browser || which google-chrome) --headless --no-sandbox --disable-gpu --window-size=1440,900 --screenshot="${outFull}" "${url}"`;
       try {
         await execAsync(cmd, { timeout: 30_000 });
-        return `Saved screenshot to workspace: ${outRel}`;
+        if (fs.existsSync(outFull)) {
+          const base64 = fs.readFileSync(outFull).toString("base64");
+          ctx.onImageCaptured?.({ mimeType: "image/png", base64, name: outRel });
+        }
+        return `Saved screenshot to workspace: ${outRel} (vision attached).`;
       } catch (err) {
-        return `Headless Chromium not installed or failed: ${err instanceof Error ? err.message : String(err)}. Tip: install chromium on VPS or attach a Playwright MCP server.`;
+        return `Headless browser capture failed: ${err instanceof Error ? err.message : String(err)}.`;
       }
     },
   },
@@ -1090,10 +1365,140 @@ const TOOLS: PandawaTool[] = [
       return JSON.stringify({ channel: target.name, ...res });
     },
   },
+
+  // =============================================
+  // PACK 8: PERSISTENT SHARED TERMINAL (PYTHON PTY / TMUX)
+  // =============================================
+  {
+    pack: "terminal",
+    definition: {
+      name: "term_open",
+      description:
+        "Open or attach to a persistent, stateful shared terminal session (backed by tmux/PTY). Directory changes, env vars, virtualenvs, and running servers stay alive across turns and can be inspected by teammates and the user.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short session name (e.g. 'backend', 'qa', 'build')" },
+          cwd: { type: "string", description: "Optional starting directory (relative to workspace or absolute)" },
+          env: { type: "object", description: "Optional initial environment variables" },
+        },
+        required: ["name"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const res = await openTerminal({
+        name: String(args.name || "main"),
+        cwd: args.cwd ? String(args.cwd) : undefined,
+        env: (args.env && typeof args.env === "object" ? args.env : undefined) as Record<string, string> | undefined,
+        ownerAgent: ctx.runtime.agent.name,
+      });
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "terminal",
+    definition: {
+      name: "term_exec",
+      description:
+        "Run a command inside a persistent shared terminal session (auto-opens if missing). Preserves cwd/env/venv across calls and captures stdout/stderr + exit code cleanly.",
+      parameters: {
+        type: "object",
+        properties: {
+          session: { type: "string", description: "Terminal session name (e.g. 'main', 'backend', 'qa')" },
+          command: { type: "string", description: "Shell command to execute" },
+          timeout_sec: { type: "number", description: "Max wait seconds before returning live partial output (default 45)" },
+          cwd: { type: "string", description: "Starting cwd if session is newly opened" },
+        },
+        required: ["session", "command"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const res = await execInTerminal({
+        name: String(args.session || "main"),
+        command: String(args.command || ""),
+        timeoutSec: args.timeout_sec ? Number(args.timeout_sec) : 45,
+        cwd: args.cwd ? String(args.cwd) : undefined,
+        actor: ctx.runtime.agent.name,
+      });
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "terminal",
+    definition: {
+      name: "term_send",
+      description:
+        "Send interactive input or control keys (e.g. 'C-c' to stop a server, 'C-d', 'y', 'Enter') to a living shared terminal session.",
+      parameters: {
+        type: "object",
+        properties: {
+          session: { type: "string", description: "Terminal session name" },
+          text: { type: "string", description: "Text to type into the terminal" },
+          key: { type: "string", description: "Special key: C-c, C-d, C-z, Enter, Escape, Tab, Up, Down" },
+          enter: { type: "boolean", description: "Press Enter after text (default true)" },
+        },
+        required: ["session"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const res = await sendKeysToTerminal({
+        name: String(args.session || "main"),
+        text: args.text !== undefined ? String(args.text) : undefined,
+        key: args.key !== undefined ? String(args.key) : undefined,
+        enter: args.enter !== undefined ? Boolean(args.enter) : true,
+        actor: ctx.runtime.agent.name,
+      });
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "terminal",
+    definition: {
+      name: "term_read",
+      description:
+        "Read the live screen & scrollback of ANY shared terminal session (including terminals opened by your teammates, e.g. to check server logs or test output).",
+      parameters: {
+        type: "object",
+        properties: {
+          session: { type: "string", description: "Terminal session name" },
+          lines: { type: "number", description: "Scrollback lines to capture (default 150)" },
+        },
+        required: ["session"],
+      },
+    },
+    execute: async (args) => {
+      const res = await readTerminal(String(args.session || "main"), Number(args.lines || 150));
+      return JSON.stringify(res, null, 2);
+    },
+  },
+  {
+    pack: "terminal",
+    definition: {
+      name: "term_list",
+      description: "List all active persistent shared terminal sessions, their owners, cwds, and tmux attach commands.",
+      parameters: { type: "object", properties: {} },
+    },
+    execute: async () => JSON.stringify(await listTerminals(), null, 2),
+  },
+  {
+    pack: "terminal",
+    definition: {
+      name: "term_close",
+      description: "Close and terminate a persistent shared terminal session cleanly.",
+      parameters: {
+        type: "object",
+        properties: { session: { type: "string", description: "Terminal session name to close" } },
+        required: ["session"],
+      },
+    },
+    execute: async (args) => JSON.stringify(await closeTerminal(String(args.session || "")), null, 2),
+  },
 ];
 
 export function getToolsForPacks(packs: string[], extraMcpTools: LLMToolDefinition[] = []): LLMToolDefinition[] {
   const set = new Set(packs);
+  // Agents with 'shell' access automatically gain persistent shared terminal ('terminal') tools too!
+  if (set.has("shell")) set.add("terminal");
   const builtin = TOOLS.filter((t) => set.has(t.pack)).map((t) => t.definition);
   return [...builtin, ...extraMcpTools];
 }

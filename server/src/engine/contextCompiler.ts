@@ -1,5 +1,5 @@
 import { getDb } from "../db/database.js";
-import { collectContextFromPath } from "../brains/brainFs.js";
+import { collectContextFromPath, collectProgressiveBrainContext } from "../brains/brainFs.js";
 import type { ProviderRecord } from "../providers/llmClient.js";
 
 export interface AgentRecord {
@@ -15,6 +15,7 @@ export interface AgentRecord {
   purpose: string;
   temperature: number;
   max_tokens: number;
+  max_iterations?: number;
   system_prompt: string;
   tool_packs_json: string;
   enabled: number;
@@ -241,32 +242,60 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
       (agent.system_prompt ? `\n${agent.system_prompt}\n` : "")
   );
 
-  // Layer 1: Main Brain
+  // Layer 1: Main Brain (Progressive Disclosure + [[wikilink]] auto-follow)
   if (mainBrains.length > 0) {
     const mbBlocks: string[] = [];
     for (const mb of mainBrains) {
       if (mb.permission === "read_write" || mb.permission === "sync") {
         writablePrefixes.push(mb.folder_path);
       }
-      const collected = collectContextFromPath(mb.folder_path, 12000);
-      totalFiles += collected.files.length;
-      const body = collected.files.map((f) => `### File: ${f.path}\n${f.content}`).join("\n\n");
-      mbBlocks.push(`## Main Brain: ${mb.name} (${mb.folder_path}, access: ${mb.permission})\n${body}`);
+      const prog = collectProgressiveBrainContext(mb.folder_path, 16_000);
+      totalFiles += prog.totalFiles;
+      const body = prog.coreFiles
+        .map((f) => `### File: ${f.path}${f.viaLink ? " (linked via [[wikilink]])" : ""}\n${f.content}`)
+        .join("\n\n");
+      const indexBlock =
+        prog.indexedFiles.length > 0
+          ? `\n\n### On-Demand Brain Knowledge & Skills (use \`brain_read\` to open full file)\n` +
+            prog.indexedFiles
+              .map(
+                (i) =>
+                  `- \`${i.path}\` — **${i.title}**: ${i.summary || "(note)"}${
+                    i.links.length ? ` [links: ${i.links.map((l) => `[[${l}]]`).join(", ")}]` : ""
+                  }`
+              )
+              .join("\n")
+          : "";
+      mbBlocks.push(`## Main Brain: ${mb.name} (${mb.folder_path}, access: ${mb.permission})\n${body}${indexBlock}`);
     }
     promptSections.push(`# LAYER 1 — MAIN BRAIN (GLOBAL KNOWLEDGE & DHARMA)\n${mbBlocks.join("\n\n")}`);
   }
 
-  // Layer 2: Team / Group Brain
+  // Layer 2: Team / Group Brain (Progressive Disclosure + [[wikilink]] auto-follow)
   if (teamBrains.length > 0) {
     const tbBlocks: string[] = [];
     for (const tb of teamBrains) {
       if (tb.permission === "read_write" || tb.permission === "sync") {
         writablePrefixes.push(tb.folder_path);
       }
-      const collected = collectContextFromPath(tb.folder_path, 12000);
-      totalFiles += collected.files.length;
-      const body = collected.files.map((f) => `### File: ${f.path}\n${f.content}`).join("\n\n");
-      tbBlocks.push(`## Team Brain: ${tb.name} (${tb.folder_path}, access: ${tb.permission})\n${body}`);
+      const prog = collectProgressiveBrainContext(tb.folder_path, 16_000);
+      totalFiles += prog.totalFiles;
+      const body = prog.coreFiles
+        .map((f) => `### File: ${f.path}${f.viaLink ? " (linked via [[wikilink]])" : ""}\n${f.content}`)
+        .join("\n\n");
+      const indexBlock =
+        prog.indexedFiles.length > 0
+          ? `\n\n### Team Skills & Reference Notes (open on-demand with \`brain_read\`)\n` +
+            prog.indexedFiles
+              .map(
+                (i) =>
+                  `- \`${i.path}\` — **${i.title}**: ${i.summary || "(note)"}${
+                    i.links.length ? ` [links: ${i.links.map((l) => `[[${l}]]`).join(", ")}]` : ""
+                  }`
+              )
+              .join("\n")
+          : "";
+      tbBlocks.push(`## Team Brain: ${tb.name} (${tb.folder_path}, access: ${tb.permission})\n${body}${indexBlock}`);
     }
     promptSections.push(`# LAYER 2 — TEAM / GROUP BRAIN (SHARED TEAM CONTEXT)\n${tbBlocks.join("\n\n")}`);
   }
@@ -355,7 +384,55 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
             .join("\n")
       );
     }
+
+    // Live Team Messages & Shared Tasks awareness
+    const msgRows = db
+      .prepare(
+        `SELECT from_agent, to_agent, kind, content FROM team_messages
+         WHERE team_id = ? ${sessionId ? "AND (session_id = ? OR session_id = '')" : ""}
+         ORDER BY created_at DESC LIMIT 10`
+      )
+      .all(...(sessionId ? [teamId, sessionId] : [teamId])) as Array<{
+      from_agent: string;
+      to_agent: string;
+      kind: string;
+      content: string;
+    }>;
+    if (msgRows.length > 0) {
+      promptSections.push(
+        `# LIVE TEAM MESSAGES (INTER-AGENT CHANNEL)\n` +
+          msgRows
+            .reverse()
+            .map((m) => `- **[${m.kind}] ${m.from_agent} → ${m.to_agent}:** ${m.content}`)
+            .join("\n")
+      );
+    }
+
+    const openTasks = db
+      .prepare(
+        `SELECT id, title, owner_agent, status, notes FROM team_tasks
+         WHERE team_id = ? AND status != 'done'
+         ORDER BY updated_at DESC LIMIT 12`
+      )
+      .all(teamId) as Array<{ id: string; title: string; owner_agent: string; status: string; notes: string }>;
+    if (openTasks.length > 0) {
+      promptSections.push(
+        `# SHARED TEAM TASK BOARD (ACTIVE)\n` +
+          openTasks
+            .map((t) => `- [${t.status.toUpperCase()}] \`${t.id}\` **${t.title}** (owner: ${t.owner_agent || "unassigned"})${t.notes ? ` — ${t.notes}` : ""}`)
+            .join("\n")
+      );
+    }
   }
+
+  // Operating Capabilities Note (Shared Persistent Terminal & Real Execution ethos)
+  promptSections.push(
+    `# PANDAWA LIVING EXECUTION PROTOCOL\n` +
+      `- You operate inside a live Pandawa Agentic OS. Prefer real action & verification over speculation.\n` +
+      `- When running commands, starting servers, installing packages, or debugging, prefer persistent shared terminals (\`term_open\`, \`term_exec\`, \`term_read\`, \`term_send\`) so your environment stays alive and teammates can inspect your terminal output.\n` +
+      `- Coordinate with teammates mid-execution via \`team_message\`, \`team_inbox\`, \`consult_teammate\`, \`blackboard_post\`, and \`team_todo_manage\`.\n` +
+      `- Before finishing a build/engineering task, actually run tests, builds, or checks to verify your work.`
+  );
 
   const systemPrompt = promptSections.join("\n\n---\n\n");
 

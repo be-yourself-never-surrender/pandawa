@@ -2042,6 +2042,52 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           agents: Array<{ name: string; title: string; avatar: string; purpose: string; soul: string; packs: string[] }>;
         }
       > = {
+        "pandawa-lima": {
+          teamName: "Pandawa Lima Full Squad",
+          desc: "Full 5-specialist peer team: Yudhistira, Bima, Arjuna, Nakula, and Sadewa.",
+          agents: [
+            {
+              name: "Yudhistira Lead",
+              title: "Chief Strategist",
+              avatar: "Y",
+              purpose: "strategy",
+              packs: ["brain", "team"],
+              soul: "# Yudhistira\nFrame objectives, balance trade-offs, and synthesize final team consensus.",
+            },
+            {
+              name: "Bima Ops",
+              title: "Operations & Execution",
+              avatar: "B",
+              purpose: "execution",
+              packs: ["brain", "team", "workspace", "shell", "terminal"],
+              soul: "# Bima\nExecute workflows, automate infrastructure, and debug runtime issues.",
+            },
+            {
+              name: "Arjuna Code",
+              title: "Precision Architect",
+              avatar: "A",
+              purpose: "coding",
+              packs: ["brain", "team", "workspace", "shell", "terminal"],
+              soul: "# Arjuna\nDesign clean architectures and ship production-grade code.",
+            },
+            {
+              name: "Nakula Research",
+              title: "Deep Researcher",
+              avatar: "N",
+              purpose: "research",
+              packs: ["brain", "team", "web", "browser"],
+              soul: "# Nakula\nGather verified sources, inspect docs, and organize Brain knowledge.",
+            },
+            {
+              name: "Sadewa QA",
+              title: "Security & QA Auditor",
+              avatar: "S",
+              purpose: "review",
+              packs: ["brain", "team", "workspace"],
+              soul: "# Sadewa\nAudit security boundaries, catch edge cases, and enforce verification.",
+            },
+          ],
+        },
         "software-squad": {
           teamName: "Software Engineering Squad",
           desc: "Full-stack product engineering team: Architect, Builder, and QA/DevOps.",

@@ -696,6 +696,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
             className="px-2.5 py-1.5 rounded-lg bg-[#18181b] border border-white/[0.10] text-zinc-200 text-xs font-medium cursor-pointer shrink-0"
           >
             <option value="">{spawningTpl ? "Spawning..." : "+ Team Kit"}</option>
+            <option value="pandawa-lima">Pandawa Lima Full Squad (5 Agents)</option>
             <option value="software-squad">Software Engineering Squad</option>
             <option value="growth-squad">Growth &amp; Content Squad</option>
             <option value="research-squad">Deep Research &amp; Alpha Squad</option>

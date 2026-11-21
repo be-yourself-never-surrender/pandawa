@@ -1,41 +1,39 @@
 <p align="center">
-  <img src="assets/banner.jpg" alt="Pandawa OS — Living Agentic Team OS & Visual Layered Brain Platform" width="100%">
+  <img src="assets/banner.jpg" alt="Pandawa OS — Living Agentic Team OS & Visual Control Plane" width="100%">
 </p>
 
-<h1 align="center">PANDAWA OS ⚡</h1>
+<h1 align="center">PANDAWA OS</h1>
 
 <p align="center">
-  <strong>Hardened Hybrid TypeScript + Python Agentic Team OS · Visual [[Wikilink]] Layered Brains · Real-Time xterm.js PTY · Multi-AI Routing</strong>
+  <strong>Self-Hosted Agentic Team OS · Visual Control Plane (Brain Canvas) · Omnichannel (WhatsApp QR/Cloud, Telegram, Discord, Slack) · xterm.js PTY · Skill Installer</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/be-yourself-never-surrender/pandawa/actions"><img src="https://img.shields.io/github/actions/workflow/status/be-yourself-never-surrender/pandawa/ci.yml?style=for-the-badge&label=CI%20Build%20%26%20Tests" alt="CI Status"></a>
-  <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-7.0.0-f59e0b?style=for-the-badge" alt="Version 7.0.0"></a>
+  <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-7.0.0-e5a00d?style=for-the-badge" alt="Version 7.0.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Runtime-Node.js%2022.5%2B%20%2F%2024%20%2B%20Python%203-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node 24 + Python">
-  <img src="https://img.shields.io/badge/Terminal-xterm.js%20PTY%20%2F%20tmux-06b6d4?style=for-the-badge" alt="xterm PTY">
-  <a href="SECURITY.md"><img src="https://img.shields.io/badge/Security-Hardened%20%7C%20Approval%20Gate-ef4444?style=for-the-badge" alt="Security"></a>
+  <img src="https://img.shields.io/badge/Channels-WhatsApp%20%7C%20Telegram%20%7C%20Discord-06b6d4?style=for-the-badge" alt="Omnichannel">
+  <a href="SECURITY.md"><img src="https://img.shields.io/badge/Security-Hardened%20%7C%20Zero%20Mock-ef4444?style=for-the-badge" alt="Security"></a>
 </p>
 
 ---
 
-**Pandawa OS** is a clean-room, self-hosted **Agentic Team Operating System** built with a **Hybrid TypeScript + Python architecture**. Inspired by the Javanese legend of the **Pandawa Lima** (*Yudhistira, Bima, Arjuna, Nakula, Sadewa*), Pandawa connects multiple AI models into **persistent peer teams** sharing visual layered brains, real-time `xterm.js` / `tmux` terminals, programmatic verification loops, and user-controlled approval gates.
+**Pandawa OS** is a clean-room, self-hosted **Agentic Team Operating System** built with a **Hybrid TypeScript + Python architecture** and an **Obsidian Instrument Visual Control Plane**.
 
-- **Executable Layered Brain Vault:** `Main Brain → Team Brain → Personal Brain` stored as transparent Markdown with `[[wikilinks]]`, backlinks, progressive on-demand skill loading, FTS5 search, hybrid semantic search (offline TF-IDF + n-gram + optional dense neural embeddings), and import for **Files, Entire Folders (Obsidian Vaults), `.zip`, PDF, DOCX, and XLSX**.
-- **Programmatic Execute & Verify Engine:** Multi-model teams running up to **100 steps/turn** with **machine-enforced `verifyCmd` exit-code checks** (preventing false-positive LLM verdicts), enforced parallel file locks with atomic writes, live mid-turn `team_message` coordination, LLM semantic compaction, and mission token budget caps.
-- **Hardened by Default, Freedom by Choice:** Unique random initial password on fresh boot, login rate-limiting (`429`), instant JWT revocation on password change, single-use 30s WebSocket tickets, same-origin CORS, mandatory constant-time webhook secrets, `AES-256-GCM` encryption for **all** provider keys / Telegram tokens / webhook secrets / MCP headers, cloud-metadata SSRF blocking, and non-root Docker — with **zero hidden content censorship** (governed solely by your Approval Gate).
+- **Web UI = Pure Control Plane (Zero Web Chat Bloat):** Use the Web UI (`Command Center`, `Brain Canvas`, `Channels`, `Brain Files`, `AI Providers`, `Skills & Memory`, `Live Terminal`, `Automation & MCP`, `⌘K` Command Palette) to assemble agents, wire models/brains/channels visually, and monitor terminals — while chatting with your Pandawa teams daily from **WhatsApp (QR Baileys OR Official Meta Cloud API)**, **Telegram**, **Discord**, **Slack**, **Webhooks**, or CLI (`pandawa live`).
+- **Minimal Clean-Slate Starter:** Fresh installs start lean (**5 clean nodes on Brain Canvas**, **2 starter agents**, **4 editable Brain files**) so you can customize immediately without deleting 20 boilerplate nodes — or spawn full multi-agent squads (`Pandawa Lima`, `Software`, `Growth`, `Research`) in 1 click.
+- **Zero Mock · Zero Dry-Run · Hardened by Default:** Missing AI providers fail fast with HTTP `422` (never simulated responses). Unique random first-boot password, login rate-limiting (`429`), instant JWT revocation on password change, single-use 30s WebSocket tickets, same-origin CORS, mandatory webhook secrets, `AES-256-GCM` encryption for all provider/channel/MCP secrets, cloud-metadata SSRF blocking, and non-root Docker — with **zero hidden content censorship** (governed solely by your Approval Gate).
 
 <table>
-<tr><td><b>Programmatic Execute &amp; Verify (Up to 100 Steps)</b></td><td>Architect splits tasks with <code>verifyCmd</code> → Builders execute in shared terminals under enforced file locks → Orchestrator runs <code>verifyCmd</code> directly and enforces real exit codes (<code>verified=true</code> only on exit <code>0</code>) → Auto-fix loop. Plus <b>Musyawarah</b> (Deliberate + Cross-Review), <b>Parallel/Rapid Council</b>, and <b>Sequential Relay</b>.</td></tr>
-<tr><td><b>Real-Time xterm.js PTY Terminal (Linux / macOS / WSL2)</b></td><td>Interactive 60fps ANSI terminal right inside Web Studio (<code>xterm.js</code> ↔ WebSocket ticket ↔ Python PTY ↔ <code>tmux</code>) shared live with Pandawa agents, or attach over SSH via <code>pandawa term attach &lt;name&gt;</code>. <i>(Windows users: run under WSL2 or Docker for full PTY/tmux support.)</i></td></tr>
-<tr><td><b>Visual Brain Canvas + Living [[Wikilink]] Vault</b></td><td>n8n-style visual wiring for <b>Main Brains</b>, <b>Team Brains</b>, <b>Agents</b>, <b>AI Models</b>, <b>Files/Folders</b>, and <b>Toolpacks</b>. Core files auto-load + follow 1-hop <code>[[wikilinks]]</code>; skills &amp; notes load progressively. Import individual files, full Obsidian folders, <code>.zip</code> archives (anti-zip-slip), or PDF/DOCX/XLSX.</td></tr>
-<tr><td><b>Hybrid Semantic Search &amp; Python Worker (Optional Setup)</b></td><td>Offline semantic engine (sublinear TF-IDF + char n-grams + wikilink boost) works out of the box and auto-upgrades to dense neural vectors (RRF) when an OpenAI/OpenRouter/Gemini key is configured. Optional <code>runtime/python_worker/setup.sh</code> installs <b>Playwright Chromium</b> + <b>PDF/DOCX/XLSX</b> parsers.</td></tr>
-<tr><td><b>46 Built-In Power Tools + Live MCP</b></td><td>Shared PTY/tmux terminals, live inter-agent <code>team_message</code>/<code>team_inbox</code>, <code>brain_semantic_search</code>, <code>heartbeat_configure</code>, atomic file patching &amp; checkpoints, Python/Node/Bash execution, web search, Playwright + Vision, cron, and <b>HTTP/STDIO MCP</b>.</td></tr>
-<tr><td><b>Pure Visual Control Plane + Omnichannel Messaging (No Web Chat)</b></td><td>Web Studio is a focused <b>Control Plane</b> (<code>Brain Canvas</code>, <code>Channels</code>, <code>Brain Files</code>, <code>AI Providers</code>, <code>Skill Installer</code>, <code>Live Terminal</code>) — interact with your Pandawa teams daily from <b>WhatsApp (QR Baileys OR Official Meta Cloud API)</b>, <b>Telegram</b>, <b>Discord</b>, <b>Slack</b>, <b>Webhooks</b>, or CLI (<code>pandawa live</code>), and wire channels to teams visually on Canvas.</td></tr>
-<tr><td><b>Proactive Heartbeat Daemon + Live TUI + Mobile Approvals</b></td><td>24/7 <b>Proactive Heartbeat</b> (<code>main-brain/HEARTBEAT.md</code> — logs <code>HEARTBEAT_OK</code> silently and alerts only on real issues), background mission queue (persists across disconnects; pair with <code>systemd</code>/Docker for reboot persistence), ANSI TUI (<code>pandawa live</code>), and mobile remote approvals via Telegram &amp; WhatsApp (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>, <code>/term</code>, <code>/new</code>, <code>/status</code>).</td></tr>
-<tr><td><b>Hardened Security + Zero Hidden Guardrails</b></td><td>Random first-boot password, login rate-limiting, token revocation on password change, single-use WS tickets, encrypted DB secrets (<code>0600</code>), mandatory webhook secrets, cloud-metadata SSRF blocking, token budget caps, and configurable <b>Approval Gate</b> (<code>auto</code> / <code>approve_shell</code> / <code>approve_sensitive</code> / <code>approve_all</code>). See <a href="SECURITY.md">SECURITY.md</a>.</td></tr>
-<tr><td><b>Pandawa Skill Installer (GitHub / URL / .zip / CLI)</b></td><td>Install multi-file <code>SKILL.md</code> packages (preserving <code>scripts/</code> &amp; <code>references/</code>) from <b>GitHub repos/folders</b> (<code>owner/repo</code>), raw URLs, <code>.zip</code> packs, or local folders — with <b>pre-install preview &amp; static security scanning</b> (<code>CLEAN</code> / <code>REVIEW</code> / <code>CAUTION</code>) and 1-click uninstall.</td></tr>
-<tr><td><b>Commercial Brain Kits (<code>.pandawa.json</code>)</b></td><td>Package any Team + Layered Brains + <code>soul.md</code>/skills + Canvas wiring into a portable kit (providers, channels &amp; secrets are never exported) with an interactive <b>Preview Modal</b> before install.</td></tr>
+<tr><td><b>Visual Control Plane &amp; Channel Routing (Brain Canvas)</b></td><td>Wire <b>Channels</b> (WhatsApp / Telegram / Webhooks) → <b>Team Brains</b> → <b>Agents</b> → <b>AI Models</b> → <b>Files/Folders</b> &amp; <b>Toolpacks</b> visually. Saving a <code>Channel → Team/Agent</code> wire updates live bot routing instantly without restarting!</td></tr>
+<tr><td><b>Omnichannel Messaging (WhatsApp QR + Cloud API + Telegram)</b></td><td>Choose either <b>WhatsApp QR (Baileys — free 2-way, live QR scanner right in Web UI)</b> OR <b>WhatsApp Official Meta Cloud API</b> (<code>GET/POST /api/webhooks/whatsapp/:id</code> with HMAC-SHA256 verification), plus <b>Telegram 2-way</b>, <b>Discord</b>, <b>Slack</b>, and <b>Webhooks</b> — with persistent threads (<code>/new</code>) &amp; mobile remote approvals (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>, <code>/term</code>, <code>/status</code>).</td></tr>
+<tr><td><b>Programmatic Execute &amp; Verify (Up to 100 Steps)</b></td><td>Architect splits tasks with <code>verifyCmd</code> → Builders execute in shared terminals under enforced file locks &amp; atomic writes → Orchestrator executes <code>verifyCmd</code> directly and enforces real exit codes (<code>verified=true</code> only on exit <code>0</code>) → Auto-fix loop.</td></tr>
+<tr><td><b>Pandawa Skill Installer (GitHub / URL / .zip / Folder / CLI)</b></td><td>Install multi-file <code>SKILL.md</code> packages (preserving <code>scripts/</code> &amp; <code>references/</code>) from <b>GitHub repos/folders</b> (<code>owner/repo</code>), raw URLs, <code>.zip</code> packs, or local folders — with <b>pre-install preview &amp; static security scanning</b> (<code>CLEAN</code> / <code>REVIEW</code> / <code>CAUTION</code>) and 1-click uninstall.</td></tr>
+<tr><td><b>Executable Layered Brain Vault (<code>[[wikilinks]]</code>)</b></td><td><code>Main Brain → Team Brain → Personal Brain</code> stored as plain Markdown with <code>[[wikilinks]]</code>, backlinks, SQLite FTS5, hybrid semantic search (offline TF-IDF + optional neural RRF), and bulk import for <b>Files, Obsidian Folders, <code>.zip</code>, PDF, DOCX, and XLSX</b>.</td></tr>
+<tr><td><b>Real-Time xterm.js PTY Terminal (Linux / macOS / WSL2)</b></td><td>Interactive 60fps ANSI terminal inside Web Control Plane (<code>xterm.js</code> ↔ single-use WS ticket ↔ Python PTY ↔ <code>tmux</code>) shared live with Pandawa agents, or attach via SSH (<code>pandawa term attach &lt;name&gt;</code>). <i>(Windows: run under WSL2 or Docker for PTY/tmux.)</i></td></tr>
+<tr><td><b>46 Built-In Power Tools + Live MCP + Heartbeat Daemon</b></td><td>Shared PTY/tmux terminals, live inter-agent <code>team_message</code>/<code>team_inbox</code>, <code>brain_semantic_search</code>, <code>heartbeat_configure</code> (24/7 daemon), atomic file patching &amp; checkpoints, Python/Node/Bash execution, web search, Playwright + Vision, cron, and <b>HTTP/STDIO MCP</b>.</td></tr>
+<tr><td><b>Commercial Brain Kits (<code>.pandawa.json</code>)</b></td><td>Export any Team + Layered Brains + Canvas topology into a portable kit (providers, channels &amp; secrets are never exported) with a pre-install Preview Modal.</td></tr>
 </table>
 
 ---
@@ -44,27 +42,29 @@
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                   Control Surfaces (Hardened Perimeter)                    │
-│  Web Studio (Canvas · Mission · xterm PTY) · CLI TUI (`pandawa live`)      │
-│  Direct Shell (`tmux attach`) · 2-Way Telegram (+ /approve) · Webhooks     │
-│  (Same-Origin CORS · Login Rate Limit · 1-Time WS Tickets · Secret Vault)  │
+│            Messaging Channels (Daily Interaction · 2-Way Mobile)           │
+│  WhatsApp QR (Baileys) · WhatsApp Meta Cloud API · Telegram Bot            │
+│  Discord · Slack · Secret-Signed Webhooks · CLI TUI (`pandawa live`)       │
+└────────────────────────────────────┬───────────────────────────────────────┘
+                                     │  (Routed live via Visual Brain Canvas)
+                                     ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│        Obsidian Instrument Web Control Plane (Hardened Perimeter)          │
+│  Command Center · Brain Canvas · Channels Hub · Brain Files · Skill Hub    │
+│  AI Providers · Live xterm PTY · Automation & MCP · Cmd+K Palette          │
+│  (Same-Origin CORS · 429 Rate Limit · 1-Time WS Tickets · 0600 Vault)      │
 └────────────────────────────────────┬───────────────────────────────────────┘
                                      ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
 │            Living Brain Vault & Progressive Context Compiler               │
 │   [Main Brain] ──▶ [Team Brain] ──▶ [Personal / [[Wikilink]] Graph]        │
-│   Core Auto-Load + Progressive Index + SQLite FTS5 + Hybrid Semantic RRF   │
+│   Core Auto-Load + Installed SKILL.md Packs + SQLite FTS5 + Semantic RRF   │
 └────────────────────────────────────┬───────────────────────────────────────┘
                                      ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
 │       Autonomous Team Engine (Programmatic Execute & Verify · ≤100 Steps)  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │  Yudhistira  │◀▶│     Bima     │◀▶│    Arjuna    │◀▶│Nakula/Sadewa │   │
-│  │ Architect    │  │ Ops / PTY    │  │ Engineering  │  │ Research/QA  │   │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
-│         ▼                 ▼                 ▼                 ▼            │
-│   Multi-AI Hub (OpenAI · Anthropic · Gemini · DeepSeek · Custom Base URL)  │
-│   SSE Streaming · Vision · Semantic Compaction · Token Cap · Exit-Code QA  │
+│  Multi-AI Hub (OpenAI · Anthropic · Gemini · DeepSeek · OpenRouter · Local)│
+│  SSE Streaming · Vision · Semantic Compaction · Token Cap · Exit-Code QA   │
 └────────────────────────────────────┬───────────────────────────────────────┘
                                      ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -111,25 +111,24 @@ npm start
 
 - By default, Pandawa binds safely to **`http://127.0.0.1:7777`** and prints a unique random first-boot password (also saved `0600` to `data/.initial_password`).
 - For VPS access behind HTTPS, set `PANDAWA_HOST=0.0.0.0` (or keep `127.0.0.1` behind Caddy/Nginx on the same host) and supervise with `systemd` or Docker `restart: unless-stopped`.
-- **Windows:** Native PowerShell works for Web Studio & API, while shared `tmux`/PTY terminals require **WSL2** or **Docker**.
+- **Windows:** Native PowerShell works for Web Control Plane & API, while shared `tmux`/PTY terminals require **WSL2** or **Docker**.
 
 ---
 
-## Terminal OS & CLI Quick Reference
+## CLI Quick Reference
 
 ```bash
-pandawa start                     # Start Web Studio, API & Background Daemon
-pandawa live                      # Interactive ANSI Live TUI (streaming + inline approvals)
-pandawa live "Build & test API"   # Run a live mission straight from terminal
-pandawa term list                 # List all active shared agent terminals (tmux)
-pandawa term attach main          # Jump directly into a living agent terminal (`tmux attach`)
-pandawa skill install owner/repo  # Preview, security-scan & install SKILL.md packs from GitHub/URL/zip/local
-pandawa skill list                # List installed skills across Main Brain & Team Brains
-pandawa skill remove <slug>       # Uninstall a skill package cleanly
-pandawa status                    # Inspect Brains, Teams, Agents, Terminals, Jobs & Tools
-pandawa doctor                    # Verify Node, SQLite FTS5, tmux, Python Worker & Playwright
-pandawa approval approve_shell    # Switch Approval Gate (auto | approve_shell | approve_sensitive | approve_all)
-pandawa backup kit.json           # Export Team + Brains + Canvas into .pandawa.json kit
+pandawa start                         # Start Control Plane, API, Channels & Daemons (port 7777)
+pandawa live [prompt]                 # Interactive ANSI Terminal TUI with streaming & inline approvals
+pandawa skill install owner/repo      # Preview, security-scan & install SKILL.md packs (GitHub/URL/zip/local)
+pandawa skill list                    # List installed skills across Main Brain & Team Brains
+pandawa skill remove <slug>           # Uninstall a skill package cleanly
+pandawa term list                     # List active shared agent terminals (tmux)
+pandawa term attach main              # Jump directly into a living agent terminal (`tmux attach`)
+pandawa status                        # Inspect Brains, Teams, Agents, Providers, Terminals & Jobs
+pandawa doctor                        # Verify Node, SQLite FTS5, tmux, Python Worker & Playwright
+pandawa approval approve_shell        # Set Approval Gate (auto | approve_shell | approve_sensitive | approve_all)
+pandawa backup kit.json               # Export Team + Brains + Canvas into portable .pandawa.json kit
 ```
 
 ---
@@ -145,7 +144,7 @@ pandawa backup kit.json           # Export Team + Brains + Canvas into .pandawa.
 | **`shell`** *(Exec & Processes)* | `shell_exec`, `code_execute` (Python/Node/Bash), `process_start`, `process_list`, `process_logs`, `process_kill` |
 | **`web`** *(Search & HTTP + SSRF Guard)* | `web_search` (DuckDuckGo + optional Tavily), `web_fetch`, `http_request` |
 | **`browser`** *(Playwright + Vision)* | `browser_open`, `browser_interact` (click/fill/press/eval), `browser_screenshot` (auto-attaches to Vision LLM), `browser_extract` |
-| **`automation`** *(Heartbeat & Ops)* | `heartbeat_configure`, `cron_create`, `cron_list`, `channel_notify` (Telegram / Discord / Webhook) |
+| **`automation`** *(Heartbeat & Ops)* | `heartbeat_configure`, `cron_create`, `cron_list`, `channel_notify` (WhatsApp / Telegram / Discord / Slack / Webhook) |
 | **`mcp`** *(Dynamic)* | Live **HTTP** & **Local STDIO** MCP auto-discovery (`mcp__<server>__<tool>`) |
 
 ---
@@ -156,7 +155,7 @@ pandawa backup kit.json           # Export Team + Brains + Canvas into .pandawa.
 | --- | --- | --- |
 | `PANDAWA_PORT` | `7777` | HTTP & WebSocket server port |
 | `PANDAWA_HOST` | `127.0.0.1` | Bind interface (`0.0.0.0` in Docker / systemd behind HTTPS) |
-| `PANDAWA_DATA_DIR` | `./data` | Storage for `pandawa.db` (`0600`), `.vault.key` (`0600`), `brains/`, `workspace/` |
+| `PANDAWA_DATA_DIR` | `./data` | Storage for `pandawa.db` (`0600`), `.vault.key` (`0600`), `whatsapp_sessions/` (`0700`), `brains/`, `workspace/` |
 | `PANDAWA_DEFAULT_PASSWORD` | *(random 16-char)* | Optional override for first-boot admin password |
 | `PANDAWA_CORS_ORIGINS` | *(same-origin)* | Comma-separated extra allowed CORS origins |
 | `PANDAWA_TOKEN_TTL_SEC` | `172800` (48h) | Admin session JWT lifetime in seconds |
@@ -166,13 +165,11 @@ pandawa backup kit.json           # Export Team + Brains + Canvas into .pandawa.
 
 ## Testing & Security
 
-Run the full automated security & engine test suite locally:
-
 ```bash
 npm run build && npm test
 ```
 
-See [SECURITY.md](SECURITY.md) for the complete security architecture and production deployment checklist.
+See [SECURITY.md](SECURITY.md) for the full security architecture and production deployment checklist.
 
 ## License
 

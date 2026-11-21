@@ -3,7 +3,7 @@ import {
   Search,
   LayoutDashboard,
   Network,
-  MessageSquare,
+  Radio,
   Terminal,
   FolderTree,
   Cpu,
@@ -54,14 +54,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       onClose();
     };
     return [
-      { id: "nav-overview", group: "Navigate", label: "Command Center", hint: "Overview", icon: LayoutDashboard, action: go("overview") },
-      { id: "nav-chat", group: "Navigate", label: "Mission Room", hint: "Team Chat", icon: MessageSquare, action: go("chat") },
-      { id: "nav-canvas", group: "Navigate", label: "Brain Canvas", hint: "Topology", icon: Network, action: go("canvas") },
-      { id: "nav-terminal", group: "Navigate", label: "Live Terminal", hint: "xterm PTY", icon: Terminal, action: go("terminal") },
+      { id: "nav-overview", group: "Navigate", label: "Command Center", hint: "Control Plane", icon: LayoutDashboard, action: go("overview") },
+      { id: "nav-canvas", group: "Navigate", label: "Brain Canvas", hint: "Visual Wiring", icon: Network, action: go("canvas") },
+      { id: "nav-channels", group: "Navigate", label: "Channels", hint: "Telegram · WhatsApp · Discord", icon: Radio, action: go("channels") },
+      { id: "nav-terminal", group: "Navigate", label: "Live Terminal", hint: "xterm PTY & Jobs", icon: Terminal, action: go("terminal") },
       { id: "nav-brains", group: "Navigate", label: "Brain Files", hint: "Vault & Upload", icon: FolderTree, action: go("brains") },
       { id: "nav-providers", group: "Navigate", label: "AI Providers", hint: "API Keys", icon: Cpu, action: go("providers") },
       { id: "nav-skills", group: "Navigate", label: "Skills & Memory", hint: "Skill Installer", icon: BookOpen, action: go("skills") },
-      { id: "nav-automation", group: "Navigate", label: "Automation & MCP", hint: "Cron, Heartbeat, Bots", icon: Clock, action: go("automation") },
+      { id: "nav-automation", group: "Navigate", label: "Automation & MCP", hint: "Cron, Heartbeat, MCP", icon: Clock, action: go("automation") },
       { id: "nav-settings", group: "Navigate", label: "Settings & Security", hint: "Policies, Kits", icon: Settings, action: go("settings") },
       {
         id: "act-auto",
@@ -148,7 +148,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Jump to workspace, tool, or security policy..."
+            placeholder="Jump to canvas, channels, agents, or security policy..."
             className="flex-1 bg-transparent text-[13px] text-zinc-100 placeholder-zinc-500 outline-none"
           />
           <kbd className="text-[10px] font-mono text-zinc-500 bg-white/[0.04] border border-white/[0.08] rounded px-1.5 py-0.5">
@@ -188,7 +188,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         </div>
 
         <div className="px-3.5 py-2 border-t border-white/[0.06] bg-[#0c0c0e] flex items-center justify-between text-[11px] text-zinc-500">
-          <span>Pandawa Command Palette</span>
+          <span>Pandawa Control Plane</span>
           <span className="font-mono">↑↓ navigate · ↵ select</span>
         </div>
       </div>

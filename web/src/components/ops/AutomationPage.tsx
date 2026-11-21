@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Clock, Play, Trash2, Radio, Plug, Plus, Send, Activity, FileText } from "lucide-react";
+import { Clock, Play, Trash2, Radio, Plug, Plus, Activity, FileText } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { TeamItem } from "../../types";
 
@@ -62,9 +62,10 @@ interface DiscoveredToolItem {
 
 interface AutomationPageProps {
   onOpenFile?: (path: string) => void;
+  onOpenChannels?: () => void;
 }
 
-export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) => {
+export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOpenChannels }) => {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [channels, setChannels] = useState<ChannelItem[]>([]);
   const [mcps, setMcps] = useState<McpItem[]>([]);
@@ -77,13 +78,6 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) =>
   const [cronName, setCronName] = useState("");
   const [cronExpr, setCronExpr] = useState("0 9 * * *");
   const [cronPrompt, setCronPrompt] = useState("");
-
-  // Channel form
-  const [chName, setChName] = useState("");
-  const [chType, setChType] = useState("webhook");
-  const [chEndpoint, setChEndpoint] = useState("");
-  const [chSecret, setChSecret] = useState("");
-  const [chChatId, setChChatId] = useState("");
 
   // MCP form
   const [mcpName, setMcpName] = useState("");
@@ -148,35 +142,6 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) =>
     });
     setCronName("");
     setCronPrompt("");
-    await load();
-  }
-
-  async function addChannel(e: React.FormEvent) {
-    e.preventDefault();
-    if (!chName.trim()) return;
-    const config: Record<string, string> = {};
-    if (chType === "discord") config.webhookUrl = chEndpoint;
-    else if (chType === "telegram") {
-      config.botToken = chEndpoint;
-      config.chatId = chChatId;
-    } else {
-      config.outboundUrl = chEndpoint;
-      config.secret = chSecret;
-    }
-    await apiFetch("/api/channels", {
-      method: "POST",
-      body: JSON.stringify({
-        name: chName.trim(),
-        type: chType,
-        config,
-        targetType: "team",
-        targetId: teams[0]?.id || "team_pandawa",
-      }),
-    });
-    setChName("");
-    setChEndpoint("");
-    setChSecret("");
-    setChChatId("");
     await load();
   }
 
@@ -397,118 +362,23 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) =>
         </div>
       </section>
 
-      {/* CHANNELS & MCP GRID */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Channels */}
-        <section className="rounded-xl bg-[#111113] border border-white/[0.08] p-5 space-y-4">
-          <h2 className="text-sm font-bold text-sky-300 flex items-center gap-2">
-            <Radio className="w-4 h-4" /> Channels & Webhooks
-          </h2>
-          <form onSubmit={addChannel} className="space-y-2.5 text-xs">
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                value={chName}
-                onChange={(e) => setChName(e.target.value)}
-                placeholder="Channel Name"
-                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
-              />
-              <select
-                value={chType}
-                onChange={(e) => setChType(e.target.value)}
-                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
-              >
-                <option value="webhook">Webhook (Inbound / Outbound)</option>
-                <option value="discord">Discord Webhook</option>
-                <option value="telegram">Telegram Bot</option>
-              </select>
-            </div>
-            <input
-              value={chEndpoint}
-              onChange={(e) => setChEndpoint(e.target.value)}
-              placeholder={
-                chType === "telegram"
-                  ? "Telegram Bot Token"
-                  : chType === "discord"
-                  ? "Discord Webhook URL"
-                  : "Outbound Callback URL (optional)"
-              }
-              className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 font-mono text-white"
-            />
-            {chType === "telegram" ? (
-              <input
-                value={chChatId}
-                onChange={(e) => setChChatId(e.target.value)}
-                placeholder="Telegram Chat ID"
-                className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 font-mono text-white"
-              />
-            ) : chType === "webhook" ? (
-              <input
-                value={chSecret}
-                onChange={(e) => setChSecret(e.target.value)}
-                placeholder="Webhook Secret Header (X-Pandawa-Secret)"
-                className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 font-mono text-white"
-              />
-            ) : null}
+      {/* MCP SERVERS & CHANNELS SHORTCUT */}
+      <div className="space-y-4">
+        {onOpenChannels && (
+          <div className="rounded-xl bg-[#111113] border border-white/[0.08] px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="text-zinc-400 flex items-center gap-2">
+              <Radio className="w-3.5 h-3.5 text-amber-400" />
+              Messaging channels (Telegram, WhatsApp QR &amp; Cloud API, Discord, Slack, Webhooks) are managed in the dedicated <strong>Channels</strong> tab ({channels.length} configured).
+            </span>
             <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-zinc-950 font-semibold cursor-pointer"
+              type="button"
+              onClick={onOpenChannels}
+              className="h-7 px-3 rounded-md bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-[11px] cursor-pointer"
             >
-              Add Channel
+              Open Channels
             </button>
-          </form>
-
-          <div className="space-y-2">
-            {channels.map((c) => (
-              <div key={c.id} className="p-3 rounded-xl bg-[#0c0c0e] border border-white/[0.08] text-xs space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-white flex items-center gap-1.5">
-                    {c.name} <span className="text-[10px] uppercase text-sky-400">({c.type})</span>
-                    {c.type === "telegram" && c.poller?.active && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                        2-Way Bot Live
-                      </span>
-                    )}
-                    {c.type === "telegram" && c.poller?.lastError && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300">
-                        {c.poller.lastError}
-                      </span>
-                    )}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={async () => {
-                        const r = await apiFetch<{ ok: boolean; detail: string }>(`/api/channels/${c.id}/test`, {
-                          method: "POST",
-                        });
-                        window.alert(`${r.ok ? "OK" : "Failed"}: ${r.detail}`);
-                      }}
-                      className="px-2 py-1 rounded bg-[#18181b] hover:bg-[#222227] text-zinc-200 flex items-center gap-1 cursor-pointer"
-                    >
-                      <Send className="w-3 h-3" /> Test
-                    </button>
-                    <button
-                      onClick={async () => {
-                        await apiFetch(`/api/channels/${c.id}`, { method: "DELETE" });
-                        await load();
-                      }}
-                      className="text-zinc-500 hover:text-rose-400 p-1 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-                <div className="text-[10px] font-mono text-zinc-500 break-all">
-                  Inbound POST: {window.location.origin}/api/webhooks/{c.id}
-                </div>
-              </div>
-            ))}
-            {channels.length === 0 && (
-              <div className="p-3.5 rounded-xl bg-[#0c0c0e] border border-white/[0.06] text-xs text-zinc-500 text-center">
-                No channels configured yet. Add a Telegram Bot, Discord Webhook, or HTTP Webhook above.
-              </div>
-            )}
           </div>
-        </section>
+        )}
 
         {/* MCP Servers */}
         <section className="rounded-xl bg-[#111113] border border-white/[0.08] p-5 space-y-4">

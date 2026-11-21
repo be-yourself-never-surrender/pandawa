@@ -4,7 +4,7 @@ import type { NavTab } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { Sidebar } from "./components/Sidebar";
 import { OverviewPage } from "./components/OverviewPage";
-import { MissionRoom, type LiveStreamBuffer } from "./components/chat/MissionRoom";
+import { ChannelsPage } from "./components/ops/ChannelsPage";
 import { BrainExplorer } from "./components/brains/BrainExplorer";
 import { ProvidersPage } from "./components/providers/ProvidersPage";
 import { SkillsPage } from "./components/ops/SkillsPage";
@@ -35,15 +35,12 @@ export const App: React.FC = () => {
   const [paletteOpen, setPaletteOpen] = useState<boolean>(false);
   const [openFilePath, setOpenFilePath] = useState<string | null>(null);
   const [focusTeamId, setFocusTeamId] = useState<string | null>(null);
-  const [chatInitialTeamId, setChatInitialTeamId] = useState<string | null>(null);
-  const [chatStarterPrompt, setChatStarterPrompt] = useState<string | null>(null);
   const [approvalMode, setApprovalMode] = useState<string>("approve_shell");
 
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [liveEvents, setLiveEvents] = useState<Array<Record<string, unknown>>>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalItem[]>([]);
   const [activeAgentIds, setActiveAgentIds] = useState<Set<string>>(new Set());
-  const [streamingBuffers, setStreamingBuffers] = useState<Record<string, LiveStreamBuffer>>({});
 
   useEffect(() => {
     const onUnauthorized = () => setAuthed(false);
@@ -132,23 +129,6 @@ export const App: React.FC = () => {
             });
           } else if (evType === "mission_aborted") {
             setActiveAgentIds(new Set());
-            setStreamingBuffers({});
-          } else if (evType === "agent_token" && typeof ev.agentId === "string") {
-            const aid = ev.agentId;
-            const delta = String(ev.delta || "");
-            setStreamingBuffers((prev) => {
-              const existing = prev[aid] || {
-                agentId: aid,
-                agentName: String(ev.agentName || aid),
-                avatar: String(ev.avatar || "P"),
-                model: String(ev.model || ""),
-                text: "",
-              };
-              return {
-                ...prev,
-                [aid]: { ...existing, text: existing.text + delta },
-              };
-            });
           } else if (evType === "approval_required" && ev.approval) {
             const item = ev.approval as PendingApprovalItem;
             setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
@@ -199,7 +179,7 @@ export const App: React.FC = () => {
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-[#09090b] flex items-center justify-center text-xs font-mono text-zinc-500">
-        Initializing Pandawa OS...
+        Initializing Pandawa Control Plane...
       </div>
     );
   }
@@ -240,11 +220,6 @@ export const App: React.FC = () => {
             approvalMode={approvalMode}
             onChangeApprovalMode={handleChangeApprovalMode}
             onNavigate={setTab}
-            onStartMission={(teamId, starterPrompt) => {
-              setChatInitialTeamId(teamId);
-              if (starterPrompt) setChatStarterPrompt(starterPrompt);
-              setTab("chat");
-            }}
             onFocusTeamOnCanvas={(teamId) => {
               setFocusTeamId(teamId);
               setTab("canvas");
@@ -255,23 +230,14 @@ export const App: React.FC = () => {
           <Suspense fallback={<LazyFallback label="Brain Canvas" />}>
             <BrainCanvas
               onOpenBrainFile={handleOpenBrainFile}
+              onOpenChannels={() => setTab("channels")}
               activeAgentIds={activeAgentIds}
               initialFocusTeamId={focusTeamId}
             />
           </Suspense>
         )}
-        {tab === "chat" && (
-          <MissionRoom
-            liveEvents={liveEvents}
-            streamingBuffers={streamingBuffers}
-            onClearStreams={() => setStreamingBuffers({})}
-            approvalMode={approvalMode}
-            onChangeApprovalMode={handleChangeApprovalMode}
-            initialTeamId={chatInitialTeamId}
-            initialPrompt={chatStarterPrompt}
-            onConsumeInitialPrompt={() => setChatStarterPrompt(null)}
-            onOpenTerminal={() => setTab("terminal")}
-          />
+        {tab === "channels" && (
+          <ChannelsPage liveEvents={liveEvents} onOpenCanvas={() => setTab("canvas")} />
         )}
         {tab === "terminal" && (
           <Suspense fallback={<LazyFallback label="Live Terminal" />}>
@@ -286,7 +252,9 @@ export const App: React.FC = () => {
         )}
         {tab === "providers" && <ProvidersPage />}
         {tab === "skills" && <SkillsPage onOpenFile={handleOpenBrainFile} />}
-        {tab === "automation" && <AutomationPage onOpenFile={handleOpenBrainFile} />}
+        {tab === "automation" && (
+          <AutomationPage onOpenFile={handleOpenBrainFile} onOpenChannels={() => setTab("channels")} />
+        )}
         {tab === "settings" && <SettingsPage onPasswordChanged={() => setUsingDefaultPassword(false)} />}
       </main>
 

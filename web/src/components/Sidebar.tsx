@@ -2,7 +2,7 @@ import React from "react";
 import {
   LayoutDashboard,
   Network,
-  MessageSquare,
+  Radio,
   Terminal,
   FolderTree,
   Cpu,
@@ -33,16 +33,16 @@ const SECTIONS: Array<{
   items: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ className?: string }> }>;
 }> = [
   {
-    title: "Workspace",
+    title: "Control Plane",
     items: [
       { id: "overview", label: "Command Center", icon: LayoutDashboard },
-      { id: "chat", label: "Mission Room", icon: MessageSquare },
       { id: "canvas", label: "Brain Canvas", icon: Network },
+      { id: "channels", label: "Channels", icon: Radio },
       { id: "terminal", label: "Live Terminal", icon: Terminal },
     ],
   },
   {
-    title: "Knowledge",
+    title: "Intelligence",
     items: [
       { id: "brains", label: "Brain Files", icon: FolderTree },
       { id: "providers", label: "AI Providers", icon: Cpu },

@@ -31,6 +31,7 @@ import {
   Upload,
   LayoutGrid,
   Copy,
+  Radio,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BrainItem, BrainTreeNode, ProviderItem, TeamItem, TopologyEdge, TopologyNode } from "../../types";
@@ -39,8 +40,17 @@ import { BundlePreviewModal, type PreviewBundleData } from "../BundlePreviewModa
 
 interface BrainCanvasProps {
   onOpenBrainFile: (filePath: string) => void;
+  onOpenChannels?: () => void;
   activeAgentIds: Set<string>;
   initialFocusTeamId?: string | null;
+}
+
+interface CanvasChannelSummary {
+  id: string;
+  name: string;
+  type: string;
+  target_type: string;
+  target_id: string;
 }
 
 const RELATION_COLORS: Record<string, string> = {
@@ -62,6 +72,7 @@ function flattenTree(nodes: BrainTreeNode[]): Array<{ path: string; isFolder: bo
 }
 
 function inferRelation(srcType: string, dstType: string): { relation: string; label: string } {
+  if (srcType === "channel" || dstType === "channel") return { relation: "channel_route", label: "routes to" };
   if (srcType === "provider" || dstType === "provider") return { relation: "model_binding", label: "AI model" };
   if (srcType === "knowledge" || dstType === "knowledge") return { relation: "knowledge_mount", label: "mount" };
   if (srcType === "toolpack" || dstType === "toolpack") return { relation: "tool_grant", label: "tools" };
@@ -69,7 +80,12 @@ function inferRelation(srcType: string, dstType: string): { relation: string; la
   return { relation: "brain_link", label: "brain sync" };
 }
 
-export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activeAgentIds, initialFocusTeamId }) => {
+export const BrainCanvas: React.FC<BrainCanvasProps> = ({
+  onOpenBrainFile,
+  onOpenChannels,
+  activeAgentIds,
+  initialFocusTeamId,
+}) => {
   const nodeTypes = useMemo(() => ({ pandawa: PandawaNode }), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PandawaNodeData>>([]);
@@ -84,6 +100,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [brains, setBrains] = useState<BrainItem[]>([]);
   const [providers, setProviders] = useState<ProviderItem[]>([]);
+  const [channels, setChannels] = useState<CanvasChannelSummary[]>([]);
   const [fileChoices, setFileChoices] = useState<Array<{ path: string; isFolder: boolean }>>([]);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -101,13 +118,14 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
   } | null>(null);
 
   const loadAll = useCallback(async () => {
-    const [topoRes, agentsRes, brainsRes, provRes, treeRes, teamsRes] = await Promise.all([
+    const [topoRes, agentsRes, brainsRes, provRes, treeRes, teamsRes, chRes] = await Promise.all([
       apiFetch<{ nodes: TopologyNode[]; edges: TopologyEdge[] }>("/api/topology"),
       apiFetch<{ agents: AgentItem[] }>("/api/agents"),
       apiFetch<{ brains: BrainItem[] }>("/api/brains"),
       apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
       apiFetch<{ tree: BrainTreeNode[] }>("/api/files/tree"),
       apiFetch<{ teams: TeamItem[] }>("/api/teams"),
+      apiFetch<{ channels: CanvasChannelSummary[] }>("/api/channels").catch(() => ({ channels: [] })),
     ]);
 
     setAgents(agentsRes.agents);
@@ -115,6 +133,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
     setProviders(provRes.providers);
     setFileChoices(flattenTree(treeRes.tree));
     setTeams(teamsRes.teams);
+    setChannels(chRes.channels || []);
 
     const rfNodes: Array<Node<PandawaNodeData>> = topoRes.nodes.map((n) => ({
       id: n.id,
@@ -445,6 +464,33 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
       ]);
       setSelectedNodeId(id);
       setDirty(true);
+      return;
+    }
+
+    if (kind === "channel") {
+      const firstCh = channels[0];
+      if (!firstCh) {
+        if (onOpenChannels && window.confirm("No messaging channels configured yet. Open Channels page to link WhatsApp or Telegram?")) {
+          onOpenChannels();
+        }
+        return;
+      }
+      setNodes((prev) => [
+        ...prev,
+        {
+          id,
+          type: "pandawa",
+          position: pos,
+          data: {
+            nodeType: "channel",
+            label: firstCh.name,
+            refId: firstCh.id,
+            subtitle: firstCh.type.replace("_", " "),
+          },
+        },
+      ]);
+      setSelectedNodeId(id);
+      setDirty(true);
     }
   }
 
@@ -631,9 +677,15 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
           </button>
           <button
             onClick={() => addQuickNode("toolpack")}
-            className="px-2.5 py-1.5 rounded-lg bg-pink-500/15 hover:bg-pink-500/25 border border-pink-500/35 text-pink-300 text-xs font-medium flex items-center gap-1.5 cursor-pointer shrink-0"
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] border border-white/[0.09] text-zinc-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer shrink-0"
           >
-            <Wrench className="w-3.5 h-3.5" /> Toolpack
+            <Wrench className="w-3.5 h-3.5 text-zinc-400" /> Toolpack
+          </button>
+          <button
+            onClick={() => addQuickNode("channel")}
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] border border-white/[0.09] text-amber-300 text-xs font-medium flex items-center gap-1.5 cursor-pointer shrink-0"
+          >
+            <Radio className="w-3.5 h-3.5 text-amber-400" /> Channel
           </button>
           <select
             disabled={spawningTpl}
@@ -641,12 +693,12 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             onChange={(e) => {
               if (e.target.value) applyTemplate(e.target.value);
             }}
-            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] border border-white/[0.10] text-amber-300 text-xs font-medium cursor-pointer shrink-0"
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] border border-white/[0.10] text-zinc-200 text-xs font-medium cursor-pointer shrink-0"
           >
-            <option value="">{spawningTpl ? "Spawning..." : "+ 1-Click Team Kit"}</option>
-            <option value="software-squad">🚀 Software Engineering Squad</option>
-            <option value="growth-squad">🎯 Growth & Content Squad</option>
-            <option value="research-squad">🔭 Deep Research & Alpha Squad</option>
+            <option value="">{spawningTpl ? "Spawning..." : "+ Team Kit"}</option>
+            <option value="software-squad">Software Engineering Squad</option>
+            <option value="growth-squad">Growth &amp; Content Squad</option>
+            <option value="research-squad">Deep Research &amp; Alpha Squad</option>
           </select>
         </div>
 
@@ -1014,6 +1066,46 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                         <ExternalLink className="w-3.5 h-3.5" /> Edit Agent soul.md
                       </button>
                     </div>
+                  </>
+                )}
+
+                {/* CHANNEL NODE CONFIG */}
+                {selectedNode.data.nodeType === "channel" && (
+                  <>
+                    <div>
+                      <label className="text-zinc-400 block mb-1">Linked Channel</label>
+                      <select
+                        value={String(selectedNode.data.refId || "")}
+                        onChange={(e) => {
+                          const ch = channels.find((x) => x.id === e.target.value);
+                          if (ch) {
+                            updateNodeData(selectedNode.id, {
+                              refId: ch.id,
+                              label: ch.name,
+                              subtitle: ch.type.replace("_", " "),
+                            });
+                          }
+                        }}
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
+                      >
+                        {channels.map((ch) => (
+                          <option key={ch.id} value={ch.id}>
+                            {ch.name} ({ch.type})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-[#0c0c0e] border border-white/[0.08] text-[11px] text-zinc-400">
+                      Drag a wire from this channel to any <strong>Team Brain</strong> or <strong>Agent</strong>, then click <strong>Save</strong> to route live WhatsApp/Telegram messages automatically.
+                    </div>
+                    {onOpenChannels && (
+                      <button
+                        onClick={onOpenChannels}
+                        className="w-full py-2 rounded-lg bg-[#18181b] hover:bg-[#222227] border border-white/[0.10] text-zinc-200 font-medium flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Radio className="w-3.5 h-3.5 text-amber-400" /> Configure Channel &amp; QR
+                      </button>
+                    )}
                   </>
                 )}
 

@@ -392,6 +392,50 @@ test("10. HTTP API enforces header-only REST auth, login 429 rate-limit, encrypt
     assert.equal(okDel.status, 200);
     const afterDel = await (await fetch(`${base}/api/skills`, { headers: { Authorization: `Bearer ${token}` } })).json();
     assert.equal(afterDel.skills.some((s) => s.slug === "clean-ops"), false);
+
+    // 13. WhatsApp Cloud API: auto-generates encrypted verifyToken, validates Meta GET handshake, rejects bad token, supports PATCH routing
+    const waRes = await fetch(`${base}/api/channels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        name: "WA Business Cloud",
+        type: "whatsapp_cloud",
+        targetType: "team",
+        targetId: "team_pandawa",
+        config: { phoneNumberId: "1234567890", accessToken: "EAAG-super-secret-token-xyz", appSecret: "meta-app-secret" },
+      }),
+    });
+    assert.equal(waRes.status, 200);
+    const { id: waId, verifyToken } = await waRes.json();
+    assert.ok(verifyToken && verifyToken.startsWith("pdw_wa_"), "Auto-generated WA Cloud verifyToken expected");
+
+    // Verify encrypted at rest & masked in GET /channels
+    const waRow = getDb().prepare("SELECT config_json FROM channels WHERE id = ?").get(waId);
+    assert.ok(String(waRow.config_json).includes("enc:v1:"), "WA Cloud secrets must be encrypted in SQLite");
+    assert.ok(!String(waRow.config_json).includes("EAAG-super-secret-token-xyz"), "Raw WA accessToken must not be plaintext");
+
+    // Meta GET handshake succeeds with valid verifyToken & rejects wrong token
+    const goodChallenge = await fetch(
+      `${base}/api/webhooks/whatsapp/${waId}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(verifyToken)}&hub.challenge=CHALLENGE_OK_99`
+    );
+    assert.equal(goodChallenge.status, 200);
+    assert.equal(await goodChallenge.text(), "CHALLENGE_OK_99");
+
+    const badChallenge = await fetch(
+      `${base}/api/webhooks/whatsapp/${waId}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=NOPE`
+    );
+    assert.equal(badChallenge.status, 403);
+
+    // PATCH channel target routing updates cleanly without clobbering masked secrets
+    const patchRes = await fetch(`${base}/api/channels/${waId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ targetType: "agent", targetId: "agent_yudhistira" }),
+    });
+    assert.equal(patchRes.status, 200);
+    const updatedRow = getDb().prepare("SELECT target_type, target_id FROM channels WHERE id = ?").get(waId);
+    assert.equal(updatedRow.target_type, "agent");
+    assert.equal(updatedRow.target_id, "agent_yudhistira");
   } finally {
     srv.close();
   }

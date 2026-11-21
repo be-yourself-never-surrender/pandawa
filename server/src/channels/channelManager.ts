@@ -1,4 +1,4 @@
-import { generateId } from "../config.js";
+import { PANDAWA_VERSION, generateId } from "../config.js";
 import { getDb } from "../db/database.js";
 import { decryptSecret } from "../auth/cryptoVault.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
@@ -10,6 +10,8 @@ import {
   setApprovalRequestedHook,
 } from "../engine/approvalManager.js";
 import { listTerminals } from "../tools/terminalManager.js";
+import { sendWhatsAppCloudMessage, sendWhatsAppQrMessage } from "./whatsappManager.js";
+import type { LLMMessage } from "../providers/llmClient.js";
 
 interface ChannelRow {
   id: string;
@@ -32,9 +34,18 @@ interface PollerHandle {
 }
 
 const pollers = new Map<string, PollerHandle>();
+const tgThreadSessions = new Map<string, string>();
 let _broadcast: ((ev: Record<string, unknown>) => void) | undefined;
 
-const SECRET_CHANNEL_FIELDS = new Set(["botToken", "webhookUrl", "secret"]);
+export const SECRET_CHANNEL_FIELDS = new Set([
+  "botToken",
+  "webhookUrl",
+  "secret",
+  "accessToken",
+  "appSecret",
+  "verifyToken",
+  "signingSecret",
+]);
 
 export function decryptChannelConfig(configJson: string): Record<string, string> {
   try {
@@ -61,6 +72,16 @@ export async function dispatchChannelNotification(
   const cfg = decryptChannelConfig(ch.config_json);
 
   try {
+    if (ch.type === "whatsapp_qr") {
+      const to = (cfg.allowedNumbers || "").split(/[,;\s]+/)[0] || "";
+      return await sendWhatsAppQrMessage(ch.id, to, `*${title}*\n\n${message.slice(0, 3800)}`);
+    }
+
+    if (ch.type === "whatsapp_cloud") {
+      const to = (cfg.allowedNumbers || "").split(/[,;\s]+/)[0] || "";
+      return await sendWhatsAppCloudMessage(cfg, to, `*${title}*\n\n${message.slice(0, 3800)}`);
+    }
+
     if (ch.type === "discord" && cfg.webhookUrl) {
       const resp = await fetch(cfg.webhookUrl, {
         method: "POST",
@@ -69,6 +90,16 @@ export async function dispatchChannelNotification(
         signal: AbortSignal.timeout(10_000),
       });
       return { ok: resp.ok, detail: `Discord HTTP ${resp.status}` };
+    }
+
+    if (ch.type === "slack" && cfg.webhookUrl) {
+      const resp = await fetch(cfg.webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: `*${title}*\n${message.slice(0, 3500)}` }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return { ok: resp.ok, detail: `Slack HTTP ${resp.status}` };
     }
 
     if (ch.type === "telegram" && cfg.botToken && cfg.chatId) {
@@ -119,13 +150,23 @@ async function sendTelegramText(botToken: string, chatId: string | number, text:
   }
 }
 
-async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, handle: PollerHandle): Promise<void> {
-  const botToken = (cfg.botToken || "").trim();
-  const allowedChatId = (cfg.chatId || "").trim();
-  if (!botToken) return;
-
+async function runTelegramPoller(channelId: string, handle: PollerHandle): Promise<void> {
   while (handle.active) {
     try {
+      const db = getDb();
+      const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND enabled = 1").get(channelId) as
+        | ChannelRow
+        | undefined;
+      if (!ch) break;
+
+      const cfg = decryptChannelConfig(ch.config_json);
+      const botToken = (cfg.botToken || "").trim();
+      const allowedChatId = (cfg.chatId || "").trim();
+      if (!botToken) {
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
+
       const url = `https://api.telegram.org/bot${botToken}/getUpdates?timeout=25&offset=${handle.offset}`;
       const resp = await fetch(url, { signal: handle.abort.signal });
       handle.lastPollAt = new Date().toISOString();
@@ -153,10 +194,18 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
         if (!text || chatId === undefined) continue;
         if (allowedChatId && String(chatId) !== allowedChatId) continue;
 
-        // Instant Remote OS Control Commands from Telegram (Approval Gate, Terminals, Jobs, Status)
+        // Re-read live channel row so Brain Canvas rewires take effect immediately
+        const liveCh =
+          (db.prepare("SELECT * FROM channels WHERE id = ?").get(channelId) as ChannelRow | undefined) || ch;
+
         if (text.startsWith("/")) {
           const [cmdRaw, arg1] = text.split(/\s+/);
           const cmd = cmdRaw.toLowerCase();
+          if (cmd === "/new" || cmd === "/clear" || cmd === "/reset") {
+            tgThreadSessions.delete(`${channelId}:${chatId}`);
+            await sendTelegramText(botToken, chatId, "Started a fresh Pandawa session thread.").catch(() => {});
+            continue;
+          }
           if (cmd === "/approve" || cmd === "/auto" || cmd === "/reject") {
             const pending = listPendingApprovals();
             const targetId = arg1 || pending[0]?.id;
@@ -173,7 +222,7 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
               botToken,
               chatId,
               ok
-                ? `✅ Approval ${targetId} -> ${cmd === "/reject" ? "REJECTED" : cmd === "/auto" ? "APPROVED + AUTO MODE" : "APPROVED"}`
+                ? `Approval ${targetId} -> ${cmd === "/reject" ? "REJECTED" : cmd === "/auto" ? "APPROVED + AUTO MODE" : "APPROVED"}`
                 : `Approval ${targetId} not found or already resolved.`
             ).catch(() => {});
             continue;
@@ -184,9 +233,9 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
               tRes.sessions.length === 0
                 ? "No active shared terminals."
                 : tRes.sessions
-                    .map((s) => `• ${s.name} [${s.ownerAgent}] cwd=${s.cwd} cmd=${s.currentCommand}`)
+                    .map((s) => `- ${s.name} [${s.ownerAgent}] cwd=${s.cwd} cmd=${s.currentCommand}`)
                     .join("\n");
-            await sendTelegramText(botToken, chatId, `🖥️ Active Pandawa Terminals:\n${msgOut}`).catch(() => {});
+            await sendTelegramText(botToken, chatId, `Active Pandawa Terminals:\n${msgOut}`).catch(() => {});
             continue;
           }
           if (cmd === "/status") {
@@ -195,40 +244,76 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
             await sendTelegramText(
               botToken,
               chatId,
-              `⚡ Pandawa v6.0 Live Status\n• Approval Mode: ${getApprovalMode()}\n• Pending Approvals: ${pending.length}\n• Active Terminals: ${tRes.sessions.length}\nCommands: /approve [id], /auto [id], /reject [id], /term, /status`
+              `Pandawa OS v${PANDAWA_VERSION} Status\n` +
+                `- Route: ${liveCh.target_type} -> ${liveCh.target_id}\n` +
+                `- Approval Mode: ${getApprovalMode()}\n` +
+                `- Pending Approvals: ${pending.length}\n` +
+                `- Active Terminals: ${tRes.sessions.length}\n` +
+                `Commands: /approve [id], /auto [id], /reject [id], /term, /new, /status`
             ).catch(() => {});
             continue;
           }
         }
 
-        const db = getDb();
-        const sessionId = generateId("ses");
+        const threadKey = `${channelId}:${chatId}`;
         const sender = msg?.from?.username || msg?.from?.first_name || "Telegram";
-        db.prepare("INSERT INTO sessions (id, title, target_type, target_id) VALUES (?, ?, ?, ?)").run(
-          sessionId,
-          `[Telegram:${sender}] ${text.slice(0, 48)}`,
-          ch.target_type === "agent" ? "agent" : "team",
-          ch.target_id || "team_pandawa"
-        );
+        let sessionId = tgThreadSessions.get(threadKey) || "";
+        if (sessionId) {
+          const exists = db.prepare("SELECT id FROM sessions WHERE id = ?").get(sessionId);
+          if (!exists) sessionId = "";
+        }
+        if (!sessionId) {
+          sessionId = generateId("ses");
+          db.prepare("INSERT INTO sessions (id, title, target_type, target_id) VALUES (?, ?, ?, ?)").run(
+            sessionId,
+            `[Telegram:${sender}] ${text.slice(0, 48)}`,
+            liveCh.target_type === "agent" ? "agent" : "team",
+            liveCh.target_id || "team_pandawa"
+          );
+          tgThreadSessions.set(threadKey, sessionId);
+        }
+
+        const priorRows = db
+          .prepare("SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 20")
+          .all(sessionId) as Array<{ role: string; content: string }>;
+        const history: LLMMessage[] = priorRows
+          .filter((r) => r.role === "user" || r.role === "assistant")
+          .map((r) => ({ role: r.role as "user" | "assistant", content: r.content }));
+
         db.prepare(
           "INSERT INTO messages (id, session_id, role, agent_name, content) VALUES (?, ?, 'user', ?, ?)"
         ).run(generateId("msg"), sessionId, `Telegram (@${sender})`, text);
+        db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(sessionId);
 
         try {
           let reply = "";
-          if (ch.target_type === "agent") {
+          if (liveCh.target_type === "agent") {
             const res = await runAgentTurn({
-              agentId: ch.target_id,
+              agentId: liveCh.target_id,
               sessionId,
               prompt: text,
+              history,
               onEvent: _broadcast,
             });
             reply = res.content;
+            db.prepare(
+              "INSERT INTO messages (id, session_id, role, agent_id, agent_name, model_used, content, tool_calls_json, meta_json) VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)"
+            ).run(
+              generateId("msg"),
+              sessionId,
+              res.agentId,
+              res.agentName,
+              res.model,
+              reply,
+              JSON.stringify(res.toolTrace),
+              JSON.stringify({ channelId, platform: "Telegram" })
+            );
           } else {
             const res = await runTeamMission({
-              teamId: ch.target_id || "team_pandawa",
+              teamId: liveCh.target_id || "team_pandawa",
               sessionId,
               userPrompt: text,
+              history,
               onEvent: _broadcast,
             });
             reply = res.synthesis.content;
@@ -253,24 +338,32 @@ async function runTelegramPoller(ch: ChannelRow, cfg: Record<string, string>, ha
 export function syncTelegramPollers(broadcast?: (ev: Record<string, unknown>) => void): void {
   if (broadcast) _broadcast = broadcast;
 
-  // Bridge live Approval Gate requests out to enabled Telegram bots so users can approve from mobile!
+  // Bridge live Approval Gate requests out to enabled Telegram & WhatsApp channels so users can approve from mobile!
   setApprovalRequestedHook((record) => {
     try {
       const db = getDb();
-      const tgChannels = db
-        .prepare("SELECT * FROM channels WHERE type = 'telegram' AND enabled = 1")
+      const channels = db
+        .prepare("SELECT * FROM channels WHERE type IN ('telegram', 'whatsapp_qr', 'whatsapp_cloud') AND enabled = 1")
         .all() as unknown as ChannelRow[];
-      for (const ch of tgChannels) {
+      const preview = JSON.stringify(record.args).slice(0, 320);
+      const body =
+        `Pandawa Approval Required (${record.id})\n` +
+        `Agent: ${record.agentName}\n` +
+        `Tool: ${record.toolName}\n` +
+        `Args: ${preview}\n\n` +
+        `Reply:\n/approve ${record.id}\n/auto ${record.id}\n/reject ${record.id}`;
+
+      for (const ch of channels) {
         const cfg = decryptChannelConfig(ch.config_json);
-        if (!cfg.botToken?.trim() || !cfg.chatId?.trim()) continue;
-        const preview = JSON.stringify(record.args).slice(0, 320);
-        const body =
-          `🛡️ Pandawa Approval Required (${record.id})\n` +
-          `Agent: ${record.agentName}\n` +
-          `Tool: ${record.toolName}\n` +
-          `Args: ${preview}\n\n` +
-          `Reply:\n/approve ${record.id}\n/auto ${record.id}\n/reject ${record.id}`;
-        sendTelegramText(cfg.botToken.trim(), cfg.chatId.trim(), body).catch(() => {});
+        if (ch.type === "telegram" && cfg.botToken?.trim() && cfg.chatId?.trim()) {
+          sendTelegramText(cfg.botToken.trim(), cfg.chatId.trim(), body).catch(() => {});
+        } else if (ch.type === "whatsapp_qr") {
+          const to = (cfg.allowedNumbers || "").split(/[,;\s]+/)[0] || "";
+          sendWhatsAppQrMessage(ch.id, to, body).catch(() => {});
+        } else if (ch.type === "whatsapp_cloud") {
+          const to = (cfg.allowedNumbers || "").split(/[,;\s]+/)[0] || "";
+          if (to) sendWhatsAppCloudMessage(cfg, to, body).catch(() => {});
+        }
       }
     } catch {
       // ignore notification error
@@ -309,7 +402,7 @@ export function syncTelegramPollers(broadcast?: (ev: Record<string, unknown>) =>
       abort: new AbortController(),
     };
     pollers.set(ch.id, handle);
-    runTelegramPoller(ch, cfg, handle).catch(() => {});
+    runTelegramPoller(ch.id, handle).catch(() => {});
   }
 }
 

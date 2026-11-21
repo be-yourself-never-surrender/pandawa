@@ -1,7 +1,7 @@
 export type NavTab =
   | "overview"
   | "canvas"
-  | "chat"
+  | "channels"
   | "terminal"
   | "brains"
   | "providers"

@@ -20,6 +20,7 @@ import { createApiRouter } from "./routes/api.js";
 import { startCronScheduler, stopCronScheduler } from "./scheduler/cronEngine.js";
 import { startHeartbeatDaemon, stopHeartbeatDaemon } from "./engine/heartbeatDaemon.js";
 import { syncTelegramPollers, stopAllTelegramPollers } from "./channels/channelManager.js";
+import { syncWhatsAppSockets, stopAllWhatsAppSockets } from "./channels/whatsappManager.js";
 import { killAllManagedProcesses } from "./tools/processManager.js";
 import { setTerminalBroadcast } from "./tools/terminalManager.js";
 import { shutdownAllStdioMcp } from "./mcp/mcpClient.js";
@@ -73,7 +74,14 @@ app.use((req, res, next) => {
   res.status(403).json({ error: `CORS origin denied: ${origin}` });
 });
 
-app.use(express.json({ limit: "50mb" }));
+app.use(
+  express.json({
+    limit: "50mb",
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  })
+);
 
 const server = http.createServer(app);
 
@@ -229,6 +237,7 @@ if (fs.existsSync(WEB_DIST_DIR)) {
 startCronScheduler(broadcast);
 startHeartbeatDaemon(broadcast);
 syncTelegramPollers(broadcast);
+syncWhatsAppSockets(broadcast);
 setTimeout(() => {
   reindexSemanticBrain().catch(() => {});
 }, 2500);
@@ -241,6 +250,7 @@ function shutdown(): void {
   stopCronScheduler();
   stopHeartbeatDaemon();
   stopAllTelegramPollers();
+  stopAllWhatsAppSockets();
   killAllManagedProcesses();
   shutdownAllStdioMcp();
   for (const ws of clients) {

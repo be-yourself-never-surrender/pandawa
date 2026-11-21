@@ -51,7 +51,16 @@ import {
   decryptChannelConfig,
   syncTelegramPollers,
   getTelegramPollerStatuses,
+  SECRET_CHANNEL_FIELDS,
 } from "../channels/channelManager.js";
+import {
+  startWhatsAppQrChannel,
+  logoutWhatsAppQrChannel,
+  getAllWhatsAppStatuses,
+  syncWhatsAppSockets,
+  verifyWhatsAppCloudSignature,
+  handleWhatsAppCloudInbound,
+} from "../channels/whatsappManager.js";
 import { encryptSecret, decryptSecret } from "../auth/cryptoVault.js";
 import {
   getApprovalMode,
@@ -133,7 +142,6 @@ function maskProvider(p: ProviderRecord) {
   };
 }
 
-const CHANNEL_SECRET_KEYS = new Set(["botToken", "webhookUrl", "secret"]);
 const webhookHits = new Map<string, { count: number; windowStart: number }>();
 
 function maskSecretValue(val: string): string {
@@ -243,6 +251,67 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         });
         res.json({ ok: true, sessionId, reply: result.synthesis.content });
       }
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Public Meta WhatsApp Official Cloud API webhook verification handshake
+  router.get("/webhooks/whatsapp/:channelId", (req: Request, res: Response) => {
+    const db = getDb();
+    const ch = db
+      .prepare("SELECT * FROM channels WHERE id = ? AND type = 'whatsapp_cloud' AND enabled = 1")
+      .get(String(req.params.channelId)) as { config_json: string } | undefined;
+    if (!ch) {
+      res.status(404).send("Channel not found");
+      return;
+    }
+    const cfg = decryptChannelConfig(ch.config_json);
+    const mode = String(req.query["hub.mode"] || "");
+    const token = String(req.query["hub.verify_token"] || "");
+    const challenge = String(req.query["hub.challenge"] || "");
+    if (mode === "subscribe" && cfg.verifyToken && safeEqualStrings(token, cfg.verifyToken)) {
+      res.status(200).send(challenge);
+      return;
+    }
+    res.status(403).send("Invalid verify token");
+  });
+
+  // Public Meta WhatsApp Official Cloud API 2-way inbound messages webhook
+  router.post("/webhooks/whatsapp/:channelId", async (req: Request, res: Response) => {
+    try {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const now = Date.now();
+      const wh = webhookHits.get(ip);
+      if (wh && now - wh.windowStart < 60_000) {
+        if (wh.count >= 60) {
+          res.status(429).json({ error: "Rate limit exceeded" });
+          return;
+        }
+        wh.count += 1;
+      } else {
+        webhookHits.set(ip, { count: 1, windowStart: now });
+      }
+
+      const channelId = String(req.params.channelId);
+      const db = getDb();
+      const ch = db
+        .prepare("SELECT * FROM channels WHERE id = ? AND type = 'whatsapp_cloud' AND enabled = 1")
+        .get(channelId) as { config_json: string } | undefined;
+      if (!ch) {
+        res.status(404).json({ error: "WhatsApp Cloud channel not found or disabled" });
+        return;
+      }
+      const cfg = decryptChannelConfig(ch.config_json);
+      const sig = String(req.headers["x-hub-signature-256"] || "");
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!verifyWhatsAppCloudSignature(rawBody, sig, cfg.appSecret || "")) {
+        res.status(403).json({ error: "Invalid X-Hub-Signature-256 signature" });
+        return;
+      }
+
+      const out = await handleWhatsAppCloudInbound(channelId, (req.body || {}) as Record<string, unknown>, broadcast);
+      res.status(200).json({ ok: true, ...out });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -368,6 +437,47 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           JSON.stringify(e.data || {})
         );
       }
+
+      // Auto-sync Channel -> Team / Agent visual wires straight into live channels routing!
+      const nodeById = new Map<string, { type: string; refId: string; data?: Record<string, unknown> }>();
+      for (const n of nodes) {
+        nodeById.set(String(n.id), {
+          type: String(n.type || ""),
+          refId: String(n.refId || n.ref_id || ""),
+          data: (n.data && typeof n.data === "object" ? n.data : {}) as Record<string, unknown>,
+        });
+      }
+      const allTeams = db.prepare("SELECT id, team_brain_id FROM teams").all() as Array<{
+        id: string;
+        team_brain_id: string | null;
+      }>;
+      for (const e of edges) {
+        const src = nodeById.get(String(e.source));
+        const dst = nodeById.get(String(e.target));
+        if (!src || !dst) continue;
+        const chNode = src.type === "channel" ? src : dst.type === "channel" ? dst : null;
+        const tgtNode = src.type === "channel" ? dst : dst.type === "channel" ? src : null;
+        if (!chNode || !tgtNode || !chNode.refId) continue;
+
+        if (tgtNode.type === "agent" && tgtNode.refId) {
+          db.prepare("UPDATE channels SET target_type = 'agent', target_id = ? WHERE id = ?").run(
+            tgtNode.refId,
+            chNode.refId
+          );
+        } else if (tgtNode.type === "team_brain") {
+          const teamId =
+            String(tgtNode.data?.teamId || "") ||
+            allTeams.find((t) => t.team_brain_id === tgtNode.refId)?.id ||
+            "";
+          if (teamId) {
+            db.prepare("UPDATE channels SET target_type = 'team', target_id = ? WHERE id = ?").run(
+              teamId,
+              chNode.refId
+            );
+          }
+        }
+      }
+
       db.exec("COMMIT");
       logAudit("admin", "topology.save", "canvas", `${nodes.length} nodes, ${edges.length} edges`);
       broadcast({ type: "topology_updated" });
@@ -1628,12 +1738,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const db = getDb();
     const rows = db.prepare("SELECT * FROM channels ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
     const pollers = getTelegramPollerStatuses();
+    const waStatuses = getAllWhatsAppStatuses();
     res.json({
       channels: rows.map((r) => {
         const rawCfg = JSON.parse(String(r.config_json || "{}")) as Record<string, string>;
         const maskedCfg: Record<string, string> = {};
         for (const [k, v] of Object.entries(rawCfg)) {
-          maskedCfg[k] = CHANNEL_SECRET_KEYS.has(k) ? maskSecretValue(v) : v;
+          maskedCfg[k] = SECRET_CHANNEL_FIELDS.has(k) ? maskSecretValue(v) : v;
         }
         return {
           id: r.id,
@@ -1645,9 +1756,25 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           config: maskedCfg,
           enabled: Boolean(r.enabled),
           poller: pollers.find((p) => p.channelId === String(r.id)) || null,
+          whatsapp: waStatuses.find((w) => w.channelId === String(r.id)) || null,
         };
       }),
     });
+  });
+
+  // Read-only recent channel activity (incoming Telegram / WhatsApp / Webhook sessions & replies)
+  router.get("/channels/activity", (_req: Request, res: Response) => {
+    const db = getDb();
+    const sessions = db
+      .prepare(
+        `SELECT s.id, s.title, s.target_type, s.target_id, s.created_at, s.updated_at,
+                (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as message_count,
+                (SELECT content FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as last_message
+         FROM sessions s
+         ORDER BY s.updated_at DESC LIMIT 25`
+      )
+      .all();
+    res.json({ activity: sessions });
   });
 
   router.post("/channels", (req: Request, res: Response) => {
@@ -1659,16 +1786,23 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       : {}) as Record<string, unknown>;
     const encryptedCfg: Record<string, string> = {};
     let generatedWebhookSecret = "";
+    let generatedVerifyToken = "";
 
     for (const [k, v] of Object.entries(incomingCfg)) {
       const sv = String(v ?? "").trim();
-      encryptedCfg[k] = CHANNEL_SECRET_KEYS.has(k) && sv ? encryptSecret(sv) : sv;
+      encryptedCfg[k] = SECRET_CHANNEL_FIELDS.has(k) && sv ? encryptSecret(sv) : sv;
     }
 
     // Ensure every webhook channel ALWAYS has a strong secret (auto-generated if omitted)
     if (type === "webhook" && !encryptedCfg.secret) {
       generatedWebhookSecret = crypto.randomBytes(24).toString("hex");
       encryptedCfg.secret = encryptSecret(generatedWebhookSecret);
+    }
+
+    // Ensure WhatsApp Cloud API always has a Meta verify token
+    if (type === "whatsapp_cloud" && !encryptedCfg.verifyToken) {
+      generatedVerifyToken = `pdw_wa_${crypto.randomBytes(12).toString("hex")}`;
+      encryptedCfg.verifyToken = encryptSecret(generatedVerifyToken);
     }
 
     db.prepare(
@@ -1683,22 +1817,100 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       String(req.body?.targetId || "team_pandawa")
     );
     syncTelegramPollers(broadcast);
-    res.json({ id, ...(generatedWebhookSecret ? { webhookSecret: generatedWebhookSecret } : {}) });
+    if (type === "whatsapp_qr") {
+      startWhatsAppQrChannel(id, broadcast).catch(() => {});
+    }
+    logAudit("admin", "channel.create", id, `${type} -> ${req.body?.targetType || "team"}:${req.body?.targetId || "team_pandawa"}`);
+    res.json({
+      id,
+      ...(generatedWebhookSecret ? { webhookSecret: generatedWebhookSecret } : {}),
+      ...(generatedVerifyToken ? { verifyToken: generatedVerifyToken } : {}),
+    });
+  });
+
+  router.patch("/channels/:id", (req: Request, res: Response) => {
+    const db = getDb();
+    const id = String(req.params.id);
+    const existing = db.prepare("SELECT * FROM channels WHERE id = ?").get(id) as
+      | { id: string; name: string; type: string; config_json: string; target_type: string; target_id: string; enabled: number }
+      | undefined;
+    if (!existing) {
+      res.status(404).json({ error: "Channel not found" });
+      return;
+    }
+
+    const nextName = typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : existing.name;
+    const nextTargetType =
+      req.body?.targetType === "agent" || req.body?.targetType === "team" ? req.body.targetType : existing.target_type;
+    const nextTargetId =
+      typeof req.body?.targetId === "string" && req.body.targetId.trim() ? req.body.targetId.trim() : existing.target_id;
+    const nextEnabled = typeof req.body?.enabled === "boolean" ? (req.body.enabled ? 1 : 0) : existing.enabled;
+
+    let mergedCfg: Record<string, string> = {};
+    try {
+      mergedCfg = JSON.parse(existing.config_json || "{}");
+    } catch {
+      mergedCfg = {};
+    }
+    if (req.body?.config && typeof req.body.config === "object") {
+      for (const [k, v] of Object.entries(req.body.config as Record<string, unknown>)) {
+        const sv = String(v ?? "").trim();
+        // Skip unchanged masked placeholder strings
+        if (SECRET_CHANNEL_FIELDS.has(k) && sv.includes("••••")) continue;
+        mergedCfg[k] = SECRET_CHANNEL_FIELDS.has(k) && sv ? encryptSecret(sv) : sv;
+      }
+    }
+
+    db.prepare(
+      "UPDATE channels SET name = ?, config_json = ?, target_type = ?, target_id = ?, enabled = ? WHERE id = ?"
+    ).run(nextName, JSON.stringify(mergedCfg), nextTargetType, nextTargetId, nextEnabled, id);
+
+    syncTelegramPollers(broadcast);
+    syncWhatsAppSockets(broadcast);
+    logAudit("admin", "channel.update", id, `${nextTargetType}:${nextTargetId} enabled=${nextEnabled}`);
+    res.json({ ok: true });
+  });
+
+  router.post("/channels/:id/whatsapp/connect", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const db = getDb();
+      const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND type = 'whatsapp_qr'").get(id);
+      if (!ch) {
+        res.status(404).json({ error: "WhatsApp QR channel not found" });
+        return;
+      }
+      const state = await startWhatsAppQrChannel(id, broadcast);
+      res.json({ ok: true, whatsapp: state });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/channels/:id/whatsapp/logout", async (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    await logoutWhatsAppQrChannel(id);
+    logAudit("admin", "channel.whatsapp_logout", id);
+    res.json({ ok: true });
   });
 
   router.post("/channels/:id/test", async (req: Request, res: Response) => {
     const out = await dispatchChannelNotification(
       String(req.params.id),
       "Pandawa Channel Test",
-      "Connection verified from Pandawa Agentic Team Platform."
+      "Connection verified from Pandawa OS Control Plane."
     );
     res.json(out);
   });
 
-  router.delete("/channels/:id", (req: Request, res: Response) => {
+  router.delete("/channels/:id", async (req: Request, res: Response) => {
+    const id = String(req.params.id);
     const db = getDb();
-    db.prepare("DELETE FROM channels WHERE id = ?").run(String(req.params.id));
+    await logoutWhatsAppQrChannel(id).catch(() => {});
+    db.prepare("DELETE FROM channels WHERE id = ?").run(id);
     syncTelegramPollers(broadcast);
+    syncWhatsAppSockets(broadcast);
+    logAudit("admin", "channel.delete", id);
     res.json({ ok: true });
   });
 
@@ -2396,6 +2608,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       sessions: (db.prepare("SELECT COUNT(*) as c FROM sessions").get() as { c: number }).c,
       memories: (db.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c,
       skills: listSkills().length,
+      channels: (db.prepare("SELECT COUNT(*) as c FROM channels WHERE enabled = 1").get() as { c: number }).c,
       cronJobs: (db.prepare("SELECT COUNT(*) as c FROM cron_jobs").get() as { c: number }).c,
       runningJobs: (
         db.prepare("SELECT COUNT(*) as c FROM background_jobs WHERE status IN ('queued','running')").get() as { c: number }

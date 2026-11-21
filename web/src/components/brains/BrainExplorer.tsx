@@ -389,7 +389,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             className={`group flex items-center justify-between pr-2 py-1.5 rounded-lg text-xs cursor-pointer transition ${
               isSelected
                 ? "bg-amber-500/15 text-amber-300 font-medium"
-                : "text-slate-300 hover:bg-slate-800/60"
+                : "text-zinc-300 hover:bg-white/[0.06]"
             }`}
             onClick={() => {
               if (node.type === "folder") {
@@ -409,9 +409,9 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               {node.type === "folder" ? (
                 <>
                   {isOpen ? (
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <ChevronDown className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                   ) : (
-                    <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <ChevronRight className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                   )}
                   {isOpen ? (
                     <FolderOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -437,7 +437,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                   title="New file in folder"
                   aria-label="New file in folder"
                   onClick={() => createNewFile(node.path)}
-                  className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-white"
+                  className="p-1 rounded hover:bg-[#222227] text-zinc-400 hover:text-white"
                 >
                   <FilePlus className="w-3 h-3" />
                 </button>
@@ -454,7 +454,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                 title="Rename"
                 aria-label="Rename"
                 onClick={() => handleRename(node.path)}
-                className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded hover:bg-[#222227] text-zinc-400 hover:text-white"
               >
                 <Edit3 className="w-3 h-3" />
               </button>
@@ -476,7 +476,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
 
   return (
     <div
-      className="flex h-screen bg-[#080a0f] relative"
+      className="flex h-screen bg-[#09090b] relative"
       onDragOver={(e) => {
         e.preventDefault();
         setIsDragging(true);
@@ -491,12 +491,12 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
     >
       {isDragging && (
         <div className="pointer-events-none absolute inset-0 z-40 bg-amber-500/10 border-2 border-dashed border-amber-400 flex items-center justify-center backdrop-blur-xs">
-          <div className="px-6 py-4 rounded-2xl bg-[#0d111b] border border-amber-500/50 text-amber-300 font-semibold text-sm shadow-2xl text-center space-y-1">
+          <div className="px-6 py-4 rounded-xl bg-[#0c0c0e] border border-amber-500/50 text-amber-300 font-semibold text-sm shadow-2xl text-center space-y-1">
             <div>
               Drop <strong>Files, Entire Folders, .ZIP, or PDF/DOCX/XLSX</strong> into{" "}
               <code className="text-white">{uploadFolder || "root"}</code>
             </div>
-            <div className="text-[11px] text-slate-400 font-normal">
+            <div className="text-[11px] text-zinc-400 font-normal">
               Subfolder hierarchy &amp; Obsidian vaults are preserved automatically
             </div>
           </div>
@@ -505,10 +505,10 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
 
       {/* Left Explorer Pane (Collapsible) */}
       {showTree && (
-        <div className="w-64 lg:w-72 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
-          <div className="p-3 border-b border-slate-800/80 space-y-2.5">
+        <div className="w-64 lg:w-72 shrink-0 bg-[#0c0c0e] border-r border-white/[0.07] flex flex-col">
+          <div className="p-3 border-b border-white/[0.07] space-y-2.5">
             <div className="flex items-center justify-between gap-1">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200 truncate">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-200 truncate">
                 Brain Files
               </h2>
               <div className="flex items-center gap-1 shrink-0">
@@ -552,7 +552,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                   onClick={() => createNewFile(uploadFolder)}
                   title="New File (e.g. soul.md)"
                   aria-label="New File"
-                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
+                  className="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-200 cursor-pointer"
                 >
                   <FilePlus className="w-3.5 h-3.5" />
                 </button>
@@ -567,17 +567,17 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             </div>
 
             <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 value={searchQuery}
                 onChange={(e) => runSearch(e.target.value)}
                 placeholder={searchMode === "semantic" ? "Semantic vector search..." : "FTS5 exact keyword search..."}
-                className="w-full bg-[#080a0f] border border-slate-800 focus:border-amber-500 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-200 outline-none"
+                className="w-full bg-[#09090b] border border-white/[0.08] focus:border-amber-500 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-zinc-200 outline-none"
               />
             </div>
 
             <div className="flex items-center justify-between gap-1 text-[10px]">
-              <div className="flex rounded-lg bg-[#080a0f] border border-slate-800 p-0.5">
+              <div className="flex rounded-lg bg-[#09090b] border border-white/[0.08] p-0.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -585,7 +585,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                     if (searchQuery.trim()) runSearch(searchQuery, "semantic");
                   }}
                   className={`px-2 py-0.5 rounded flex items-center gap-1 cursor-pointer ${
-                    searchMode === "semantic" ? "bg-violet-500/25 text-violet-300 font-semibold" : "text-slate-400"
+                    searchMode === "semantic" ? "bg-violet-500/25 text-violet-300 font-semibold" : "text-zinc-400"
                   }`}
                 >
                   <Sparkles className="w-2.5 h-2.5" /> Semantic
@@ -597,7 +597,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                     if (searchQuery.trim()) runSearch(searchQuery, "fts");
                   }}
                   className={`px-2 py-0.5 rounded cursor-pointer ${
-                    searchMode === "fts" ? "bg-amber-500/20 text-amber-300 font-semibold" : "text-slate-400"
+                    searchMode === "fts" ? "bg-amber-500/20 text-amber-300 font-semibold" : "text-zinc-400"
                   }`}
                 >
                   FTS5
@@ -608,14 +608,14 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                 disabled={reindexing}
                 onClick={triggerReindex}
                 title={`Reindex semantic vector memory (${semanticInfo?.mode || "hybrid"})`}
-                className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                className="px-2 py-0.5 rounded bg-[#18181b] hover:bg-[#222227] text-zinc-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className={`w-2.5 h-2.5 ${reindexing ? "animate-spin" : ""}`} />
                 {semanticInfo ? `${semanticInfo.totalChunks}v` : "Index"}
               </button>
             </div>
 
-            <div className="text-[10px] text-slate-500 truncate">
+            <div className="text-[10px] text-zinc-500 truncate">
               Import target: <code className="text-amber-300/90">{uploadFolder || "root"}</code> (Files · Folder · .ZIP · PDF)
             </div>
             <div className="grid grid-cols-3 gap-1 text-[9px] text-center">
@@ -639,7 +639,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                         onClick={() => {
                           if (r.sourceType === "brain_file") openFile(r.path);
                         }}
-                        className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-violet-500/25 cursor-pointer space-y-0.5"
+                        className="w-full text-left p-2 rounded-lg bg-[#0c0c0e] hover:bg-[#18181b] border border-violet-500/25 cursor-pointer space-y-0.5"
                       >
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-[10px] font-mono text-violet-300 truncate">{r.path}</span>
@@ -647,30 +647,30 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                             {r.sourceType === "brain_file" ? `${r.score}` : r.sourceType}
                           </span>
                         </div>
-                        <div className="text-[11px] text-slate-400 line-clamp-2">{r.excerpt}</div>
+                        <div className="text-[11px] text-zinc-400 line-clamp-2">{r.excerpt}</div>
                       </button>
                     ))}
                     {semanticResults.length === 0 && (
-                      <div className="text-xs text-slate-500 p-2">No semantic matches found.</div>
+                      <div className="text-xs text-zinc-500 p-2">No semantic matches found.</div>
                     )}
                   </>
                 ) : (
                   <>
-                    <div className="text-[10px] uppercase tracking-wider text-slate-500 px-1">
+                    <div className="text-[10px] uppercase tracking-wider text-zinc-500 px-1">
                       FTS5 Results ({searchResults.length})
                     </div>
                     {searchResults.map((r) => (
                       <button
                         key={r.rel_path}
                         onClick={() => openFile(r.rel_path)}
-                        className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-slate-800 cursor-pointer"
+                        className="w-full text-left p-2 rounded-lg bg-[#0c0c0e] hover:bg-[#18181b] border border-white/[0.08] cursor-pointer"
                       >
                         <div className="text-xs font-mono text-amber-300 truncate">{r.rel_path}</div>
-                        <div className="text-[11px] text-slate-400 line-clamp-2 mt-0.5">{r.snippet}</div>
+                        <div className="text-[11px] text-zinc-400 line-clamp-2 mt-0.5">{r.snippet}</div>
                       </button>
                     ))}
                     {searchResults.length === 0 && (
-                      <div className="text-xs text-slate-500 p-2">No matches found.</div>
+                      <div className="text-xs text-zinc-500 p-2">No matches found.</div>
                     )}
                   </>
                 )}
@@ -684,13 +684,13 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
 
       {/* Right Code / Markdown Editor */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="min-h-14 px-4 py-2.5 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2.5">
+        <div className="min-h-14 px-4 py-2.5 bg-[#0c0c0e] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <button
               onClick={() => setShowTree((s) => !s)}
               title="Toggle file tree"
               aria-label="Toggle file tree"
-              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer shrink-0"
+              className="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-300 cursor-pointer shrink-0"
             >
               <PanelLeft className="w-3.5 h-3.5" />
             </button>
@@ -699,7 +699,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                 {activeFile || "Select or create a Brain file"}
                 {dirty && <span className="text-rose-400 ml-1.5">● unsaved</span>}
               </div>
-              <div className="text-[11px] text-slate-500 truncate">
+              <div className="text-[11px] text-zinc-500 truncate">
                 Live synced to Agent Brain runtime &amp; SQLite FTS5
               </div>
             </div>
@@ -711,13 +711,13 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                 <CheckCircle2 className="w-3.5 h-3.5" /> {notice}
               </span>
             )}
-            <div className="flex rounded-lg bg-[#080a0f] border border-slate-800 p-0.5 text-xs">
+            <div className="flex rounded-lg bg-[#09090b] border border-white/[0.08] p-0.5 text-xs">
               {(["edit", "split", "preview"] as const).map((m) => (
                 <button
                   key={m}
                   onClick={() => setViewMode(m)}
                   className={`px-2 py-1 rounded-md capitalize flex items-center gap-1 cursor-pointer ${
-                    viewMode === m ? "bg-slate-800 text-cyan-300 font-semibold" : "text-slate-400 hover:text-slate-200"
+                    viewMode === m ? "bg-[#18181b] text-cyan-300 font-semibold" : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
                   {m === "edit" && <Code className="w-3 h-3" />}
@@ -729,7 +729,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             {activeFile && (
               <button
                 onClick={() => pinToCanvas(activeFile, false)}
-                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-200 text-xs font-medium flex items-center gap-1 cursor-pointer"
               >
                 <Pin className="w-3.5 h-3.5 text-amber-400" /> Pin
               </button>
@@ -737,7 +737,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             <button
               onClick={saveCurrentFile}
               disabled={!activeFile || saving}
-              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-[#18181b] disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" /> {saving ? "Saving..." : "Save"}
             </button>
@@ -746,7 +746,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
 
         {/* Living Brain [[wikilink]] & Backlinks Bar (Beyond Obsidian) */}
         {activeFile && (
-          <div className="px-4 py-1.5 bg-[#0a0d15] border-b border-slate-800/70 flex flex-wrap items-center gap-2 text-[11px]">
+          <div className="px-4 py-1.5 bg-[#0c0c0e] border-b border-white/[0.06] flex flex-wrap items-center gap-2 text-[11px]">
             {(() => {
               const baseName = activeFile.split("/").pop()?.toLowerCase() || "";
               const isCore = ["soul.md", "identity.md", "rules.md", "team.md", "memory.md"].includes(baseName);
@@ -764,7 +764,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                   </span>
                   {links.outgoing.length > 0 && (
                     <div className="flex items-center gap-1 flex-wrap">
-                      <span className="text-slate-500">Links →</span>
+                      <span className="text-zinc-500">Links →</span>
                       {links.outgoing.map((target) => (
                         <button
                           key={target}
@@ -778,7 +778,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                   )}
                   {links.backlinks.length > 0 && (
                     <div className="flex items-center gap-1 flex-wrap">
-                      <span className="text-slate-500">Backlinks ←</span>
+                      <span className="text-zinc-500">Backlinks ←</span>
                       {links.backlinks.map((src) => (
                         <button
                           key={src}
@@ -791,7 +791,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                     </div>
                   )}
                   {links.outgoing.length === 0 && links.backlinks.length === 0 && (
-                    <span className="text-slate-500">
+                    <span className="text-zinc-500">
                       Tip: Reference other notes with <code className="text-amber-300">[[rules]]</code> or{" "}
                       <code className="text-amber-300">[[note-name]]</code> — Pandawa follows them automatically at runtime.
                     </span>
@@ -819,12 +819,12 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               spellCheck={false}
               placeholder="Write soul.md, rules.md, team charter, SOPs, or drag & drop files..."
               className={`${
-                viewMode === "split" ? "w-1/2 border-r border-slate-800" : "w-full"
-              } h-full bg-[#080a0f] text-slate-100 font-mono text-sm p-6 outline-none resize-none leading-relaxed`}
+                viewMode === "split" ? "w-1/2 border-r border-white/[0.08]" : "w-full"
+              } h-full bg-[#09090b] text-zinc-100 font-mono text-sm p-6 outline-none resize-none leading-relaxed`}
             />
           )}
           {(viewMode === "preview" || viewMode === "split") && (
-            <div className={`${viewMode === "split" ? "w-1/2" : "w-full"} h-full overflow-y-auto p-6 bg-[#080a0f]`}>
+            <div className={`${viewMode === "split" ? "w-1/2" : "w-full"} h-full overflow-y-auto p-6 bg-[#09090b]`}>
               <div className="max-w-3xl">
                 <MarkdownView content={content || "*Empty file*"} />
               </div>

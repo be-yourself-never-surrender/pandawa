@@ -1,58 +1,114 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
 
+:root {
+  --bg-canvas: #09090b;
+  --bg-chrome: #0c0c0e;
+  --bg-surface: #111113;
+  --bg-elevated: #18181b;
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --accent-brass: #e5a00d;
+}
+
 @layer base {
+  html,
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: var(--bg-canvas);
+    color: #f4f4f5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.13);
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.24);
   }
 }
 
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Subtle architectural grid for Login / Empty canvases */
+.bg-architect-grid {
+  background-image: linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* React Flow — Monochrome Carbon Instrument Theme */
 .react-flow__background {
-  background-color: #080a0f;
+  background-color: #09090b;
 }
 
 .react-flow__controls {
-  background: #111622 !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
-  border-radius: 10px !important;
+  background: #111113 !important;
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  border-radius: 8px !important;
   overflow: hidden;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 
 .react-flow__controls-button {
-  background: #111622 !important;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.12) !important;
-  fill: #cbd5e1 !important;
+  background: #111113 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  fill: #a1a1aa !important;
 }
 
 .react-flow__controls-button:hover {
-  background: #1e293b !important;
+  background: #1c1c20 !important;
+  fill: #fafafa !important;
 }
 
 .react-flow__minimap {
-  background: #0d111a !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
-  border-radius: 10px !important;
+  background: #0c0c0e !important;
+  border: 1px solid rgba(255, 255, 255, 0.09) !important;
+  border-radius: 8px !important;
 }
 
-.react-flow__edgelabel-renderer {
-  z-index: 25 !important;
-}
-
+.react-flow__edgelabel-renderer,
 .react-flow__edge-textwrapper {
   z-index: 25 !important;
 }
 
 .react-flow__edge-textbg {
-  fill: #0b101b;
-  fill-opacity: 0.94;
-  stroke: rgba(148, 163, 184, 0.25);
+  fill: #111113;
+  fill-opacity: 0.96;
+  stroke: rgba(255, 255, 255, 0.12);
   stroke-width: 1;
 }
 
 .react-flow__edge-text {
-  fill: #e2e8f0;
-  font-size: 10.5px;
-  font-weight: 600;
+  fill: #d4d4d8;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: "JetBrains Mono", monospace;
 }

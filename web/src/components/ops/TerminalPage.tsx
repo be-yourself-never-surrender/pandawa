@@ -133,24 +133,24 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
       fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace",
       scrollback: 5000,
       theme: {
-        background: "#030509",
-        foreground: "#e2e8f0",
-        cursor: "#34d399",
-        selectionBackground: "rgba(245, 158, 11, 0.3)",
-        black: "#0f172a",
+        background: "#09090b",
+        foreground: "#e4e4e7",
+        cursor: "#e5a00d",
+        selectionBackground: "rgba(229, 160, 13, 0.28)",
+        black: "#18181b",
         red: "#f43f5e",
         green: "#34d399",
-        yellow: "#fbbf24",
-        blue: "#38bdf8",
-        magenta: "#a78bfa",
+        yellow: "#f5b027",
+        blue: "#60a5fa",
+        magenta: "#c084fc",
         cyan: "#22d3ee",
-        white: "#f1f5f9",
-        brightBlack: "#475569",
+        white: "#f4f4f5",
+        brightBlack: "#52525b",
         brightRed: "#fb7185",
         brightGreen: "#6ee7b7",
         brightYellow: "#fcd34d",
-        brightBlue: "#7dd3fc",
-        brightMagenta: "#c4b5fd",
+        brightBlue: "#93c5fd",
+        brightMagenta: "#d8b4fe",
         brightCyan: "#67e8f9",
         brightWhite: "#ffffff",
       },
@@ -297,10 +297,10 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
   const pyCaps = runtimeInfo?.pythonWorker?.capabilities || {};
 
   return (
-    <div className="flex h-screen bg-[#080a0f] overflow-hidden">
+    <div className="flex h-screen bg-[#09090b] overflow-hidden">
       {/* Left Sidebar: Living Shared Terminals & Background Jobs */}
-      <aside className="w-72 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
-        <div className="p-3.5 border-b border-slate-800/80 space-y-2.5">
+      <aside className="w-72 shrink-0 bg-[#0c0c0e] border-r border-white/[0.07] flex flex-col">
+        <div className="p-3.5 border-b border-white/[0.07] space-y-2.5">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
               <Terminal className="w-3.5 h-3.5 text-emerald-400" /> Shared PTY Terminals
@@ -308,7 +308,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
             <button
               onClick={() => loadAll()}
               title="Refresh terminals & jobs"
-              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+              className="p-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-300 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
@@ -319,11 +319,11 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="New terminal (e.g. backend)"
-              className="flex-1 min-w-0 bg-[#080a0f] border border-slate-700 focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none"
+              className="flex-1 min-w-0 bg-[#09090b] border border-white/[0.10] focus:border-emerald-500 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none"
             />
             <button
               type="submit"
-              className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1 cursor-pointer shrink-0"
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs flex items-center gap-1 cursor-pointer shrink-0"
             >
               <Plus className="w-3.5 h-3.5" /> Open
             </button>
@@ -347,7 +347,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
               className={`px-2 py-0.5 rounded-full border ${
                 pyCaps.playwright
                   ? "bg-violet-500/15 border-violet-500/35 text-violet-300"
-                  : "bg-slate-800 border-slate-700 text-slate-400"
+                  : "bg-[#18181b] border-white/[0.10] text-zinc-400"
               }`}
             >
               Playwright {runtimeInfo === null ? "…" : pyCaps.playwright ? "✓" : "—"}
@@ -364,7 +364,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
               className={`p-2.5 rounded-xl border transition cursor-pointer space-y-1 ${
                 activeName === s.name
                   ? "bg-emerald-500/12 border-emerald-500/45"
-                  : "bg-[#090c14] border-slate-800 hover:border-slate-700"
+                  : "bg-[#0c0c0e] border-white/[0.08] hover:border-white/[0.10]"
               }`}
             >
               <div className="flex items-center justify-between gap-1.5">
@@ -373,7 +373,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                   {s.name}
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-cyan-300">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#18181b] text-cyan-300">
                     {s.ownerAgent}
                   </span>
                   <button
@@ -382,14 +382,14 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                       e.stopPropagation();
                       handleClose(s.name);
                     }}
-                    className="p-1 rounded text-slate-500 hover:text-rose-400 cursor-pointer"
+                    className="p-1 rounded text-zinc-500 hover:text-rose-400 cursor-pointer"
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
               </div>
-              <div className="text-[10px] font-mono text-slate-400 truncate">{s.cwd}</div>
-              <div className="flex items-center justify-between text-[10px] text-slate-500">
+              <div className="text-[10px] font-mono text-zinc-400 truncate">{s.cwd}</div>
+              <div className="flex items-center justify-between text-[10px] text-zinc-500">
                 <span className="truncate">cmd: {s.currentCommand}</span>
                 <button
                   type="button"
@@ -410,24 +410,24 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
           ))}
 
           {sessions.length === 0 && (
-            <div className="p-4 rounded-xl bg-[#090c14] border border-slate-800/80 text-center space-y-2 text-xs text-slate-400">
-              <Terminal className="w-6 h-6 text-slate-600 mx-auto" />
+            <div className="p-4 rounded-xl bg-[#0c0c0e] border border-white/[0.07] text-center space-y-2 text-xs text-zinc-400">
+              <Terminal className="w-6 h-6 text-zinc-600 mx-auto" />
               <p>No active shared terminals yet.</p>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] text-zinc-500">
                 Open one above or let Pandawa agents spawn terminals via <code>term_open</code> &amp; <code>term_exec</code>.
               </p>
             </div>
           )}
 
           {/* Background Autonomous Daemon Jobs */}
-          <div className="pt-3 border-t border-slate-800/80 space-y-2">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5 px-1">
+          <div className="pt-3 border-t border-white/[0.07] space-y-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5 px-1">
               <Clock className="w-3 h-3 text-amber-400" /> Background Daemon Jobs ({jobs.length})
             </div>
             {jobs.slice(0, 8).map((j) => (
-              <div key={j.id} className="p-2.5 rounded-xl bg-[#090c14] border border-slate-800 space-y-1 text-[11px]">
+              <div key={j.id} className="p-2.5 rounded-xl bg-[#0c0c0e] border border-white/[0.08] space-y-1 text-[11px]">
                 <div className="flex items-center justify-between gap-1">
-                  <span className="font-mono text-[10px] text-slate-400 truncate">{j.id}</span>
+                  <span className="font-mono text-[10px] text-zinc-400 truncate">{j.id}</span>
                   <span
                     className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold ${
                       j.status === "running"
@@ -436,14 +436,14 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                         ? "bg-emerald-500/20 text-emerald-300"
                         : j.status === "failed"
                         ? "bg-rose-500/20 text-rose-300"
-                        : "bg-slate-800 text-slate-400"
+                        : "bg-[#18181b] text-zinc-400"
                     }`}
                   >
                     {j.status}
                   </span>
                 </div>
-                <div className="text-slate-200 line-clamp-2">{j.prompt}</div>
-                <div className="text-[10px] text-slate-500 truncate">{j.progress_text}</div>
+                <div className="text-zinc-200 line-clamp-2">{j.prompt}</div>
+                <div className="text-[10px] text-zinc-500 truncate">{j.progress_text}</div>
                 {(j.status === "running" || j.status === "queued") && (
                   <button
                     onClick={async () => {
@@ -458,7 +458,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
               </div>
             ))}
             {jobs.length === 0 && (
-              <div className="text-[11px] text-slate-500 px-1">
+              <div className="text-[11px] text-zinc-500 px-1">
                 Toggle <strong>BG</strong> in Mission Room to launch 24/7 autonomous daemon missions.
               </div>
             )}
@@ -468,7 +468,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
 
       {/* Main Real-Time xterm.js PTY Screen */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="min-h-14 px-4 py-2.5 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+        <header className="min-h-14 px-4 py-2.5 bg-[#0c0c0e] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
               <Cpu className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -478,7 +478,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                   className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold inline-flex items-center gap-1 ${
                     ptyConnected
                       ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                      : "bg-slate-800 border-slate-700 text-slate-400"
+                      : "bg-[#18181b] border-white/[0.10] text-zinc-400"
                   }`}
                 >
                   {ptyConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
@@ -486,12 +486,12 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                 </span>
               )}
               {activeSession && (
-                <code className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-amber-300">
+                <code className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#18181b] text-amber-300">
                   {activeSession.attachCommand}
                 </code>
               )}
             </div>
-            <div className="text-[11px] text-slate-400 truncate mt-0.5">
+            <div className="text-[11px] text-zinc-400 truncate mt-0.5">
               Real-time ANSI interactive terminal — click inside to type directly (vim, htop, python, node) alongside Pandawa agents
             </div>
           </div>
@@ -507,14 +507,14 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
             <button
               onClick={() => sendRawInput("\x0c")}
               disabled={!ptyConnected}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer disabled:opacity-40"
+              className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-300 cursor-pointer disabled:opacity-40"
             >
               Clear
             </button>
             <button
               onClick={() => setReconnectSeq((s) => s + 1)}
               disabled={!activeName}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 cursor-pointer disabled:opacity-40"
+              className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-200 flex items-center gap-1 cursor-pointer disabled:opacity-40"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Reconnect
             </button>
@@ -522,14 +522,14 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
         </header>
 
         {/* Full Interactive xterm.js Canvas */}
-        <div className="flex-1 min-h-0 bg-[#05070c] p-3 flex flex-col">
+        <div className="flex-1 min-h-0 bg-[#09090b] p-3 flex flex-col">
           {!activeName ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-3">
-              <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/35 flex items-center justify-center">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/15 border border-emerald-500/35 flex items-center justify-center">
                 <Sparkles className="w-6 h-6 text-emerald-400" />
               </div>
               <h3 className="text-base font-bold text-white">Real-Time Interactive Multi-Agent PTY</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
+              <p className="text-xs text-zinc-400 leading-relaxed">
                 Powered by <strong>xterm.js + WebSocket PTY + tmux</strong>. Full ANSI colors, interactive shells,
                 live servers, and instant keystrokes—shared seamlessly between you and Arjuna, Bima &amp; Sadewa!
               </p>
@@ -542,7 +542,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                   await loadAll();
                   setActiveName("main");
                 }}
-                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
               >
                 <Play className="w-3.5 h-3.5" /> Launch Interactive Main PTY
               </button>
@@ -551,7 +551,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
             <div
               ref={termContainerRef}
               onClick={() => xtermRef.current?.focus()}
-              className="flex-1 min-h-0 w-full rounded-xl overflow-hidden border border-slate-800/90 bg-[#030509] p-2 shadow-inner"
+              className="flex-1 min-h-0 w-full rounded-xl overflow-hidden border border-white/[0.08] bg-[#09090b] p-2 shadow-inner"
             />
           )}
         </div>
@@ -559,7 +559,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
         {/* Quick Send Bar (in addition to typing directly inside xterm.js!) */}
         <form
           onSubmit={handleQuickCommand}
-          className="px-3.5 py-2.5 bg-[#0d111b] border-t border-slate-800/80 flex items-center gap-2"
+          className="px-3.5 py-2.5 bg-[#0c0c0e] border-t border-white/[0.07] flex items-center gap-2"
         >
           <span className="font-mono text-xs font-bold text-emerald-400 shrink-0">
             {activeName || "main"} $
@@ -568,12 +568,12 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
             value={cmdInput}
             onChange={(e) => setCmdInput(e.target.value)}
             placeholder="Type directly in the terminal above, OR paste a command here and press Enter..."
-            className="flex-1 bg-[#05070c] border border-slate-700 focus:border-emerald-500 rounded-xl px-3.5 py-2 font-mono text-xs text-white outline-none"
+            className="flex-1 bg-[#09090b] border border-white/[0.10] focus:border-emerald-500 rounded-xl px-3.5 py-2 font-mono text-xs text-white outline-none"
           />
           <button
             type="submit"
             disabled={!cmdInput.trim() || !activeName}
-            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:bg-[#18181b] disabled:text-zinc-500 text-zinc-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
           >
             <Send className="w-3.5 h-3.5" /> Send
           </button>

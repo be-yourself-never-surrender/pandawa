@@ -1,24 +1,38 @@
-import React, { useEffect, useState } from "react";
+import React, { Suspense, lazy, useEffect, useState } from "react";
 import { apiFetch, createRealtimeSocket, getStoredToken, setStoredToken } from "./api/client";
 import type { NavTab } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { Sidebar } from "./components/Sidebar";
 import { OverviewPage } from "./components/OverviewPage";
-import { BrainCanvas } from "./components/canvas/BrainCanvas";
 import { MissionRoom, type LiveStreamBuffer } from "./components/chat/MissionRoom";
 import { BrainExplorer } from "./components/brains/BrainExplorer";
 import { ProvidersPage } from "./components/providers/ProvidersPage";
 import { SkillsPage } from "./components/ops/SkillsPage";
 import { AutomationPage } from "./components/ops/AutomationPage";
 import { SettingsPage } from "./components/ops/SettingsPage";
-import { TerminalPage } from "./components/ops/TerminalPage";
 import { ApprovalOverlay, type PendingApprovalItem } from "./components/ApprovalOverlay";
+import { CommandPalette } from "./components/CommandPalette";
+
+// Code-split heavy views (XYFlow Canvas & xterm.js PTY) for fast initial paint
+const BrainCanvas = lazy(() =>
+  import("./components/canvas/BrainCanvas").then((m) => ({ default: m.BrainCanvas }))
+);
+const TerminalPage = lazy(() =>
+  import("./components/ops/TerminalPage").then((m) => ({ default: m.TerminalPage }))
+);
+
+const LazyFallback: React.FC<{ label: string }> = ({ label }) => (
+  <div className="h-screen bg-[#09090b] flex items-center justify-center text-xs font-mono text-zinc-500">
+    Loading {label}...
+  </div>
+);
 
 export const App: React.FC = () => {
   const [authed, setAuthed] = useState<boolean>(false);
   const [checkingAuth, setCheckingAuth] = useState<boolean>(true);
   const [usingDefaultPassword, setUsingDefaultPassword] = useState<boolean>(false);
   const [tab, setTab] = useState<NavTab>("overview");
+  const [paletteOpen, setPaletteOpen] = useState<boolean>(false);
   const [openFilePath, setOpenFilePath] = useState<string | null>(null);
   const [focusTeamId, setFocusTeamId] = useState<string | null>(null);
   const [chatInitialTeamId, setChatInitialTeamId] = useState<string | null>(null);
@@ -36,6 +50,19 @@ export const App: React.FC = () => {
     window.addEventListener("pandawa:unauthorized", onUnauthorized);
     return () => window.removeEventListener("pandawa:unauthorized", onUnauthorized);
   }, []);
+
+  // Global Cmd+K / Ctrl+K shortcut for Command Palette
+  useEffect(() => {
+    if (!authed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [authed]);
 
   useEffect(() => {
     const token = getStoredToken();
@@ -113,7 +140,7 @@ export const App: React.FC = () => {
               const existing = prev[aid] || {
                 agentId: aid,
                 agentName: String(ev.agentName || aid),
-                avatar: String(ev.avatar || "⚡"),
+                avatar: String(ev.avatar || "P"),
                 model: String(ev.model || ""),
                 text: "",
               };
@@ -171,8 +198,8 @@ export const App: React.FC = () => {
 
   if (checkingAuth) {
     return (
-      <div className="min-h-screen bg-[#080a0f] flex items-center justify-center text-sm text-slate-400">
-        Loading Pandawa OS v7.0...
+      <div className="min-h-screen bg-[#09090b] flex items-center justify-center text-xs font-mono text-zinc-500">
+        Initializing Pandawa OS...
       </div>
     );
   }
@@ -194,19 +221,20 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#080a0f]">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#09090b] text-zinc-100">
       <Sidebar
         active={tab}
         onSelect={setTab}
         usingDefaultPassword={usingDefaultPassword}
         wsConnected={wsConnected}
         approvalMode={approvalMode}
+        onOpenPalette={() => setPaletteOpen(true)}
         onLogout={() => {
           setStoredToken(null);
           setAuthed(false);
         }}
       />
-      <main className="flex-1 min-w-0 h-screen overflow-hidden">
+      <main className="flex-1 min-w-0 h-screen overflow-hidden bg-[#09090b]">
         {tab === "overview" && (
           <OverviewPage
             approvalMode={approvalMode}
@@ -224,11 +252,13 @@ export const App: React.FC = () => {
           />
         )}
         {tab === "canvas" && (
-          <BrainCanvas
-            onOpenBrainFile={handleOpenBrainFile}
-            activeAgentIds={activeAgentIds}
-            initialFocusTeamId={focusTeamId}
-          />
+          <Suspense fallback={<LazyFallback label="Brain Canvas" />}>
+            <BrainCanvas
+              onOpenBrainFile={handleOpenBrainFile}
+              activeAgentIds={activeAgentIds}
+              initialFocusTeamId={focusTeamId}
+            />
+          </Suspense>
         )}
         {tab === "chat" && (
           <MissionRoom
@@ -243,7 +273,11 @@ export const App: React.FC = () => {
             onOpenTerminal={() => setTab("terminal")}
           />
         )}
-        {tab === "terminal" && <TerminalPage liveEvents={liveEvents} />}
+        {tab === "terminal" && (
+          <Suspense fallback={<LazyFallback label="Live Terminal" />}>
+            <TerminalPage liveEvents={liveEvents} />
+          </Suspense>
+        )}
         {tab === "brains" && (
           <BrainExplorer
             initialFilePath={openFilePath}
@@ -255,6 +289,14 @@ export const App: React.FC = () => {
         {tab === "automation" && <AutomationPage onOpenFile={handleOpenBrainFile} />}
         {tab === "settings" && <SettingsPage onPasswordChanged={() => setUsingDefaultPassword(false)} />}
       </main>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onNavigate={setTab}
+        approvalMode={approvalMode}
+        onChangeApprovalMode={handleChangeApprovalMode}
+      />
 
       <ApprovalOverlay
         approvals={pendingApprovals}

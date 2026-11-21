@@ -35,30 +35,28 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({ approvals, onR
   }
 
   return (
-    <div className="fixed bottom-5 right-5 z-50 w-full max-w-md space-y-3">
+    <div className="fixed bottom-5 right-5 z-50 w-full max-w-md space-y-2.5">
       {approvals.map((item) => (
         <div
           key={item.id}
-          className="rounded-2xl bg-[#101524]/95 backdrop-blur-xl border border-amber-500/60 shadow-[0_0_40px_rgba(245,158,11,0.22)] p-4 space-y-3"
+          className="rounded-xl bg-[#111113] border border-amber-400/40 shadow-[0_20px_60px_rgba(0,0,0,0.75)] p-4 space-y-3"
         >
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center shrink-0">
-                <ShieldAlert className="w-4 h-4 text-amber-400" />
+          <div className="flex items-start gap-2.5">
+            <div className="w-7 h-7 rounded-md bg-amber-500/10 border border-amber-400/25 flex items-center justify-center shrink-0">
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[11px] font-mono uppercase tracking-[0.06em] text-amber-300">
+                Approval Required
               </div>
-              <div>
-                <div className="text-xs font-bold text-amber-300 uppercase tracking-wider">
-                  Approval Required
-                </div>
-                <div className="text-xs text-slate-300">
-                  <strong>{item.agentName}</strong> wants to run{" "}
-                  <code className="text-cyan-300">{item.toolName}</code>
-                </div>
+              <div className="text-xs text-zinc-300 mt-0.5">
+                <strong className="text-zinc-100">{item.agentName}</strong> requested{" "}
+                <code className="text-amber-300 bg-white/[0.04] px-1 py-0.5 rounded">{item.toolName}</code>
               </div>
             </div>
           </div>
 
-          <div className="rounded-xl bg-[#070a10] border border-slate-800 p-3 font-mono text-[11px] text-slate-200 max-h-40 overflow-auto whitespace-pre-wrap break-all">
+          <div className="rounded-lg bg-[#09090b] border border-white/[0.07] p-3 font-mono text-[11px] text-zinc-300 max-h-40 overflow-auto whitespace-pre-wrap break-all">
             {item.toolName === "shell_exec" && typeof item.args.command === "string" ? (
               <div className="flex items-start gap-2">
                 <Terminal className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
@@ -69,11 +67,11 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({ approvals, onR
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             <button
               disabled={busyId === item.id}
               onClick={() => decide(item.id, true, false)}
-              className="flex-1 py-2 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1 cursor-pointer"
+              className="flex-1 h-8 px-3 rounded-md bg-zinc-100 hover:bg-white disabled:opacity-40 text-zinc-950 font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition"
             >
               <Check className="w-3.5 h-3.5" /> Approve
             </button>
@@ -81,14 +79,14 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({ approvals, onR
               disabled={busyId === item.id}
               onClick={() => decide(item.id, true, true)}
               title="Approve and switch Approval Mode to Auto (Full Freedom)"
-              className="py-2 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 font-semibold text-xs flex items-center gap-1 cursor-pointer"
+              className="h-8 px-3 rounded-md bg-[#18181b] hover:bg-[#222227] border border-white/[0.09] text-amber-300 font-medium text-xs flex items-center gap-1 cursor-pointer transition"
             >
-              <Zap className="w-3.5 h-3.5" /> Auto All
+              <Zap className="w-3 h-3" /> Auto All
             </button>
             <button
               disabled={busyId === item.id}
               onClick={() => decide(item.id, false, false)}
-              className="py-2 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold text-xs flex items-center gap-1 cursor-pointer"
+              className="h-8 px-3 rounded-md bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/25 text-rose-300 font-medium text-xs flex items-center gap-1 cursor-pointer transition"
             >
               <X className="w-3.5 h-3.5" /> Reject
             </button>

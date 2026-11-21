@@ -592,11 +592,11 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
   }, [focusTeamId, nodes, edges, teams]);
 
   return (
-    <div className="flex flex-col h-screen bg-[#080a0f]">
+    <div className="flex flex-col h-screen bg-[#09090b]">
       {/* Top Action Palette (n8n style, wraps cleanly on narrow screens) */}
-      <header className="min-h-14 px-4 py-2 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2 shrink-0">
+      <header className="min-h-14 px-4 py-2 bg-[#0c0c0e] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider mr-1 hidden 2xl:inline">
+          <span className="text-xs font-bold text-zinc-300 uppercase tracking-wider mr-1 hidden 2xl:inline">
             Add Node:
           </span>
           <button
@@ -641,7 +641,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             onChange={(e) => {
               if (e.target.value) applyTemplate(e.target.value);
             }}
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 border border-slate-700 text-amber-300 text-xs font-medium cursor-pointer shrink-0"
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] border border-white/[0.10] text-amber-300 text-xs font-medium cursor-pointer shrink-0"
           >
             <option value="">{spawningTpl ? "Spawning..." : "+ 1-Click Team Kit"}</option>
             <option value="software-squad">🚀 Software Engineering Squad</option>
@@ -659,20 +659,20 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
           <button
             onClick={runAutoLayout}
             title="Auto-arrange canvas cleanly"
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 cursor-pointer"
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-300 text-xs flex items-center gap-1 cursor-pointer"
           >
             <LayoutGrid className="w-3.5 h-3.5" /> Arrange
           </button>
           <button
             onClick={exportBundle}
             title="Export commercial Brain & Team Kit (.pandawa.json — API keys stripped)"
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-amber-300 text-xs flex items-center gap-1 cursor-pointer"
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-amber-300 text-xs flex items-center gap-1 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" /> Export Kit
           </button>
           <label
             title="Import .pandawa.json Brain & Team Kit"
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-cyan-300 text-xs flex items-center gap-1 cursor-pointer"
+            className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-cyan-300 text-xs flex items-center gap-1 cursor-pointer"
           >
             <Upload className="w-3.5 h-3.5" /> Import Kit
             <input
@@ -689,7 +689,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             onClick={() => loadAll()}
             title="Reload topology"
             aria-label="Reload topology"
-            className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 cursor-pointer"
+            className="p-2 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-300 cursor-pointer"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
@@ -698,8 +698,8 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             disabled={saving}
             className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
               dirty
-                ? "bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-lg shadow-amber-500/25"
-                : "bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+                ? "bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-lg shadow-amber-500/25"
+                : "bg-[#18181b] hover:bg-[#222227] text-zinc-200 border border-white/[0.10]"
             }`}
           >
             <Save className="w-3.5 h-3.5" />
@@ -710,14 +710,14 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
 
       {/* Team Focus Filter Strip (cleanly isolates any team when multiple squads exist) */}
       {teams.length > 1 && (
-        <div className="px-4 py-1.5 bg-[#0a0d15] border-b border-slate-800/70 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
-          <span className="text-slate-500 font-semibold mr-1 shrink-0">Focus View:</span>
+        <div className="px-4 py-1.5 bg-[#0c0c0e] border-b border-white/[0.06] flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
+          <span className="text-zinc-500 font-semibold mr-1 shrink-0">Focus View:</span>
           <button
             onClick={() => setFocusTeamId("all")}
             className={`px-2.5 py-1 rounded-full border shrink-0 cursor-pointer transition ${
               focusTeamId === "all"
                 ? "bg-amber-500/20 border-amber-500/50 text-amber-200 font-semibold"
-                : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+                : "bg-[#16161a] border-white/[0.08] text-zinc-400 hover:text-zinc-200"
             }`}
           >
             All Teams ({teams.length})
@@ -729,7 +729,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
               className={`px-2.5 py-1 rounded-full border shrink-0 cursor-pointer transition ${
                 focusTeamId === t.id
                   ? "bg-violet-500/20 border-violet-500/50 text-violet-200 font-semibold"
-                  : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+                  : "bg-[#16161a] border-white/[0.08] text-zinc-400 hover:text-zinc-200"
               }`}
             >
               {t.name}
@@ -742,7 +742,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
       <div className="flex-1 flex min-h-0 relative">
         <div className="flex-1 h-full relative">
           {showTip && (
-            <div className="absolute top-3 left-3 z-20 max-w-md px-3 py-2 rounded-xl bg-[#0d111b]/92 backdrop-blur-md border border-slate-700/80 text-[11px] text-slate-300 flex items-center justify-between gap-3 shadow-lg">
+            <div className="absolute top-3 left-3 z-20 max-w-md px-3 py-2 rounded-xl bg-[#0c0c0e]/92 backdrop-blur-md border border-white/[0.11] text-[11px] text-zinc-300 flex items-center justify-between gap-3 shadow-lg">
               <span>
                 <strong className="text-amber-300">Tip:</strong> Drag from any dot handle to wire{" "}
                 <strong>Brains</strong>, <strong>AI Models</strong>, or <code className="text-amber-200">soul.md</code>{" "}
@@ -751,7 +751,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
               <button
                 aria-label="Dismiss tip"
                 onClick={() => setShowTip(false)}
-                className="text-slate-500 hover:text-white shrink-0 cursor-pointer"
+                className="text-zinc-500 hover:text-white shrink-0 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -787,7 +787,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             fitViewOptions={{ padding: 0.16 }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="#1e293b" />
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="#27272a" />
             <Controls />
             <MiniMap
               nodeColor={(n) => {
@@ -804,7 +804,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
 
           {/* Bottom Legend */}
           <div
-            className={`pointer-events-none absolute bottom-3 left-16 flex-wrap gap-2 bg-[#0d111b]/90 border border-slate-800/80 rounded-xl px-3 py-1.5 text-[11px] text-slate-400 ${
+            className={`pointer-events-none absolute bottom-3 left-16 flex-wrap gap-2 bg-[#0c0c0e]/90 border border-white/[0.07] rounded-xl px-3 py-1.5 text-[11px] text-zinc-400 ${
               selectedNode || selectedEdge ? "hidden xl:flex" : "hidden sm:flex"
             }`}
           >
@@ -818,8 +818,8 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
 
         {/* Right Inspector Drawer */}
         {(selectedNode || selectedEdge) && (
-          <aside className="w-80 shrink-0 bg-[#0d111b] border-l border-slate-800/90 flex flex-col h-full overflow-y-auto p-4 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <aside className="w-80 shrink-0 bg-[#0c0c0e] border-l border-white/[0.08] flex flex-col h-full overflow-y-auto p-4 space-y-4">
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
               <div className="text-xs font-bold uppercase tracking-wider text-amber-400">
                 {selectedNode
                   ? `Inspect · ${String(selectedNode.data.nodeType || "node").replace(/_/g, " ")}`
@@ -840,7 +840,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     setSelectedNodeId(null);
                     setSelectedEdgeId(null);
                   }}
-                  className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-800 cursor-pointer"
+                  className="p-1.5 rounded-lg text-zinc-400 hover:bg-[#18181b] cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -851,11 +851,11 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             {selectedNode && (
               <div className="space-y-3 text-xs">
                 <div>
-                  <label className="text-slate-400 block mb-1">Display Label</label>
+                  <label className="text-zinc-400 block mb-1">Display Label</label>
                   <input
                     value={selectedNode.data.label || ""}
                     onChange={(e) => updateNodeData(selectedNode.id, { label: e.target.value })}
-                    className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 outline-none focus:border-amber-500"
+                    className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-2 text-zinc-100 outline-none focus:border-amber-500"
                   />
                 </div>
 
@@ -864,19 +864,19 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                   <>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="text-slate-400 block mb-1">Avatar</label>
+                        <label className="text-zinc-400 block mb-1">Avatar</label>
                         <input
                           value={selectedAgent.avatar}
                           onChange={(e) => saveSelectedAgent({ avatar: e.target.value })}
-                          className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100"
+                          className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-zinc-100"
                         />
                       </div>
                       <div>
-                        <label className="text-slate-400 block mb-1">Purpose</label>
+                        <label className="text-zinc-400 block mb-1">Purpose</label>
                         <select
                           value={selectedAgent.purpose}
                           onChange={(e) => saveSelectedAgent({ purpose: e.target.value })}
-                          className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-1.5 text-slate-100"
+                          className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-1.5 text-zinc-100"
                         >
                           <option value="strategy">Strategy</option>
                           <option value="coding">Coding</option>
@@ -890,16 +890,16 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1">Role / Title</label>
+                      <label className="text-zinc-400 block mb-1">Role / Title</label>
                       <input
                         value={selectedAgent.title}
                         onChange={(e) => saveSelectedAgent({ title: e.target.value })}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-zinc-100"
                       />
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1">Assigned AI Provider</label>
+                      <label className="text-zinc-400 block mb-1">Assigned AI Provider</label>
                       <select
                         value={selectedAgent.provider_id || ""}
                         onChange={(e) => {
@@ -909,7 +909,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                             model: prov?.defaultModel || selectedAgent.model,
                           });
                         }}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-1.5 text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-1.5 text-zinc-100"
                       >
                         <option value="">(Use wired Provider Node)</option>
                         {providers.map((p) => (
@@ -921,13 +921,13 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1">Model ID</label>
+                      <label className="text-zinc-400 block mb-1">Model ID</label>
                       <input
                         list={`models_${selectedAgent.id}`}
                         value={selectedAgent.model}
                         onChange={(e) => saveSelectedAgent({ model: e.target.value })}
                         placeholder="e.g. gpt-4.1, claude-sonnet-4-20250514"
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-1.5 font-mono text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-1.5 font-mono text-zinc-100"
                       />
                       <datalist id={`models_${selectedAgent.id}`}>
                         {(providers.find((p) => p.id === selectedAgent.provider_id)?.models || []).map((m) => (
@@ -937,7 +937,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1">
+                      <label className="text-zinc-400 block mb-1">
                         Max Autonomous Steps ({selectedAgent.max_iterations || 35} steps/turn)
                       </label>
                       <input
@@ -949,7 +949,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                         onChange={(e) => saveSelectedAgent({ max_iterations: Number(e.target.value) })}
                         className="w-full accent-amber-400"
                       />
-                      <div className="flex justify-between text-[10px] text-slate-500">
+                      <div className="flex justify-between text-[10px] text-zinc-500">
                         <span>5 (quick)</span>
                         <span>35 (deep build)</span>
                         <span>100 (autonomous)</span>
@@ -957,8 +957,8 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1.5">Enabled Tool Packs (44+ Built-In Tools)</label>
-                      <div className="grid grid-cols-2 gap-1.5 bg-[#090c14] border border-slate-800 rounded-xl p-2.5">
+                      <label className="text-zinc-400 block mb-1.5">Enabled Tool Packs (44+ Built-In Tools)</label>
+                      <div className="grid grid-cols-2 gap-1.5 bg-[#0c0c0e] border border-white/[0.08] rounded-xl p-2.5">
                         {[
                           { id: "brain", label: "Brain & FTS5" },
                           { id: "team", label: "Team & Chat" },
@@ -971,7 +971,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                         ].map((pk) => {
                           const checked = selectedAgent.toolPacks.includes(pk.id);
                           return (
-                            <label key={pk.id} className="flex items-center gap-1.5 text-[11px] text-slate-200 cursor-pointer">
+                            <label key={pk.id} className="flex items-center gap-1.5 text-[11px] text-zinc-200 cursor-pointer">
                               <input
                                 type="checkbox"
                                 checked={checked}
@@ -991,12 +991,12 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     </div>
 
                     <div>
-                      <label className="text-slate-400 block mb-1">System Prompt Override</label>
+                      <label className="text-zinc-400 block mb-1">System Prompt Override</label>
                       <textarea
                         rows={4}
                         value={selectedAgent.system_prompt}
                         onChange={(e) => saveSelectedAgent({ system_prompt: e.target.value })}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 outline-none focus:border-amber-500"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-2 text-zinc-100 outline-none focus:border-amber-500"
                       />
                     </div>
 
@@ -1009,7 +1009,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                       </button>
                       <button
                         onClick={() => onOpenBrainFile(`agents/${selectedAgent.slug}/soul.md`)}
-                        className="w-full py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="w-full py-2 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-200 font-medium flex items-center justify-center gap-1.5 cursor-pointer"
                       >
                         <ExternalLink className="w-3.5 h-3.5" /> Edit Agent soul.md
                       </button>
@@ -1021,7 +1021,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                 {selectedNode.data.nodeType === "provider" && (
                   <>
                     <div>
-                      <label className="text-slate-400 block mb-1">AI Provider</label>
+                      <label className="text-zinc-400 block mb-1">AI Provider</label>
                       <select
                         value={String(selectedNode.data.providerId || selectedNode.data.refId || "")}
                         onChange={(e) => {
@@ -1035,7 +1035,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                             });
                           }
                         }}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-2 text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
                       >
                         {providers.map((p) => (
                           <option key={p.id} value={p.id}>
@@ -1045,20 +1045,20 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                       </select>
                     </div>
                     <div>
-                      <label className="text-slate-400 block mb-1">Model Name</label>
+                      <label className="text-zinc-400 block mb-1">Model Name</label>
                       <input
                         value={String(selectedNode.data.model || "")}
                         onChange={(e) => updateNodeData(selectedNode.id, { model: e.target.value })}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-2 font-mono text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-2 font-mono text-zinc-100"
                       />
                     </div>
                     <div>
-                      <label className="text-slate-400 block mb-1">Purpose Tag</label>
+                      <label className="text-zinc-400 block mb-1">Purpose Tag</label>
                       <input
                         value={String(selectedNode.data.purpose || "")}
                         onChange={(e) => updateNodeData(selectedNode.id, { purpose: e.target.value })}
                         placeholder="Strategy, Coding, Research..."
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-2 text-zinc-100"
                       />
                     </div>
                   </>
@@ -1068,7 +1068,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                 {selectedNode.data.nodeType === "knowledge" && (
                   <>
                     <div>
-                      <label className="text-slate-400 block mb-1">Mounted File or Folder</label>
+                      <label className="text-zinc-400 block mb-1">Mounted File or Folder</label>
                       <select
                         value={String(selectedNode.data.path || selectedNode.data.refId || "")}
                         onChange={(e) => {
@@ -1080,7 +1080,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                             isFolder: chosen?.isFolder ?? false,
                           });
                         }}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-2 font-mono text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 font-mono text-zinc-100"
                       >
                         {fileChoices.map((f) => (
                           <option key={f.path} value={f.path}>
@@ -1105,7 +1105,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                 {(selectedNode.data.nodeType === "main_brain" || selectedNode.data.nodeType === "team_brain") && (
                   <>
                     <div>
-                      <label className="text-slate-400 block mb-1">Linked Brain</label>
+                      <label className="text-zinc-400 block mb-1">Linked Brain</label>
                       <select
                         value={selectedNode.data.refId || ""}
                         onChange={(e) => {
@@ -1118,7 +1118,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                             });
                           }
                         }}
-                        className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-2 text-slate-100"
+                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
                       >
                         {brains.map((b) => (
                           <option key={b.id} value={b.id}>
@@ -1127,7 +1127,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                         ))}
                       </select>
                     </div>
-                    <div className="p-2.5 rounded-lg bg-[#090c14] border border-slate-800 text-[11px] text-slate-400">
+                    <div className="p-2.5 rounded-lg bg-[#0c0c0e] border border-white/[0.08] text-[11px] text-zinc-400">
                       Folder: <code className="text-amber-300">{String(selectedNode.data.folderPath || "")}</code>
                     </div>
                     <button
@@ -1154,7 +1154,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                 {/* TOOLPACK CONFIG */}
                 {selectedNode.data.nodeType === "toolpack" && (
                   <div>
-                    <label className="text-slate-400 block mb-2">Included Tool Packs</label>
+                    <label className="text-zinc-400 block mb-2">Included Tool Packs</label>
                     <div className="space-y-1.5">
                       {["brain", "team", "workspace", "terminal", "shell", "web", "browser", "automation"].map((pk) => {
                         const current = Array.isArray(selectedNode.data.packs)
@@ -1162,7 +1162,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                           : [];
                         const checked = current.includes(pk);
                         return (
-                          <label key={pk} className="flex items-center gap-2 text-slate-200 cursor-pointer">
+                          <label key={pk} className="flex items-center gap-2 text-zinc-200 cursor-pointer">
                             <input
                               type="checkbox"
                               checked={checked}
@@ -1188,19 +1188,19 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
             {selectedEdge && (
               <div className="space-y-3 text-xs">
                 <div>
-                  <label className="text-slate-400 block mb-1">Connection Label</label>
+                  <label className="text-zinc-400 block mb-1">Connection Label</label>
                   <input
                     value={String(selectedEdge.label || "")}
                     onChange={(e) => updateEdgeData(selectedEdge.id, { label: e.target.value })}
-                    className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100"
+                    className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-2 text-zinc-100"
                   />
                 </div>
                 <div>
-                  <label className="text-slate-400 block mb-1">Connection Type</label>
+                  <label className="text-zinc-400 block mb-1">Connection Type</label>
                   <select
                     value={String((selectedEdge.data as Record<string, unknown>)?.relation || "brain_link")}
                     onChange={(e) => updateEdgeData(selectedEdge.id, { relation: e.target.value })}
-                    className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-2 text-slate-100"
+                    className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
                   >
                     <option value="brain_link">Brain Link (Main ↔ Team ↔ Agent)</option>
                     <option value="model_binding">AI Model Binding</option>
@@ -1210,18 +1210,18 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                   </select>
                 </div>
                 <div>
-                  <label className="text-slate-400 block mb-1">Brain Permission</label>
+                  <label className="text-zinc-400 block mb-1">Brain Permission</label>
                   <select
                     value={String((selectedEdge.data as Record<string, unknown>)?.permission || "read_write")}
                     onChange={(e) => updateEdgeData(selectedEdge.id, { permission: e.target.value })}
-                    className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2 py-2 text-slate-100"
+                    className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
                   >
                     <option value="read">Read Only</option>
                     <option value="read_write">Read & Write</option>
                     <option value="sync">Full Sync (Inherit + Update)</option>
                   </select>
                 </div>
-                <label className="flex items-center gap-2 text-slate-300 cursor-pointer pt-1">
+                <label className="flex items-center gap-2 text-zinc-300 cursor-pointer pt-1">
                   <input
                     type="checkbox"
                     checked={Boolean(selectedEdge.animated)}
@@ -1239,13 +1239,13 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
       {/* Compiled Brain Inspector Modal */}
       {compiledPreview && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0e1320] border border-slate-700 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl">
-            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="bg-[#111113] border border-white/[0.10] rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl">
+            <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-white">
                   Compiled Live Brain — {compiledPreview.agentName}
                 </h3>
-                <p className="text-xs text-slate-400 mt-0.5">
+                <p className="text-xs text-zinc-400 mt-0.5">
                   Model: <code className="text-emerald-300">{compiledPreview.model || "unset"}</code> ·{" "}
                   {compiledPreview.summary.totalFiles} files · {compiledPreview.summary.totalChars.toLocaleString()} chars
                 </p>
@@ -1257,20 +1257,20 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     setSavedNotice("Compiled Brain prompt copied!");
                     setTimeout(() => setSavedNotice(""), 2000);
                   }}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-200 text-xs flex items-center gap-1 cursor-pointer"
                 >
                   <Copy className="w-3.5 h-3.5" /> Copy Prompt
                 </button>
                 <button
                   aria-label="Close compiled brain preview"
                   onClick={() => setCompiledPreview(null)}
-                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 cursor-pointer"
+                  className="p-1.5 rounded-lg hover:bg-[#18181b] text-zinc-400 cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
-            <div className="p-4 border-b border-slate-800/80 flex flex-wrap gap-2 text-[11px]">
+            <div className="p-4 border-b border-white/[0.07] flex flex-wrap gap-2 text-[11px]">
               {compiledPreview.summary.brainNames.map((b) => (
                 <span key={b} className="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
                   Brain: {b}
@@ -1282,7 +1282,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                 </span>
               ))}
             </div>
-            <pre className="flex-1 overflow-auto p-5 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
+            <pre className="flex-1 overflow-auto p-5 text-xs font-mono text-zinc-300 whitespace-pre-wrap leading-relaxed">
               {compiledPreview.systemPrompt}
             </pre>
           </div>

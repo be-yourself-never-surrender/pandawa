@@ -1,21 +1,16 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Sparkles,
   CheckCircle2,
   Circle,
-  ArrowRight,
+  ArrowUpRight,
   Network,
   MessageSquare,
-  Cpu,
-  FolderTree,
-  Users,
-  Wrench,
   Shield,
   Zap,
-  Rocket,
   Trash2,
   Plus,
   Terminal,
+  ChevronRight,
 } from "lucide-react";
 import { apiFetch } from "../api/client";
 import type { NavTab, ProviderItem, TeamItem } from "../types";
@@ -58,17 +53,24 @@ const STARTER_MISSIONS = [
     tag: "Research",
   },
   {
-    title: "Audit & Upgrade Our Main Brain",
+    title: "Audit & Upgrade Main Brain",
     prompt:
       "Read @main-brain/soul.md and @main-brain/rules.md, then propose concrete improvements to make our Pandawa team faster, sharper, and more autonomous.",
     tag: "Brain Ops",
   },
   {
-    title: "Create a Reusable Team Skill",
+    title: "Author Reusable Deployment Skill",
     prompt:
       "Collaborate to design a production deployment verification checklist and save it as a reusable SKILL.md inside our Team Brain using learn_skill.",
-    tag: "Self-Learning",
+    tag: "Skill",
   },
+];
+
+const APPROVAL_OPTIONS = [
+  { id: "auto", label: "Auto" },
+  { id: "approve_shell", label: "Shell" },
+  { id: "approve_sensitive", label: "Sensitive" },
+  { id: "approve_all", label: "All" },
 ];
 
 export const OverviewPage: React.FC<OverviewPageProps> = ({
@@ -149,334 +151,374 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   }
 
   return (
-    <div className="h-screen overflow-y-auto bg-[#080a0f] p-6 space-y-6">
-      {/* Hero Welcome Banner */}
-      <div className="rounded-2xl bg-gradient-to-br from-[#121829] via-[#0e1320] to-[#131020] border border-amber-500/30 p-6 flex flex-wrap items-center justify-between gap-4 relative overflow-hidden">
-        <div className="pointer-events-none absolute -top-20 -right-20 w-72 h-72 rounded-full bg-amber-500/10 blur-3xl" />
-        <div className="space-y-1.5 relative z-10 max-w-2xl">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-[11px] font-semibold text-amber-300">
-            <Sparkles className="w-3 h-3" /> Pandawa Living OS v{status?.version || "7.0.0"}
-          </div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">
-            Command Center — Living Agentic OS &amp; Brain HQ
+    <div className="h-screen overflow-y-auto bg-[#09090b]">
+      {/* Slim Top Command Bar */}
+      <header className="sticky top-0 z-20 bg-[#09090b]/90 backdrop-blur-md border-b border-white/[0.06] px-6 h-13 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="text-[14px] font-semibold tracking-[-0.015em] text-zinc-100 truncate">
+            Command Center
           </h1>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Hybrid <strong>TypeScript + Python</strong> Agentic OS: visual <strong>[[wikilink]] Layered Brains</strong>,
-            multi-model teams with <strong>35–100 step Execute &amp; Verify loops</strong>, persistent shared{" "}
-            <strong>tmux terminals</strong>, Playwright vision, and <strong>{toolCount}+ power tools</strong> with zero hidden guardrails.
-          </p>
-          {runtime && (
-            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px]">
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
-                xterm PTY: {runtime.tmuxAvailable ? `${runtime.activeTerminals || 0} live` : "off"}
-              </span>
-              <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
-                Python: {runtime.pythonWorker?.python || "3.x"}
-              </span>
-              <span className="px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-300">
-                Playwright: {runtime.pythonWorker?.capabilities?.playwright ? "Ready" : "Standby"}
-              </span>
-              <span className="px-2 py-0.5 rounded-full bg-fuchsia-500/15 border border-fuchsia-500/30 text-fuchsia-300">
-                Semantic Index: {runtime.semanticMemory?.totalChunks || 0} chunks
-              </span>
-              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                Heartbeat: {runtime.heartbeat?.enabled ? `Every ${runtime.heartbeat.intervalMinutes}m` : "Ready"}
-              </span>
-            </div>
-          )}
+          <span className="text-[11px] font-mono text-zinc-500 hidden sm:inline">
+            Pandawa OS v{status?.version || "7.0.0"}
+          </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 relative z-10">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => onNavigate("terminal")}
-            className="px-3.5 py-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            className="h-8 px-3 rounded-md bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] text-zinc-300 text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
           >
-            <Terminal className="w-4 h-4" /> Live Terminal
+            <Terminal className="w-3.5 h-3.5 text-zinc-400" /> Terminal
           </button>
           <button
             onClick={() => onNavigate("canvas")}
-            className="px-3.5 py-2.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            className="h-8 px-3 rounded-md bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] text-zinc-300 text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
           >
-            <Network className="w-4 h-4 text-amber-400" /> Brain Canvas
+            <Network className="w-3.5 h-3.5 text-zinc-400" /> Canvas
           </button>
           <button
             onClick={() => onStartMission(teams[0]?.id || "team_pandawa")}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-amber-500/20 cursor-pointer"
+            className="h-8 px-3.5 rounded-md bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
           >
-            <MessageSquare className="w-4 h-4" /> Launch Mission
+            <MessageSquare className="w-3.5 h-3.5" /> New Mission
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* Interactive 3-Step Quick Start Guide */}
-      <div className="rounded-2xl bg-[#0e1320] border border-slate-800 p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-bold text-white flex items-center gap-2">
-              <Rocket className="w-4 h-4 text-amber-400" /> Quick-Start Checklist ({completedSteps}/3 Ready)
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Follow these 3 simple steps to run your first live Multi-AI Agentic Team mission.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-400">Approval Gate:</span>
-            <button
-              onClick={() => onChangeApprovalMode(approvalMode === "auto" ? "approve_shell" : "auto")}
-              className={`px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 cursor-pointer transition ${
-                approvalMode === "auto"
-                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                  : "bg-amber-500/15 border-amber-500/40 text-amber-300"
-              }`}
-            >
-              {approvalMode === "auto" ? <Zap className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
-              {approvalMode === "auto" ? "Auto (Full Freedom)" : `Gate: ${approvalMode.replace("_", " ")}`}
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-          <button
-            onClick={() => onNavigate("providers")}
-            className={`p-4 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between gap-3 ${
-              hasCloudProvider
-                ? "bg-emerald-500/5 border-emerald-500/30 hover:border-emerald-400/60"
-                : "bg-amber-500/10 border-amber-500/50 hover:bg-amber-500/15"
-            }`}
-          >
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-white flex items-center gap-1.5 min-w-0">
-                  {hasCloudProvider ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  ) : (
-                    <Circle className="w-4 h-4 text-amber-400 shrink-0" />
-                  )}
-                  <span className="truncate">1. Connect AI Provider(s)</span>
-                </span>
-                <Cpu className="w-4 h-4 text-emerald-400 shrink-0" />
-              </div>
-              <p className="text-slate-400 leading-relaxed">
-                Paste 1 or more API keys (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, or Custom Base URL) right inside Multi-AI Hub.
-              </p>
-            </div>
-            <span className="text-amber-300 font-semibold flex items-center gap-1">
-              {hasCloudProvider ? "Manage Providers" : "Add API Key Now"} <ArrowRight className="w-3.5 h-3.5" />
+      <div className="max-w-[1240px] mx-auto px-6 py-6 space-y-6">
+        {/* Quiet Live Runtime Telemetry Strip */}
+        {runtime && (
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[11px] text-zinc-400 font-mono">
+            <span className="inline-flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${runtime.tmuxAvailable ? "bg-emerald-400" : "bg-zinc-600"}`} />
+              PTY {runtime.tmuxAvailable ? `${runtime.activeTerminals || 0} live` : "off"}
             </span>
-          </button>
-
-          <button
-            onClick={() => onNavigate("brains")}
-            className="p-4 rounded-xl bg-[#090c14] border border-slate-800 hover:border-violet-500/50 text-left transition cursor-pointer flex flex-col justify-between gap-3"
-          >
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-white flex items-center gap-1.5 min-w-0">
-                  <CheckCircle2 className="w-4 h-4 text-violet-400 shrink-0" />
-                  <span className="truncate">2. Shape Brains &amp; soul.md</span>
-                </span>
-                <FolderTree className="w-4 h-4 text-violet-400 shrink-0" />
-              </div>
-              <p className="text-slate-400 leading-relaxed">
-                Edit <code>main-brain/soul.md</code>, upload SOP docs, or drag wires on Brain Canvas to control what each AI model knows.
-              </p>
-            </div>
-            <span className="text-violet-300 font-semibold flex items-center gap-1">
-              Open Brain Files <ArrowRight className="w-3.5 h-3.5" />
+            <span className="inline-flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${runtime.pythonWorker?.ok ? "bg-emerald-400" : "bg-zinc-600"}`} />
+              Python {runtime.pythonWorker?.python || "3.x"}
             </span>
-          </button>
-
-          <button
-            onClick={() => onStartMission(teams[0]?.id || "team_pandawa")}
-            className="p-4 rounded-xl bg-[#090c14] border border-slate-800 hover:border-cyan-500/50 text-left transition cursor-pointer flex flex-col justify-between gap-3"
-          >
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-bold text-white flex items-center gap-1.5 min-w-0">
-                  {hasRunMission ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  ) : (
-                    <Circle className="w-4 h-4 text-cyan-400 shrink-0" />
-                  )}
-                  <span className="truncate">3. Run a Team Mission</span>
-                </span>
-                <MessageSquare className="w-4 h-4 text-cyan-400 shrink-0" />
-              </div>
-              <p className="text-slate-400 leading-relaxed">
-                Watch peer specialists deliberate in parallel, consult each other live, execute tools, and converge on unified consensus.
-              </p>
-            </div>
-            <span className="text-cyan-300 font-semibold flex items-center gap-1">
-              Open Mission Room <ArrowRight className="w-3.5 h-3.5" />
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  runtime.pythonWorker?.capabilities?.playwright ? "bg-emerald-400" : "bg-zinc-600"
+                }`}
+              />
+              Playwright {runtime.pythonWorker?.capabilities?.playwright ? "ready" : "standby"}
             </span>
-          </button>
-        </div>
-      </div>
+            <span className="text-zinc-500">
+              Semantic {runtime.semanticMemory?.totalChunks || 0} chunks
+            </span>
+            <span className="text-zinc-500">
+              Heartbeat {runtime.heartbeat?.enabled ? `${runtime.heartbeat.intervalMinutes}m` : "standby"}
+            </span>
+          </div>
+        )}
 
-      {/* KPI Metrics Row */}
-      {loading && !status ? (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800 animate-pulse space-y-2">
-              <div className="h-3 w-24 rounded bg-slate-800" />
-              <div className="h-7 w-32 rounded bg-slate-800/80" />
-            </div>
-          ))}
-        </div>
-      ) : status && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800">
-            <div className="text-[11px] uppercase text-slate-400 flex items-center gap-1.5">
-              <Users className="w-3.5 h-3.5 text-cyan-400" /> Teams &amp; Agents
-            </div>
-            <div className="text-2xl font-bold text-white mt-1">
-              {status.counts.teams} <span className="text-sm font-normal text-slate-500">teams · {status.counts.agents} agents</span>
-            </div>
-          </div>
-          <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800">
-            <div className="text-[11px] uppercase text-slate-400 flex items-center gap-1.5">
-              <Cpu className="w-3.5 h-3.5 text-emerald-400" /> Ready AI Providers
-            </div>
-            <div className="text-2xl font-bold text-emerald-400 mt-1">
-              {status.counts.configuredProviders} <span className="text-sm font-normal text-slate-500">/ {status.counts.providers} configured</span>
-            </div>
-          </div>
-          <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800">
-            <div className="text-[11px] uppercase text-slate-400 flex items-center gap-1.5">
-              <Wrench className="w-3.5 h-3.5 text-pink-400" /> Power Tool Arsenal
-            </div>
-            <div className="text-2xl font-bold text-white mt-1">
-              {toolCount} <span className="text-sm font-normal text-slate-500">built-in + live MCP</span>
-            </div>
-          </div>
-          <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800">
-            <div className="text-[11px] uppercase text-slate-400 flex items-center gap-1.5">
-              <FolderTree className="w-3.5 h-3.5 text-amber-400" /> Brains &amp; Skills
-            </div>
-            <div className="text-2xl font-bold text-amber-300 mt-1">
-              {status.counts.brains} <span className="text-sm font-normal text-slate-500">brains · {status.counts.skills} skills</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Your Agentic Teams + Spawn Squad Kits */}
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-bold text-white">Your Agentic Teams</h2>
-            <p className="text-xs text-slate-400">
-              Click any squad to jump straight into chat or isolate its brain topology on the Canvas.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            {[
-              { id: "software-squad", label: "Software Squad" },
-              { id: "growth-squad", label: "Growth Squad" },
-              { id: "research-squad", label: "Research Squad" },
-            ].map((kit) => (
-              <button
-                key={kit.id}
-                disabled={Boolean(spawning)}
-                onClick={() => spawnKit(kit.id)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-medium flex items-center gap-1 cursor-pointer disabled:opacity-50"
-              >
-                <Plus className="w-3 h-3" /> {spawning === kit.id ? "Spawning..." : kit.label}
-              </button>
+        {/* Unified 4-Cell Metric Bar (Hairline Divided, Zero Bubbly Boxes) */}
+        {loading && !status ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 rounded-xl bg-[#111113] border border-white/[0.07] divide-y md:divide-y-0 md:divide-x divide-white/[0.06]">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="p-4 animate-pulse space-y-2">
+                <div className="h-3 w-20 rounded bg-zinc-800" />
+                <div className="h-6 w-24 rounded bg-zinc-800/70" />
+              </div>
             ))}
           </div>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {loading && teams.length === 0 && (
-            <div className="p-5 rounded-2xl bg-[#0e1320] border border-slate-800 animate-pulse space-y-3">
-              <div className="h-4 w-40 rounded bg-slate-800" />
-              <div className="h-3 w-64 rounded bg-slate-800/70" />
-              <div className="flex gap-2 pt-2">
-                <div className="h-8 flex-1 rounded-xl bg-slate-800/80" />
-                <div className="h-8 flex-1 rounded-xl bg-slate-800/80" />
-              </div>
-            </div>
-          )}
-          {teams.map((t) => (
-            <div
-              key={t.id}
-              className="p-5 rounded-2xl bg-[#0e1320] border border-slate-800 hover:border-violet-500/40 transition flex flex-col justify-between gap-4"
-            >
-              <div className="space-y-2.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                      {t.name}
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 uppercase font-semibold">
-                        {t.collaboration_mode}
-                      </span>
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">{t.description}</p>
-                  </div>
-                  {t.id !== "team_pandawa" && (
-                    <button
-                      aria-label={`Delete team ${t.name}`}
-                      onClick={() => deleteTeam(t)}
-                      className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+        ) : (
+          status && (
+            <div className="grid grid-cols-2 md:grid-cols-4 rounded-xl bg-[#111113] border border-white/[0.08] divide-y md:divide-y-0 md:divide-x divide-white/[0.06]">
+              <div className="px-5 py-4">
+                <div className="text-[11px] font-medium text-zinc-500">Teams &amp; Agents</div>
+                <div className="mt-1.5 flex items-baseline gap-2 tabular-nums">
+                  <span className="text-2xl font-semibold tracking-[-0.03em] text-zinc-100">
+                    {status.counts.teams}
+                  </span>
+                  <span className="text-xs text-zinc-500">
+                    teams · {status.counts.agents} agents
+                  </span>
                 </div>
+              </div>
 
-                <div className="flex flex-wrap gap-1.5">
-                  {t.members.map((m) => (
-                    <span
-                      key={m.id}
-                      className="text-[11px] px-2 py-1 rounded-lg bg-[#090c14] border border-slate-800 text-slate-200 flex items-center gap-1.5"
+              <button
+                type="button"
+                onClick={() => onNavigate("providers")}
+                className="px-5 py-4 text-left hover:bg-white/[0.02] transition cursor-pointer"
+              >
+                <div className="text-[11px] font-medium text-zinc-500 flex items-center justify-between">
+                  <span>Configured Providers</span>
+                  <ArrowUpRight className="w-3 h-3 text-zinc-600" />
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-2 tabular-nums">
+                  <span
+                    className={`text-2xl font-semibold tracking-[-0.03em] ${
+                      status.counts.configuredProviders > 0 ? "text-zinc-100" : "text-amber-400"
+                    }`}
+                  >
+                    {status.counts.configuredProviders}
+                  </span>
+                  <span className="text-xs text-zinc-500">/ {status.counts.providers} available</span>
+                </div>
+              </button>
+
+              <div className="px-5 py-4">
+                <div className="text-[11px] font-medium text-zinc-500">Tool Arsenal</div>
+                <div className="mt-1.5 flex items-baseline gap-2 tabular-nums">
+                  <span className="text-2xl font-semibold tracking-[-0.03em] text-zinc-100">
+                    {toolCount}
+                  </span>
+                  <span className="text-xs text-zinc-500">built-in + MCP</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => onNavigate("skills")}
+                className="px-5 py-4 text-left hover:bg-white/[0.02] transition cursor-pointer"
+              >
+                <div className="text-[11px] font-medium text-zinc-500 flex items-center justify-between">
+                  <span>Brains &amp; Skills</span>
+                  <ArrowUpRight className="w-3 h-3 text-zinc-600" />
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-2 tabular-nums">
+                  <span className="text-2xl font-semibold tracking-[-0.03em] text-zinc-100">
+                    {status.counts.brains}
+                  </span>
+                  <span className="text-xs text-zinc-500">
+                    brains · {status.counts.skills} skills
+                  </span>
+                </div>
+              </button>
+            </div>
+          )
+        )}
+
+        {/* Asymmetric Operational Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Primary Column (8 cols): Teams + Starter Missions */}
+          <div className="lg:col-span-8 space-y-6">
+            {/* Teams Section */}
+            <section className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-[13px] font-semibold tracking-[-0.01em] text-zinc-200">
+                  Agentic Teams
+                </h2>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { id: "software-squad", label: "Software" },
+                    { id: "growth-squad", label: "Growth" },
+                    { id: "research-squad", label: "Research" },
+                  ].map((kit) => (
+                    <button
+                      key={kit.id}
+                      disabled={Boolean(spawning)}
+                      onClick={() => spawnKit(kit.id)}
+                      className="h-7 px-2.5 rounded-md bg-[#111113] hover:bg-[#1a1a1e] border border-white/[0.08] text-[11px] text-zinc-300 font-medium inline-flex items-center gap-1 transition cursor-pointer disabled:opacity-40"
                     >
-                      <span>{m.avatar}</span>
-                      <span className="font-medium">{m.name}</span>
-                      <span className="text-[10px] text-slate-500 font-mono">{m.model || m.purpose}</span>
-                    </span>
+                      <Plus className="w-3 h-3 text-zinc-500" />
+                      {spawning === kit.id ? "Creating..." : kit.label}
+                    </button>
                   ))}
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
-                <button
-                  onClick={() => onStartMission(t.id)}
-                  className="flex-1 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <MessageSquare className="w-3.5 h-3.5" /> Start Mission
-                </button>
-                <button
-                  onClick={() => onFocusTeamOnCanvas(t.id)}
-                  className="flex-1 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <Network className="w-3.5 h-3.5 text-cyan-400" /> View on Canvas
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+              <div className="rounded-xl bg-[#111113] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
+                {loading && teams.length === 0 && (
+                  <div className="p-5 animate-pulse space-y-2.5">
+                    <div className="h-4 w-40 rounded bg-zinc-800" />
+                    <div className="h-3 w-72 rounded bg-zinc-800/70" />
+                  </div>
+                )}
 
-      {/* 1-Click Starter Missions */}
-      <div className="space-y-3">
-        <h2 className="text-sm font-bold text-white">1-Click Starter Missions</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {STARTER_MISSIONS.map((m) => (
-            <button
-              key={m.title}
-              onClick={() => onStartMission(teams[0]?.id || "team_pandawa", m.prompt)}
-              className="p-4 rounded-xl bg-[#0e1320] hover:bg-[#131a2c] border border-slate-800 hover:border-amber-500/40 text-left transition cursor-pointer space-y-1.5"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-white">{m.title}</span>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-semibold">
-                  {m.tag}
-                </span>
+                {teams.map((t) => (
+                  <div
+                    key={t.id}
+                    className="p-4 hover:bg-white/[0.015] transition space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-[13px] font-semibold text-zinc-100 truncate">{t.name}</h3>
+                          <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.07] text-zinc-400">
+                            {t.collaboration_mode}
+                          </span>
+                        </div>
+                        <p className="text-xs text-zinc-500 mt-0.5 line-clamp-1">{t.description}</p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => onFocusTeamOnCanvas(t.id)}
+                          className="h-7 px-2.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.07] text-zinc-300 text-[11px] font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
+                        >
+                          <Network className="w-3 h-3 text-zinc-400" /> Canvas
+                        </button>
+                        <button
+                          onClick={() => onStartMission(t.id)}
+                          className="h-7 px-2.5 rounded-md bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
+                        >
+                          <MessageSquare className="w-3 h-3" /> Launch
+                        </button>
+                        {t.id !== "team_pandawa" && (
+                          <button
+                            aria-label={`Delete team ${t.name}`}
+                            onClick={() => deleteTeam(t)}
+                            className="h-7 w-7 rounded-md text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 inline-flex items-center justify-center transition cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {t.members.map((m) => (
+                        <span
+                          key={m.id}
+                          className="text-[11px] px-2 py-0.5 rounded-md bg-[#09090b] border border-white/[0.06] text-zinc-300 inline-flex items-center gap-1.5"
+                        >
+                          <span className="font-medium text-zinc-200">{m.name}</span>
+                          <span className="text-[10px] text-zinc-500 font-mono">{m.model || m.purpose}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">{m.prompt}</p>
-            </button>
-          ))}
+            </section>
+
+            {/* Starter Missions — Crisp Linear List Rows */}
+            <section className="space-y-3">
+              <h2 className="text-[13px] font-semibold tracking-[-0.01em] text-zinc-200">
+                Quick-Launch Missions
+              </h2>
+              <div className="rounded-xl bg-[#111113] border border-white/[0.08] divide-y divide-white/[0.06] overflow-hidden">
+                {STARTER_MISSIONS.map((m) => (
+                  <button
+                    key={m.title}
+                    onClick={() => onStartMission(teams[0]?.id || "team_pandawa", m.prompt)}
+                    className="w-full px-4 py-3 hover:bg-white/[0.025] text-left flex items-center justify-between gap-4 group transition cursor-pointer"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[13px] font-medium text-zinc-200 group-hover:text-white transition">
+                          {m.title}
+                        </span>
+                        <span className="text-[10px] font-mono text-zinc-500 px-1.5 py-0.5 rounded bg-white/[0.04]">
+                          {m.tag}
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-500 mt-0.5 line-clamp-1">{m.prompt}</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-300 group-hover:translate-x-0.5 transition shrink-0" />
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          {/* Right Rail (4 cols): Onboarding Checklist + Approval Policy */}
+          <div className="lg:col-span-4 space-y-5">
+            {/* Compact Setup Checklist */}
+            <section className="rounded-xl bg-[#111113] border border-white/[0.08] overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
+                <h2 className="text-xs font-semibold text-zinc-200">Workspace Setup</h2>
+                <span className="text-[11px] font-mono text-zinc-500 tabular-nums">{completedSteps}/3</span>
+              </div>
+              <div className="divide-y divide-white/[0.06]">
+                <button
+                  onClick={() => onNavigate("providers")}
+                  className="w-full px-4 py-3 text-left hover:bg-white/[0.02] flex items-start gap-3 transition cursor-pointer"
+                >
+                  {hasCloudProvider ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <Circle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-zinc-200">Connect an AI provider</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">
+                      Add an API key in AI Providers to run live teams.
+                    </div>
+                  </div>
+                  <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600 shrink-0 mt-0.5" />
+                </button>
+
+                <button
+                  onClick={() => onNavigate("brains")}
+                  className="w-full px-4 py-3 text-left hover:bg-white/[0.02] flex items-start gap-3 transition cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-zinc-200">Customize Brain Vault</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">
+                      Edit <code className="text-zinc-400">soul.md</code>, import folders, or install skills.
+                    </div>
+                  </div>
+                  <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600 shrink-0 mt-0.5" />
+                </button>
+
+                <button
+                  onClick={() => onStartMission(teams[0]?.id || "team_pandawa")}
+                  className="w-full px-4 py-3 text-left hover:bg-white/[0.02] flex items-start gap-3 transition cursor-pointer"
+                >
+                  {hasRunMission ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <Circle className="w-4 h-4 text-zinc-600 shrink-0 mt-0.5" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-zinc-200">Run your first mission</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">
+                      Execute multi-agent tasks with programmatic checks.
+                    </div>
+                  </div>
+                  <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600 shrink-0 mt-0.5" />
+                </button>
+              </div>
+            </section>
+
+            {/* Approval Gate Segmented Control */}
+            <section className="rounded-xl bg-[#111113] border border-white/[0.08] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-200">
+                  {approvalMode === "auto" ? (
+                    <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Shield className="w-3.5 h-3.5 text-amber-400" />
+                  )}
+                  Approval Gate
+                </div>
+                <span className="text-[10px] font-mono text-zinc-500">Zero hidden censorship</span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-[#09090b] border border-white/[0.06]">
+                {APPROVAL_OPTIONS.map((opt) => {
+                  const active = approvalMode === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => onChangeApprovalMode(opt.id)}
+                      className={`h-7 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                        active
+                          ? "bg-white/[0.10] text-zinc-100"
+                          : "text-zinc-500 hover:text-zinc-300"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                {approvalMode === "auto" && "Full autonomy: agents execute shell, workspace, and browser tools without pausing."}
+                {approvalMode === "approve_shell" && "Recommended: asks your confirmation before running terminal or shell commands."}
+                {approvalMode === "approve_sensitive" && "Gates shell, file writes, outbound HTTP, Playwright browser, and MCP tools."}
+                {approvalMode === "approve_all" && "Strict step-by-step confirmation before every tool invocation."}
+              </p>
+            </section>
+          </div>
         </div>
       </div>
     </div>

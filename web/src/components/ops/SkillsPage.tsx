@@ -327,12 +327,12 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
   }
 
   return (
-    <div className="h-screen overflow-y-auto bg-[#080a0f] p-6 space-y-6">
+    <div className="h-screen overflow-y-auto bg-[#09090b] p-6 space-y-6">
       <div>
         <h1 className="text-xl font-bold text-white flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-amber-400" /> Skill Installer, Playbooks &amp; Episodic Memory
         </h1>
-        <p className="text-xs text-slate-400 mt-1">
+        <p className="text-xs text-zinc-400 mt-1">
           Install <code className="text-amber-300">SKILL.md</code> packages directly from <strong>GitHub repos</strong>,{" "}
           <strong>raw URLs</strong>, <strong>.zip packs</strong>, or <strong>local folders</strong> with automatic security scanning before install — or let agents self-learn via <code className="text-amber-300">learn_skill</code>.
         </p>
@@ -341,7 +341,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* Skills & Skill Installer Column */}
         <div className="space-y-4">
-          <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800 space-y-3.5 text-xs">
+          <div className="p-4 rounded-xl bg-[#111113] border border-white/[0.08] space-y-3.5 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
                 <Download className="w-4 h-4" /> Pandawa Skill Installer
@@ -350,7 +350,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                 aria-label="Target Brain for Skill Installation"
                 value={targetBrainFolder}
                 onChange={(e) => setTargetBrainFolder(e.target.value)}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 text-[11px] text-slate-200"
+                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-2.5 py-1 text-[11px] text-zinc-200"
               >
                 {brains.map((b) => (
                   <option key={b.id} value={b.folder_path}>
@@ -361,15 +361,15 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
             </div>
 
             {/* Mode switcher */}
-            <div className="flex items-center gap-1.5 bg-[#080a0f] p-1 rounded-xl border border-slate-800">
+            <div className="flex items-center gap-1 bg-[#09090b] p-1 rounded-lg border border-white/[0.07]">
               <button
                 type="button"
                 onClick={() => {
                   setTab("url");
                   setInstallerNotice(null);
                 }}
-                className={`flex-1 py-1.5 px-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition ${
-                  tab === "url" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                className={`flex-1 h-7 px-2.5 rounded-md font-medium flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                  tab === "url" ? "bg-white/[0.10] text-zinc-100" : "text-zinc-500 hover:text-zinc-200"
                 }`}
               >
                 <Github className="w-3.5 h-3.5" /> GitHub / URL
@@ -380,8 +380,8 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                   setTab("upload");
                   setInstallerNotice(null);
                 }}
-                className={`flex-1 py-1.5 px-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition ${
-                  tab === "upload" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                className={`flex-1 h-7 px-2.5 rounded-md font-medium flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                  tab === "upload" ? "bg-white/[0.10] text-zinc-100" : "text-zinc-500 hover:text-zinc-200"
                 }`}
               >
                 <Upload className="w-3.5 h-3.5" /> Upload Folder / .zip
@@ -392,8 +392,8 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                   setTab("manual");
                   setInstallerNotice(null);
                 }}
-                className={`flex-1 py-1.5 px-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition ${
-                  tab === "manual" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                className={`flex-1 h-7 px-2.5 rounded-md font-medium flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                  tab === "manual" ? "bg-white/[0.10] text-zinc-100" : "text-zinc-500 hover:text-zinc-200"
                 }`}
               >
                 <Plus className="w-3.5 h-3.5" /> Create Manual
@@ -408,23 +408,23 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                     value={sourceInput}
                     onChange={(e) => setSourceInput(e.target.value)}
                     placeholder="owner/repo, GitHub folder URL, raw SKILL.md URL, or .zip URL..."
-                    className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-lg px-3 py-2 text-white font-mono text-[11px] outline-none"
+                    className="flex-1 h-9 bg-[#09090b] border border-white/[0.09] focus:border-amber-400/70 rounded-lg px-3 text-zinc-100 font-mono text-[11px] outline-none"
                   />
                   <button
                     type="submit"
                     disabled={scanning || !sourceInput.trim()}
-                    className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
+                    className="h-9 px-3.5 rounded-lg bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition"
                   >
                     {scanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                     {scanning ? "Scanning..." : "Inspect & Preview"}
                   </button>
                 </div>
-                <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
+                <div className="text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-1">
                   <span>Supports:</span>
-                  <code className="text-slate-400">anthropics/skills</code>
-                  <code className="text-slate-400">https://github.com/org/repo/tree/main/skills/my-skill</code>
-                  <code className="text-slate-400">https://.../SKILL.md</code>
-                  <code className="text-slate-400">https://.../pack.zip</code>
+                  <code className="text-zinc-400">anthropics/skills</code>
+                  <code className="text-zinc-400">https://github.com/org/repo/tree/main/skills/my-skill</code>
+                  <code className="text-zinc-400">https://.../SKILL.md</code>
+                  <code className="text-zinc-400">https://.../pack.zip</code>
                 </div>
               </form>
             )}
@@ -459,25 +459,25 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                     type="button"
                     disabled={scanning}
                     onClick={() => fileInputRef.current?.click()}
-                    className="p-3 rounded-xl bg-[#080a0f] hover:bg-slate-900 border border-dashed border-slate-700 hover:border-amber-500/60 text-slate-300 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition"
+                    className="p-3 rounded-xl bg-[#09090b] hover:bg-[#16161a] border border-dashed border-white/[0.10] hover:border-amber-500/60 text-zinc-300 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition"
                   >
                     <FileArchive className="w-5 h-5 text-amber-400" />
                     <span className="font-semibold">Select .zip or SKILL.md</span>
-                    <span className="text-[10px] text-slate-500">Single skill or multi-skill archive</span>
+                    <span className="text-[10px] text-zinc-500">Single skill or multi-skill archive</span>
                   </button>
                   <button
                     type="button"
                     disabled={scanning}
                     onClick={() => folderInputRef.current?.click()}
-                    className="p-3 rounded-xl bg-[#080a0f] hover:bg-slate-900 border border-dashed border-slate-700 hover:border-cyan-500/60 text-slate-300 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition"
+                    className="p-3 rounded-xl bg-[#09090b] hover:bg-[#16161a] border border-dashed border-white/[0.10] hover:border-cyan-500/60 text-zinc-300 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition"
                   >
                     <FolderUp className="w-5 h-5 text-cyan-400" />
                     <span className="font-semibold">Select Skill Folder</span>
-                    <span className="text-[10px] text-slate-500">Preserves scripts/ &amp; references/</span>
+                    <span className="text-[10px] text-zinc-500">Preserves scripts/ &amp; references/</span>
                   </button>
                 </div>
                 {uploadSummary && (
-                  <div className="text-[11px] text-slate-400 font-mono">
+                  <div className="text-[11px] text-zinc-400 font-mono">
                     {scanning ? "Scanning uploaded skill files..." : uploadSummary}
                   </div>
                 )}
@@ -491,25 +491,25 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                   value={skillTitle}
                   onChange={(e) => setSkillTitle(e.target.value)}
                   placeholder="Skill Title (e.g. Deploy Checklist)"
-                  className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                  className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
                 />
                 <input
                   value={skillDesc}
                   onChange={(e) => setSkillDesc(e.target.value)}
                   placeholder="Short description of when agents should apply this skill"
-                  className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                  className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
                 />
                 <textarea
                   rows={3}
                   value={skillBody}
                   onChange={(e) => setSkillBody(e.target.value)}
                   placeholder="Step-by-step markdown playbook..."
-                  className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                  className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 font-mono text-white"
                 />
                 <button
                   type="submit"
                   disabled={!skillTitle.trim()}
-                  className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  className="h-8 px-4 rounded-md bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer transition"
                 >
                   <Plus className="w-3.5 h-3.5" /> Save Skill
                 </button>
@@ -531,13 +531,13 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
 
             {/* Interactive Preview & Security Audit Panel */}
             {previewSkills.length > 0 && (
-              <div className="rounded-xl bg-[#080a0f] border border-amber-500/35 p-3.5 space-y-3">
+              <div className="rounded-xl bg-[#09090b] border border-amber-500/35 p-3.5 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <div className="text-xs font-bold text-white">
                       Preview &amp; Security Check ({previewSkills.length} skill{previewSkills.length > 1 ? "s" : ""} found)
                     </div>
-                    <div className="text-[10px] font-mono text-slate-400">
+                    <div className="text-[10px] font-mono text-zinc-400">
                       Source: {previewSource} → {targetBrainFolder}/skills/
                     </div>
                   </div>
@@ -557,7 +557,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                     <button
                       type="button"
                       onClick={resetPreview}
-                      className="text-slate-400 hover:text-slate-200 cursor-pointer"
+                      className="text-zinc-400 hover:text-zinc-200 cursor-pointer"
                     >
                       Cancel
                     </button>
@@ -572,7 +572,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                       <div
                         key={sk.slug}
                         className={`rounded-lg border p-2.5 space-y-2 transition ${
-                          checked ? "bg-[#0e1320] border-amber-500/40" : "bg-[#0a0e17] border-slate-800 opacity-70"
+                          checked ? "bg-[#111113] border-amber-500/40" : "bg-[#0c0c0e] border-white/[0.08] opacity-70"
                         }`}
                       >
                         <div className="flex items-start justify-between gap-2">
@@ -582,7 +582,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                               onClick={() => setSelectedSlugs((prev) => ({ ...prev, [sk.slug]: !prev[sk.slug] }))}
                               className="mt-0.5 text-amber-400 cursor-pointer shrink-0"
                             >
-                              {checked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4 text-slate-500" />}
+                              {checked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4 text-zinc-500" />}
                             </button>
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-1.5">
@@ -592,18 +592,18 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                                 </code>
                                 {renderRiskBadge(sk.riskLevel)}
                                 {sk.alreadyInstalled && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-amber-300">
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#18181b] text-amber-300">
                                     Exists
                                   </span>
                                 )}
                               </div>
-                              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{sk.description}</p>
+                              <p className="text-[11px] text-zinc-400 mt-0.5 line-clamp-2">{sk.description}</p>
                             </div>
                           </div>
                           <button
                             type="button"
                             onClick={() => setExpandedSlug(isOpen ? "" : sk.slug)}
-                            className="text-slate-400 hover:text-white p-1 shrink-0 cursor-pointer"
+                            className="text-zinc-400 hover:text-white p-1 shrink-0 cursor-pointer"
                             title="Inspect files & SKILL.md"
                           >
                             {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -611,7 +611,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                         </div>
 
                         {sk.findings.length > 0 && (
-                          <div className="rounded-md bg-[#07090f] border border-slate-800 p-2 space-y-1 text-[10px]">
+                          <div className="rounded-md bg-[#09090b] border border-white/[0.08] p-2 space-y-1 text-[10px]">
                             {sk.findings.slice(0, isOpen ? 20 : 3).map((f, idx) => (
                               <div key={idx} className="flex items-start gap-1.5">
                                 <span
@@ -621,8 +621,8 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                                 >
                                   [{f.severity}]
                                 </span>
-                                <span className="text-slate-300">
-                                  <code className="text-slate-400">
+                                <span className="text-zinc-300">
+                                  <code className="text-zinc-400">
                                     {f.file}:{f.line}
                                   </code>{" "}
                                   — {f.rule}
@@ -633,18 +633,18 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                         )}
 
                         {isOpen && (
-                          <div className="space-y-2 pt-1 border-t border-slate-800/80">
+                          <div className="space-y-2 pt-1 border-t border-white/[0.07]">
                             <div className="flex flex-wrap gap-1">
                               {sk.files.map((fp) => (
                                 <span
                                   key={fp}
-                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 font-mono text-[10px]"
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#18181b] text-zinc-300 font-mono text-[10px]"
                                 >
-                                  <FileCode2 className="w-2.5 h-2.5 text-slate-400" /> {fp}
+                                  <FileCode2 className="w-2.5 h-2.5 text-zinc-400" /> {fp}
                                 </span>
                               ))}
                             </div>
-                            <pre className="max-h-40 overflow-auto rounded-lg bg-[#05070c] border border-slate-800 p-2 text-[10px] font-mono text-slate-300 whitespace-pre-wrap">
+                            <pre className="max-h-40 overflow-auto rounded-lg bg-[#09090b] border border-white/[0.08] p-2 text-[10px] font-mono text-zinc-300 whitespace-pre-wrap">
                               {sk.markdownPreview}
                             </pre>
                           </div>
@@ -654,13 +654,13 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                   })}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
-                  <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.08]">
+                  <label className="inline-flex items-center gap-1.5 text-[11px] text-zinc-300 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={overwrite}
                       onChange={(e) => setOverwrite(e.target.checked)}
-                      className="rounded border-slate-700"
+                      className="rounded border-white/[0.10]"
                     />
                     Overwrite existing skills with same slug
                   </label>
@@ -668,7 +668,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                     type="button"
                     disabled={installing || selectedCount === 0}
                     onClick={handleInstallSelected}
-                    className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                    className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:bg-[#18181b] disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-bold inline-flex items-center gap-1.5 cursor-pointer"
                   >
                     {installing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
                     {installing ? "Installing..." : `Install Selected (${selectedCount})`}
@@ -681,24 +681,24 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
           {/* Installed Skills Library */}
           <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-300 uppercase tracking-wider">
+              <span className="font-bold text-zinc-300 uppercase tracking-wider">
                 Installed Skills ({skills.length})
               </span>
-              <span className="text-[11px] font-mono text-slate-500">CLI: pandawa skill install &lt;source&gt;</span>
+              <span className="text-[11px] font-mono text-zinc-500">CLI: pandawa skill install &lt;source&gt;</span>
             </div>
 
             {skills.map((s) => (
-              <div key={s.path} className="p-4 rounded-xl bg-[#0e1320] border border-slate-800 space-y-2">
+              <div key={s.path} className="p-4 rounded-xl bg-[#111113] border border-white/[0.08] space-y-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-sm font-bold text-white">{s.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#18181b] text-zinc-300 font-mono">
                         {s.fileCount || 1} file{(s.fileCount || 1) > 1 ? "s" : ""}
                       </span>
                       {s.riskLevel && renderRiskBadge(s.riskLevel)}
                     </div>
-                    <div className="text-[11px] font-mono text-slate-500 flex flex-wrap items-center gap-2">
+                    <div className="text-[11px] font-mono text-zinc-500 flex flex-wrap items-center gap-2">
                       <span>{s.path}</span>
                       {s.source && (
                         <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
@@ -717,14 +717,14 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                     <button
                       aria-label={`Uninstall ${s.name}`}
                       onClick={() => handleUninstallSkill(s)}
-                      className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
+                      className="text-zinc-500 hover:text-rose-400 p-1 cursor-pointer"
                       title="Uninstall skill"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
-                <p className="text-xs text-slate-400">{s.description}</p>
+                <p className="text-xs text-zinc-400">{s.description}</p>
               </div>
             ))}
           </div>
@@ -732,7 +732,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
 
         {/* Memories Column */}
         <div className="space-y-4">
-          <form onSubmit={addMemory} className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800 space-y-3 text-xs">
+          <form onSubmit={addMemory} className="p-4 rounded-xl bg-[#111113] border border-white/[0.08] space-y-3 text-xs">
             <div className="font-bold text-violet-300 uppercase tracking-wider flex items-center gap-1.5">
               <Brain className="w-4 h-4" /> Store Episodic Memory (FTS5 Indexed)
             </div>
@@ -740,7 +740,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
               <select
                 value={memBrainId}
                 onChange={(e) => setMemBrainId(e.target.value)}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
               >
                 {brains.map((b) => (
                   <option key={b.id} value={b.id}>
@@ -751,7 +751,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
               <select
                 value={memCategory}
                 onChange={(e) => setMemCategory(e.target.value)}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
               >
                 <option value="fact">Fact</option>
                 <option value="decision">Decision</option>
@@ -764,19 +764,19 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
               value={memContent}
               onChange={(e) => setMemContent(e.target.value)}
               placeholder="Write a persistent fact, decision, or preference for the team..."
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+              className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
             />
             <button
               type="submit"
               disabled={!memContent.trim()}
-              className="px-4 py-2 rounded-lg bg-violet-500 hover:bg-violet-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              className="h-8 px-4 rounded-md bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer transition"
             >
               <Plus className="w-3.5 h-3.5" /> Add Memory
             </button>
           </form>
 
           <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               value={memSearch}
               onChange={(e) => {
@@ -784,21 +784,21 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                 load(e.target.value).catch(() => {});
               }}
               placeholder="FTS5 search episodic memories..."
-              className="w-full bg-[#0e1320] border border-slate-800 focus:border-violet-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none"
+              className="w-full bg-[#111113] border border-white/[0.08] focus:border-violet-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none"
             />
           </div>
 
           <div className="space-y-2">
             {memories.map((m) => (
-              <div key={m.id} className="p-3.5 rounded-xl bg-[#0e1320] border border-slate-800 flex items-start justify-between gap-3">
+              <div key={m.id} className="p-3.5 rounded-xl bg-[#111113] border border-white/[0.08] flex items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 text-[10px]">
                     <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 uppercase font-bold">
                       {m.category}
                     </span>
-                    <span className="text-slate-500 font-mono">{m.brain_id}</span>
+                    <span className="text-zinc-500 font-mono">{m.brain_id}</span>
                   </div>
-                  <div className="text-xs text-slate-200">{m.content}</div>
+                  <div className="text-xs text-zinc-200">{m.content}</div>
                 </div>
                 <button
                   aria-label="Delete memory"
@@ -806,14 +806,14 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                     await apiFetch(`/api/memories/${m.id}`, { method: "DELETE" });
                     await load(memSearch);
                   }}
-                  className="text-slate-600 hover:text-rose-400 p-1 cursor-pointer"
+                  className="text-zinc-600 hover:text-rose-400 p-1 cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             ))}
             {memories.length === 0 && (
-              <div className="p-4 rounded-xl bg-[#0e1320] border border-slate-800/80 text-xs text-slate-400 text-center">
+              <div className="p-4 rounded-xl bg-[#111113] border border-white/[0.07] text-xs text-zinc-400 text-center">
                 {memSearch.trim()
                   ? "No memories match your search query."
                   : "No episodic memories stored yet. Add one above or let Pandawa agents store lessons automatically during missions."}

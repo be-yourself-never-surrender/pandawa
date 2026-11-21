@@ -480,11 +480,11 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
   const recentLiveStatus = liveEvents.slice(-4);
 
   return (
-    <div className="flex h-screen bg-[#080a0f]">
+    <div className="flex h-screen bg-[#09090b]">
       {/* Left Sessions List (Collapsible for clean narrow-screen UX) */}
       {showHistory && (
-      <div className="w-60 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
-        <div className="p-3 border-b border-slate-800/80">
+      <div className="w-60 shrink-0 bg-[#0c0c0e] border-r border-white/[0.07] flex flex-col">
+        <div className="p-3 border-b border-white/[0.07]">
           <button
             onClick={() => {
               setActiveSessionId("");
@@ -497,11 +497,11 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 py-1">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 px-2 py-1">
             Mission History ({sessions.length})
           </div>
           {sessions.length === 0 && (
-            <div className="p-3 rounded-xl bg-[#090c14] border border-slate-800/70 text-[11px] text-slate-500 text-center">
+            <div className="p-3 rounded-xl bg-[#0c0c0e] border border-white/[0.06] text-[11px] text-zinc-500 text-center">
               No missions yet. Send a mission to start your first team session.
             </div>
           )}
@@ -515,13 +515,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               }}
               className={`group flex items-center justify-between px-2.5 py-2 rounded-lg text-xs cursor-pointer transition ${
                 activeSessionId === s.id
-                  ? "bg-slate-800 text-white"
-                  : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+                  ? "bg-[#18181b] text-white"
+                  : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
               }`}
             >
               <div className="min-w-0">
                 <div className="truncate font-medium">{s.title}</div>
-                <div className="text-[10px] text-slate-500 uppercase">{s.target_type}</div>
+                <div className="text-[10px] text-zinc-500 uppercase">{s.target_type}</div>
               </div>
               <button
                 aria-label="Delete session"
@@ -534,7 +534,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   }
                   loadMeta();
                 }}
-                className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-rose-400"
+                className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-rose-400"
               >
                 <Trash2 className="w-3 h-3" />
               </button>
@@ -547,27 +547,27 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
       {/* Center Mission Chat */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Mission Target Bar */}
-        <header className="px-4 py-3 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+        <header className="px-4 py-3 bg-[#0c0c0e] border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setShowHistory((s) => !s)}
               title="Toggle Mission History"
               className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border cursor-pointer ${
                 showHistory
-                  ? "bg-slate-800 border-slate-700 text-white"
-                  : "bg-[#080a0f] border-slate-800 text-slate-400 hover:text-slate-200"
+                  ? "bg-[#18181b] border-white/[0.10] text-white"
+                  : "bg-[#09090b] border-white/[0.08] text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <History className="w-3.5 h-3.5" /> History
             </button>
-            <div className="flex rounded-lg bg-[#080a0f] border border-slate-800 p-0.5 text-xs">
+            <div className="flex rounded-lg bg-[#09090b] border border-white/[0.08] p-0.5 text-xs">
               <button
                 onClick={() => {
                   setTargetType("team");
                   setTargetId(teams[0]?.id || "team_pandawa");
                 }}
                 className={`px-2.5 py-1 rounded-md flex items-center gap-1 cursor-pointer ${
-                  targetType === "team" ? "bg-violet-500/25 text-violet-200 font-semibold" : "text-slate-400"
+                  targetType === "team" ? "bg-violet-500/25 text-violet-200 font-semibold" : "text-zinc-400"
                 }`}
               >
                 <Users className="w-3.5 h-3.5" /> Agentic Team
@@ -578,7 +578,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   setTargetId(agents[0]?.id || "agent_yudhistira");
                 }}
                 className={`px-2.5 py-1 rounded-md flex items-center gap-1 cursor-pointer ${
-                  targetType === "agent" ? "bg-cyan-500/25 text-cyan-200 font-semibold" : "text-slate-400"
+                  targetType === "agent" ? "bg-cyan-500/25 text-cyan-200 font-semibold" : "text-zinc-400"
                 }`}
               >
                 <User className="w-3.5 h-3.5" /> Single Agent
@@ -590,7 +590,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                 <select
                   value={targetId}
                   onChange={(e) => setTargetId(e.target.value)}
-                  className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                  className="bg-[#09090b] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-xs text-white"
                 >
                   {teams.map((t) => (
                     <option key={t.id} value={t.id}>
@@ -602,7 +602,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   <select
                     value={activeTeam.collaboration_mode}
                     onChange={(e) => updateTeamMode(e.target.value as TeamItem["collaboration_mode"])}
-                    className="bg-[#080a0f] border border-violet-500/40 rounded-lg px-2.5 py-1.5 text-xs text-violet-200"
+                    className="bg-[#09090b] border border-violet-500/40 rounded-lg px-2.5 py-1.5 text-xs text-violet-200"
                   >
                     <option value="execute">Mode: Execute &amp; Verify (Plan → PTY Build → Test)</option>
                     <option value="deliberate">Mode: Musyawarah (Peer Deliberation + Review)</option>
@@ -616,7 +616,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               <select
                 value={targetId}
                 onChange={(e) => setTargetId(e.target.value)}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-xs text-white"
               >
                 {agents.map((a) => (
                   <option key={a.id} value={a.id}>
@@ -643,7 +643,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 border cursor-pointer transition ${
                 approvalMode === "auto"
                   ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                  : "bg-slate-800 border-slate-700 text-amber-300"
+                  : "bg-[#18181b] border-white/[0.10] text-amber-300"
               }`}
             >
               {approvalMode === "auto" ? <Zap className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
@@ -656,7 +656,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border cursor-pointer ${
                   showBlackboard
                     ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
-                    : "bg-slate-800 border-slate-700 text-slate-300"
+                    : "bg-[#18181b] border-white/[0.10] text-zinc-300"
                 }`}
               >
                 <ClipboardList className="w-3.5 h-3.5" />
@@ -668,8 +668,8 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
 
         {/* Active Peer Roster Pills (clean wrap, no horizontal cutoffs) */}
         {targetType === "team" && activeTeam && (
-          <div className="px-4 py-2 bg-[#0a0d15] border-b border-slate-800/60 flex items-center gap-1.5 flex-wrap text-[11px]">
-            <span className="text-slate-500 shrink-0 font-medium">Active Peers:</span>
+          <div className="px-4 py-2 bg-[#0c0c0e] border-b border-white/[0.08]/60 flex items-center gap-1.5 flex-wrap text-[11px]">
+            <span className="text-zinc-500 shrink-0 font-medium">Active Peers:</span>
             {activeTeam.members.map((m) => {
               const on = selectedPeers.has(m.id);
               return (
@@ -685,13 +685,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   }}
                   className={`px-2.5 py-1 rounded-full border flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
                     on
-                      ? "bg-slate-800/90 border-cyan-500/45 text-slate-100"
-                      : "bg-transparent border-slate-800 text-slate-500 opacity-60"
+                      ? "bg-[#18181b] border-cyan-500/45 text-zinc-100"
+                      : "bg-transparent border-white/[0.08] text-zinc-500 opacity-60"
                   }`}
                 >
                   <span>{m.avatar}</span>
                   <span className="font-medium">{m.name}</span>
-                  <span className="text-[10px] text-slate-400 font-mono">{m.model || m.purpose}</span>
+                  <span className="text-[10px] text-zinc-400 font-mono">{m.model || m.purpose}</span>
                 </button>
               );
             })}
@@ -702,12 +702,12 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {messages.length === 0 && (
             <div className="max-w-xl mx-auto mt-10 text-center space-y-4">
-              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto">
+              <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto">
                 <Sparkles className="w-6 h-6 text-amber-400" />
               </div>
               <div className="space-y-1.5">
                 <h3 className="text-base font-bold text-white">Pandawa Mission Room</h3>
-                <p className="text-xs text-slate-400 leading-relaxed">
+                <p className="text-xs text-zinc-400 leading-relaxed">
                   Every teammate reads the wired <strong>Main Brain</strong>, <strong>Team Brain</strong>, and their own{" "}
                   <code className="text-amber-300">soul.md</code>, deliberates on the shared Team Blackboard, and delivers unified consensus.
                 </p>
@@ -718,7 +718,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                     key={q}
                     type="button"
                     onClick={() => setPrompt(q)}
-                    className="px-3.5 py-2.5 rounded-xl bg-[#0e1320] hover:bg-[#141c2f] border border-slate-800 hover:border-amber-500/40 text-xs text-slate-300 transition cursor-pointer"
+                    className="px-3.5 py-2.5 rounded-xl bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] hover:border-amber-500/40 text-xs text-zinc-300 transition cursor-pointer"
                   >
                     ✨ {q}
                   </button>
@@ -731,7 +731,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             if (m.role === "user") {
               return (
                 <div key={m.id} className="flex justify-end">
-                  <div className="max-w-2xl bg-amber-500/15 border border-amber-500/35 text-slate-100 rounded-2xl rounded-tr-sm px-4 py-3 text-sm whitespace-pre-wrap">
+                  <div className="max-w-2xl bg-[#18181b] border border-white/[0.09] text-zinc-100 rounded-xl rounded-tr-sm px-4 py-2.5 text-[13.5px] leading-relaxed whitespace-pre-wrap">
                     {m.content}
                   </div>
                 </div>
@@ -740,15 +740,15 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
 
             const isPeerNote = m.role === "agent";
             const isExpanded = !isPeerNote || expandedPeers.has(m.id);
-            const avatar = String(m.meta?.avatar || (isPeerNote ? "⚡" : "👑"));
+            const avatar = String(m.meta?.avatar || (isPeerNote ? "·" : "P"));
 
             return (
               <div
                 key={m.id}
-                className={`max-w-3xl rounded-2xl border ${
+                className={`max-w-3xl rounded-xl border ${
                   isPeerNote
-                    ? "bg-[#0e1320]/90 border-slate-800/90"
-                    : "bg-gradient-to-br from-[#121829] to-[#0f1422] border-violet-500/40 shadow-lg"
+                    ? "bg-[#111113] border-white/[0.07]"
+                    : "bg-[#111113] border-white/[0.11] border-l-2 border-l-amber-400/80"
                 }`}
               >
                 <div
@@ -761,21 +761,21 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                       return next;
                     });
                   }}
-                  className={`px-4 py-2.5 flex items-center justify-between gap-2 border-b border-slate-800/70 ${
-                    isPeerNote ? "cursor-pointer hover:bg-slate-800/30" : ""
+                  className={`px-4 py-2.5 flex items-center justify-between gap-2 border-b border-white/[0.06] ${
+                    isPeerNote ? "cursor-pointer hover:bg-white/[0.03]" : ""
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     {isPeerNote &&
                       (isExpanded ? (
-                        <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                        <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
                       ) : (
-                        <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                        <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
                       ))}
                     <span>{avatar}</span>
                     <span className="text-xs font-bold text-white truncate">{m.agent_name}</span>
                     {m.model_used && (
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-emerald-300">
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#18181b] text-emerald-300">
                         {m.model_used}
                       </span>
                     )}
@@ -786,7 +786,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                     )}
                   </div>
                   {typeof m.meta?.durationMs === "number" && (m.meta.durationMs as number) > 0 && (
-                    <span className="text-[10px] text-slate-500 font-mono">
+                    <span className="text-[10px] text-zinc-500 font-mono">
                       {((m.meta.durationMs as number) / 1000).toFixed(1)}s
                     </span>
                   )}
@@ -799,12 +799,12 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                         {m.toolCalls.map((tc, idx) => (
                           <div
                             key={idx}
-                            className="text-[11px] bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono text-slate-400"
+                            className="text-[11px] bg-[#09090b] border border-white/[0.08] rounded-lg px-2.5 py-1.5 font-mono text-zinc-400"
                           >
                             <span className="text-pink-400 inline-flex items-center gap-1">
                               <Wrench className="w-3 h-3" /> {tc.name}
                             </span>
-                            <span className="text-slate-500 ml-2">{JSON.stringify(tc.args).slice(0, 120)}</span>
+                            <span className="text-zinc-500 ml-2">{JSON.stringify(tc.args).slice(0, 120)}</span>
                           </div>
                         ))}
                       </div>
@@ -818,13 +818,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
 
           {sending && (
             <div className="space-y-3 max-w-3xl">
-              <div className="rounded-2xl bg-[#101625] border border-amber-500/35 p-4 space-y-2">
+              <div className="rounded-xl bg-[#111113] border border-amber-500/35 p-4 space-y-2">
                 <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Pandawa Team is streaming & collaborating live...
                 </div>
                 {recentLiveStatus.map((ev, i) => (
-                  <div key={i} className="text-[11px] font-mono text-slate-400 truncate">
+                  <div key={i} className="text-[11px] font-mono text-zinc-400 truncate">
                     › {String(ev.type)}: {String(ev.detail || ev.agentName || ev.toolName || ev.phase || "")}
                   </div>
                 ))}
@@ -833,13 +833,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               {Object.values(streamingBuffers).map((buf) => (
                 <div
                   key={buf.agentId}
-                  className="rounded-2xl bg-[#0e1422] border border-emerald-500/40 p-4 space-y-2 shadow-lg"
+                  className="rounded-xl bg-[#111113] border border-emerald-500/40 p-4 space-y-2 shadow-lg"
                 >
                   <div className="flex items-center gap-2 text-xs">
                     <span>{buf.avatar || "⚡"}</span>
                     <span className="font-bold text-white">{buf.agentName}</span>
                     {buf.model && (
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-emerald-300">
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#18181b] text-emerald-300">
                         {buf.model}
                       </span>
                     )}
@@ -857,9 +857,9 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
         </div>
 
         {/* Input Composer with Live / Slash & @ File Autocomplete */}
-        <form onSubmit={sendMission} className="p-4 bg-[#0d111b] border-t border-slate-800/80 relative">
+        <form onSubmit={sendMission} className="p-4 bg-[#0c0c0e] border-t border-white/[0.07] relative">
           {prompt.startsWith("/") && !prompt.includes("\n") && (
-            <div className="absolute bottom-full left-4 right-4 mb-2 rounded-xl bg-[#101626] border border-amber-500/40 shadow-2xl p-1.5 max-h-52 overflow-y-auto z-30">
+            <div className="absolute bottom-full left-4 right-4 mb-2 rounded-xl bg-[#111113] border border-amber-500/40 shadow-2xl p-1.5 max-h-52 overflow-y-auto z-30">
               <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400">
                 Slash Commands
               </div>
@@ -868,17 +868,17 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   key={s.cmd}
                   type="button"
                   onClick={() => setPrompt(s.cmd)}
-                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-800/80 text-left flex items-center justify-between gap-2 text-xs cursor-pointer"
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-[#18181b] text-left flex items-center justify-between gap-2 text-xs cursor-pointer"
                 >
                   <code className="text-amber-300 font-semibold">{s.cmd}</code>
-                  <span className="text-slate-400 truncate">{s.desc}</span>
+                  <span className="text-zinc-400 truncate">{s.desc}</span>
                 </button>
               ))}
             </div>
           )}
 
           {/(^|\s)@[a-zA-Z0-9_./-]*$/.test(prompt) && (
-            <div className="absolute bottom-full left-4 right-4 mb-2 rounded-xl bg-[#101626] border border-cyan-500/40 shadow-2xl p-1.5 max-h-52 overflow-y-auto z-30">
+            <div className="absolute bottom-full left-4 right-4 mb-2 rounded-xl bg-[#111113] border border-cyan-500/40 shadow-2xl p-1.5 max-h-52 overflow-y-auto z-30">
               <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-400">
                 Inline Brain File Reference (@file)
               </div>
@@ -894,7 +894,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                     key={fp}
                     type="button"
                     onClick={() => setPrompt((prev) => prev.replace(/@[a-zA-Z0-9_./-]*$/, `@${fp} `))}
-                    className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-800/80 text-left font-mono text-xs text-cyan-300 truncate cursor-pointer"
+                    className="w-full px-2.5 py-1.5 rounded-lg hover:bg-[#18181b] text-left font-mono text-xs text-cyan-300 truncate cursor-pointer"
                   >
                     @{fp}
                   </button>
@@ -908,7 +908,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               {attachedImages.map((img, idx) => (
                 <div
                   key={`${img.name}_${idx}`}
-                  className="relative group flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#080a0f] border border-cyan-500/40 text-[11px] text-cyan-200"
+                  className="relative group flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#09090b] border border-cyan-500/40 text-[11px] text-cyan-200"
                 >
                   <img src={img.previewUrl} alt={img.name} className="w-7 h-7 rounded object-cover" />
                   <span className="max-w-[120px] truncate">{img.name}</span>
@@ -916,7 +916,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                     type="button"
                     aria-label="Remove image"
                     onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
-                    className="text-slate-400 hover:text-rose-400 cursor-pointer"
+                    className="text-zinc-400 hover:text-rose-400 cursor-pointer"
                   >
                     <X className="w-3 h-3" />
                   </button>
@@ -929,7 +929,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             <div className="flex flex-col gap-1.5 shrink-0">
               <label
                 title="Attach screenshot or image for Multimodal Vision (or paste Ctrl+V)"
-                className="flex-1 px-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-cyan-300 flex items-center justify-center cursor-pointer"
+                className="flex-1 px-2.5 rounded-xl bg-[#18181b] hover:bg-[#222227] border border-white/[0.10] text-cyan-300 flex items-center justify-center cursor-pointer"
               >
                 <ImagePlus className="w-4 h-4" />
                 <input
@@ -950,7 +950,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                 className={`px-2 py-1 rounded-lg border text-[10px] font-semibold flex items-center justify-center gap-1 cursor-pointer ${
                   backgroundMode
                     ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
-                    : "bg-[#080a0f] border-slate-800 text-slate-400 hover:text-slate-200"
+                    : "bg-[#09090b] border-white/[0.08] text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <Clock className="w-3 h-3" /> {backgroundMode ? "BG" : "Live"}
@@ -979,13 +979,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   ? "Give Team Pandawa a mission... (@file.md, paste image, or /mode execute)"
                   : "Message this agent directly... (@file.md or paste image)"
               }
-              className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none resize-none"
+              className="flex-1 bg-[#09090b] border border-white/[0.10] focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 outline-none resize-none"
             />
             {sending ? (
               <button
                 type="button"
                 onClick={stopMission}
-                className="px-5 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-semibold text-sm flex items-center gap-1.5 cursor-pointer shrink-0 shadow-lg shadow-rose-500/20"
+                className="px-4 rounded-lg bg-rose-500/90 hover:bg-rose-500 text-white font-medium text-xs flex items-center gap-1.5 cursor-pointer shrink-0 transition"
               >
                 <Square className="w-3.5 h-3.5 fill-current" /> Stop
               </button>
@@ -993,9 +993,9 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               <button
                 type="submit"
                 disabled={!prompt.trim()}
-                className="px-5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-950 font-semibold text-sm flex items-center gap-1.5 cursor-pointer shrink-0"
+                className="px-4 rounded-lg bg-zinc-100 hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-semibold text-xs flex items-center gap-1.5 cursor-pointer shrink-0 transition"
               >
-                <Send className="w-4 h-4" /> Send
+                <Send className="w-3.5 h-3.5" /> Send
               </button>
             )}
           </div>
@@ -1004,12 +1004,12 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
 
       {/* Right Team Ops Panel: Blackboard | Tasks | Processes */}
       {targetType === "team" && showBlackboard && (
-        <aside className="w-80 shrink-0 bg-[#0d111b] border-l border-slate-800/80 flex flex-col">
-          <div className="px-2.5 py-2 border-b border-slate-800/80 grid grid-cols-4 gap-1 text-[10px]">
+        <aside className="w-80 shrink-0 bg-[#0c0c0e] border-l border-white/[0.07] flex flex-col">
+          <div className="px-2.5 py-2 border-b border-white/[0.07] grid grid-cols-4 gap-1 text-[10px]">
             <button
               onClick={() => setRightTab("blackboard")}
               className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
-                rightTab === "blackboard" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:bg-slate-800/60"
+                rightTab === "blackboard" ? "bg-amber-500/20 text-amber-300" : "text-zinc-400 hover:bg-white/[0.06]"
               }`}
             >
               <ClipboardList className="w-3 h-3" /> Board
@@ -1017,7 +1017,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             <button
               onClick={() => setRightTab("teamchat")}
               className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
-                rightTab === "teamchat" ? "bg-violet-500/20 text-violet-300" : "text-slate-400 hover:bg-slate-800/60"
+                rightTab === "teamchat" ? "bg-violet-500/20 text-violet-300" : "text-zinc-400 hover:bg-white/[0.06]"
               }`}
             >
               <MessageCircle className="w-3 h-3" /> Chat ({teamChat.length})
@@ -1025,7 +1025,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             <button
               onClick={() => setRightTab("tasks")}
               className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
-                rightTab === "tasks" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:bg-slate-800/60"
+                rightTab === "tasks" ? "bg-cyan-500/20 text-cyan-300" : "text-zinc-400 hover:bg-white/[0.06]"
               }`}
             >
               <CheckSquare className="w-3 h-3" /> Tasks
@@ -1036,7 +1036,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                 if (activeTeam) loadBlackboard(activeTeam.id);
               }}
               className={`py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
-                rightTab === "processes" ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:bg-slate-800/60"
+                rightTab === "processes" ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-400 hover:bg-white/[0.06]"
               }`}
             >
               <Terminal className="w-3 h-3" /> Proc
@@ -1045,22 +1045,22 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
 
           {rightTab === "teamchat" && (
             <div className="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
-              <div className="text-[11px] text-slate-400">
+              <div className="text-[11px] text-zinc-400">
                 Live Inter-Agent Channel (agents talk mid-execution via <code>team_message</code>)
               </div>
               {teamChat.map((m) => (
-                <div key={m.id} className="p-2.5 rounded-xl bg-[#090c14] border border-violet-500/25 space-y-1">
+                <div key={m.id} className="p-2.5 rounded-xl bg-[#0c0c0e] border border-violet-500/25 space-y-1">
                   <div className="flex items-center justify-between gap-1 text-[10px]">
                     <span className="font-bold text-violet-300">
                       {m.from_agent} → {m.to_agent}
                     </span>
-                    <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 uppercase">{m.kind}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-[#18181b] text-zinc-400 uppercase">{m.kind}</span>
                   </div>
-                  <div className="text-[11px] text-slate-200 whitespace-pre-wrap">{m.content}</div>
+                  <div className="text-[11px] text-zinc-200 whitespace-pre-wrap">{m.content}</div>
                 </div>
               ))}
               {teamChat.length === 0 && (
-                <div className="text-slate-500 p-2">
+                <div className="text-zinc-500 p-2">
                   No inter-agent messages yet. In <strong>Execute &amp; Verify</strong> or <strong>Musyawarah</strong>{" "}
                   mode, teammates message each other live here (ports, terminal names, handoffs).
                 </div>
@@ -1072,50 +1072,50 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             <>
               <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
                 {blackboard.map((b) => (
-                  <div key={b.id} className="p-3 rounded-xl bg-[#090c14] border border-slate-800 space-y-1">
+                  <div key={b.id} className="p-3 rounded-xl bg-[#0c0c0e] border border-white/[0.08] space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-bold uppercase">
                         {b.entry_type}
                       </span>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-slate-500">{b.author_name}</span>
+                        <span className="text-[10px] text-zinc-500">{b.author_name}</span>
                         <button
                           aria-label="Delete blackboard entry"
                           onClick={() => deleteBlackboardEntry(b.id)}
-                          className="text-slate-600 hover:text-rose-400 cursor-pointer"
+                          className="text-zinc-600 hover:text-rose-400 cursor-pointer"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
                       </div>
                     </div>
-                    <div className="text-xs font-semibold text-slate-200">{b.title}</div>
-                    <div className="text-[11px] text-slate-400 whitespace-pre-wrap line-clamp-5">{b.content}</div>
+                    <div className="text-xs font-semibold text-zinc-200">{b.title}</div>
+                    <div className="text-[11px] text-zinc-400 whitespace-pre-wrap line-clamp-5">{b.content}</div>
                   </div>
                 ))}
                 {blackboard.length === 0 && (
-                  <div className="text-xs text-slate-500 p-2">
+                  <div className="text-xs text-zinc-500 p-2">
                     No entries yet. Start a mission or pin a team directive below.
                   </div>
                 )}
               </div>
 
-              <form onSubmit={addBlackboardEntry} className="p-3 border-t border-slate-800/80 space-y-2">
+              <form onSubmit={addBlackboardEntry} className="p-3 border-t border-white/[0.07] space-y-2">
                 <input
                   value={bbTitle}
                   onChange={(e) => setBbTitle(e.target.value)}
                   placeholder="Pin team directive / note title..."
-                  className="w-full bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
+                  className="w-full bg-[#09090b] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
                 />
                 <textarea
                   rows={2}
                   value={bbContent}
                   onChange={(e) => setBbContent(e.target.value)}
                   placeholder="Shared note visible to all peers..."
-                  className="w-full bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none resize-none"
+                  className="w-full bg-[#09090b] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-white outline-none resize-none"
                 />
                 <button
                   type="submit"
-                  className="w-full py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium cursor-pointer"
+                  className="w-full py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] text-zinc-200 text-xs font-medium cursor-pointer"
                 >
                   Post to Blackboard
                 </button>
@@ -1127,7 +1127,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
             <>
               <div className="flex-1 overflow-y-auto p-3 space-y-2">
                 {tasks.map((t) => (
-                  <div key={t.id} className="p-2.5 rounded-xl bg-[#090c14] border border-slate-800 flex items-start justify-between gap-2 text-xs">
+                  <div key={t.id} className="p-2.5 rounded-xl bg-[#0c0c0e] border border-white/[0.08] flex items-start justify-between gap-2 text-xs">
                     <button
                       onClick={async () => {
                         if (!activeTeam) return;
@@ -1140,10 +1140,10 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                       }}
                       className="text-left flex-1 min-w-0 cursor-pointer"
                     >
-                      <div className={`font-medium ${t.status === "done" ? "line-through text-slate-500" : "text-slate-200"}`}>
+                      <div className={`font-medium ${t.status === "done" ? "line-through text-zinc-500" : "text-zinc-200"}`}>
                         {t.status === "done" ? "☑" : "☐"} {t.title}
                       </div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">
+                      <div className="text-[10px] text-zinc-500 mt-0.5">
                         Owner: {t.owner_agent} · <span className="uppercase text-cyan-400">{t.status}</span>
                       </div>
                     </button>
@@ -1154,14 +1154,14 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                         await apiFetch(`/api/teams/${activeTeam.id}/tasks/${t.id}`, { method: "DELETE" });
                         await loadBlackboard(activeTeam.id);
                       }}
-                      className="text-slate-600 hover:text-rose-400 cursor-pointer"
+                      className="text-zinc-600 hover:text-rose-400 cursor-pointer"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                 ))}
                 {tasks.length === 0 && (
-                  <div className="text-xs text-slate-500 p-2">
+                  <div className="text-xs text-zinc-500 p-2">
                     Shared Team Task Board is empty. Add tasks below or let agents manage them via <code>team_todo_manage</code>.
                   </div>
                 )}
@@ -1177,13 +1177,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                   setNewTaskTitle("");
                   await loadBlackboard(activeTeam.id);
                 }}
-                className="p-3 border-t border-slate-800/80 flex gap-1.5"
+                className="p-3 border-t border-white/[0.07] flex gap-1.5"
               >
                 <input
                   value={newTaskTitle}
                   onChange={(e) => setNewTaskTitle(e.target.value)}
                   placeholder="Add shared team task..."
-                  className="flex-1 bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-cyan-500"
+                  className="flex-1 bg-[#09090b] border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-cyan-500"
                 />
                 <button
                   type="submit"
@@ -1198,34 +1198,34 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
           {rightTab === "processes" && (
             <div className="flex-1 overflow-y-auto p-3 space-y-2.5 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] text-slate-400">Managed Background Processes</span>
+                <span className="text-[11px] text-zinc-400">Managed Background Processes</span>
                 <button
                   onClick={() => activeTeam && loadBlackboard(activeTeam.id)}
-                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                  className="p-1 rounded bg-[#18181b] hover:bg-[#222227] text-zinc-300 cursor-pointer"
                 >
                   <RefreshCw className="w-3 h-3" />
                 </button>
               </div>
               {processes.map((p) => (
-                <div key={p.id} className="p-2.5 rounded-xl bg-[#090c14] border border-slate-800 space-y-1.5">
+                <div key={p.id} className="p-2.5 rounded-xl bg-[#0c0c0e] border border-white/[0.08] space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-white truncate">{p.name}</span>
                     <span
                       className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold ${
-                        p.status === "running" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-800 text-slate-400"
+                        p.status === "running" ? "bg-emerald-500/20 text-emerald-300" : "bg-[#18181b] text-zinc-400"
                       }`}
                     >
                       {p.status}
                     </span>
                   </div>
-                  <div className="text-[10px] font-mono text-slate-500 truncate">{p.command}</div>
+                  <div className="text-[10px] font-mono text-zinc-500 truncate">{p.command}</div>
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={async () => {
                         const r = await apiFetch<{ logs: string[] }>(`/api/processes/${p.id}/logs?tail=50`);
                         setProcLogs({ id: p.id, logs: r.logs });
                       }}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] cursor-pointer"
+                      className="px-2 py-1 rounded bg-[#18181b] hover:bg-[#222227] text-zinc-200 text-[10px] cursor-pointer"
                     >
                       Logs ({p.logLines})
                     </button>
@@ -1242,14 +1242,14 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
                     )}
                   </div>
                   {procLogs?.id === p.id && (
-                    <pre className="p-2 rounded bg-[#05070c] text-[10px] font-mono text-emerald-300 max-h-36 overflow-auto whitespace-pre-wrap">
+                    <pre className="p-2 rounded bg-[#09090b] text-[10px] font-mono text-emerald-300 max-h-36 overflow-auto whitespace-pre-wrap">
                       {procLogs.logs.join("\n") || "(no output yet)"}
                     </pre>
                   )}
                 </div>
               ))}
               {processes.length === 0 && (
-                <div className="text-slate-500 p-2">
+                <div className="text-zinc-500 p-2">
                   No background processes running. Agents can spawn servers/workers with <code>process_start</code>.
                 </div>
               )}

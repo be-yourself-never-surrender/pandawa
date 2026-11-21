@@ -44,9 +44,17 @@ export function listBrainTree(subPath = ""): BrainTreeNode[] {
     const entries = fs.readdirSync(dirFull, { withFileTypes: true });
     const result: BrainTreeNode[] = [];
 
+    const layerOrder = ["main-brain", "teams", "agents"];
     const sorted = entries.sort((a, b) => {
       if (a.isDirectory() && !b.isDirectory()) return -1;
       if (!a.isDirectory() && b.isDirectory()) return 1;
+      if (!relPrefix && a.isDirectory() && b.isDirectory()) {
+        const ia = layerOrder.indexOf(a.name.toLowerCase());
+        const ib = layerOrder.indexOf(b.name.toLowerCase());
+        if (ia !== -1 || ib !== -1) {
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        }
+      }
       return a.name.localeCompare(b.name);
     });
 

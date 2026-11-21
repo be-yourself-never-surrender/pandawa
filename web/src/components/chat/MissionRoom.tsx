@@ -976,8 +976,8 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({
               }}
               placeholder={
                 targetType === "team"
-                  ? "Give Team Pandawa a mission... Paste screenshots, use @file.md, or /mode execute /auto /tasks"
-                  : "Message this agent directly... (paste images or @file.md supported)"
+                  ? "Give Team Pandawa a mission... (@file.md, paste image, or /mode execute)"
+                  : "Message this agent directly... (@file.md or paste image)"
               }
               className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none resize-none"
             />

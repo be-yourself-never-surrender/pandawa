@@ -242,7 +242,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                   : "bg-slate-800 border-slate-700 text-slate-400"
               }`}
             >
-              Playwright {pyCaps.playwright ? "✓" : "—"}
+              Playwright {runtimeInfo === null ? "…" : pyCaps.playwright ? "✓" : "—"}
             </span>
           </div>
         </div>

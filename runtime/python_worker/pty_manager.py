@@ -138,7 +138,12 @@ def cmd_read(payload: dict) -> dict:
     if not session_exists(tname):
         return {"ok": False, "error": f"Terminal session '{name}' does not exist."}
     lines = int(payload.get("lines", 200))
-    output = capture_pane(tname, lines).rstrip()
+    raw_output = capture_pane(tname, lines)
+    clean_lines = [
+        ln for ln in raw_output.splitlines()
+        if "__PDW_START_" not in ln and "__PDW_DONE_" not in ln and "__pdw_ec=" not in ln
+    ]
+    output = "\n".join(clean_lines).rstrip()
     # Also fetch current cwd and running command
     meta = run_tmux(["display-message", "-p", "-t", tname, "#{pane_current_path}\t#{pane_current_command}"])
     cwd, cur_cmd = "", ""

@@ -247,22 +247,29 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) =>
         </div>
 
         {hbConfig && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs bg-[#090c14] border border-slate-800 rounded-xl p-3.5">
-            <label className="flex items-center justify-between gap-2 cursor-pointer">
-              <span className="text-slate-300 font-medium">24/7 Autonomous Daemon</span>
-              <input
-                type="checkbox"
-                checked={hbConfig.enabled}
-                onChange={(e) => saveHeartbeat({ enabled: e.target.checked })}
-                className="w-4 h-4 accent-emerald-400 cursor-pointer"
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-[#090c14] border border-slate-800 rounded-xl p-3.5">
+            <button
+              type="button"
+              onClick={() => saveHeartbeat({ enabled: !hbConfig.enabled })}
+              className={`px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-2 cursor-pointer transition ${
+                hbConfig.enabled
+                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                  : "bg-slate-800/80 border-slate-700 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  hbConfig.enabled ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-slate-500"
+                }`}
               />
-            </label>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-slate-400">Pulse Interval:</span>
+              24/7 Autonomous Daemon: {hbConfig.enabled ? "ON" : "OFF"}
+            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400 whitespace-nowrap">Interval:</span>
               <select
                 value={hbConfig.intervalMinutes}
                 onChange={(e) => saveHeartbeat({ intervalMinutes: Number(e.target.value) })}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 text-white"
+                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"
               >
                 <option value={5}>Every 5 min</option>
                 <option value={15}>Every 15 min</option>
@@ -271,12 +278,12 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) =>
                 <option value={240}>Every 4 hours</option>
               </select>
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-slate-400">Alert Channel:</span>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400 whitespace-nowrap">Alert Channel:</span>
               <select
                 value={hbConfig.notifyChannelId}
                 onChange={(e) => saveHeartbeat({ notifyChannelId: e.target.value })}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 text-white max-w-[160px]"
+                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-white max-w-[180px]"
               >
                 <option value="">Auto (First Enabled)</option>
                 {channels.map((c) => (

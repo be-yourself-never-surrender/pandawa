@@ -209,19 +209,24 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
       }
     });
 
+    let resizeRaf = 0;
     const resizeObs = new ResizeObserver(() => {
-      try {
-        fitAddon.fit();
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
+      resizeRaf = window.requestAnimationFrame(() => {
+        try {
+          fitAddon.fit();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
+      });
     });
     resizeObs.observe(container);
 
     return () => {
+      if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
       resizeObs.disconnect();
       dataDisp.dispose();
       ws.close();

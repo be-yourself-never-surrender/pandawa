@@ -70,6 +70,17 @@ import {
   closeTerminal,
 } from "../tools/terminalManager.js";
 import { getPythonWorkerStatus } from "../tools/pythonWorker.js";
+import {
+  getSemanticBrainStatus,
+  reindexSemanticBrain,
+  semanticBrainSearch,
+} from "../brains/semanticMemory.js";
+import {
+  getHeartbeatConfig,
+  updateHeartbeatConfig,
+  listHeartbeatLogs,
+  runHeartbeatPulse,
+} from "../engine/heartbeatDaemon.js";
 
 function maskProvider(p: ProviderRecord) {
   const key = decryptSecret(p.api_key || "");
@@ -1976,17 +1987,81 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   });
 
   // ========================
-  // HYBRID PYTHON / TMUX / PLAYWRIGHT RUNTIME STATUS
+  // HYBRID SEMANTIC VECTOR BRAIN SEARCH (Beyond Obsidian)
+  // ========================
+  router.get("/brain/semantic/status", async (_req: Request, res: Response) => {
+    res.json(await getSemanticBrainStatus());
+  });
+
+  router.get("/brain/semantic/search", async (req: Request, res: Response) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : "";
+      const scope = typeof req.query.scope === "string" ? (req.query.scope as "all" | "brain_file" | "memory" | "session") : "all";
+      const limit = Number(req.query.limit || 12);
+      res.json(await semanticBrainSearch(q, { scope, limit }));
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/brain/semantic/reindex", async (_req: Request, res: Response) => {
+    try {
+      const out = await reindexSemanticBrain();
+      logAudit("admin", "semantic.reindex", "brain", JSON.stringify(out).slice(0, 180));
+      res.json(out);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ========================
+  // PROACTIVE AUTONOMOUS HEARTBEAT DAEMON (Beyond OpenClaw)
+  // ========================
+  router.get("/heartbeat", (_req: Request, res: Response) => {
+    res.json({
+      config: getHeartbeatConfig(),
+      logs: listHeartbeatLogs(30),
+    });
+  });
+
+  router.put("/heartbeat", (req: Request, res: Response) => {
+    const config = updateHeartbeatConfig({
+      enabled: req.body?.enabled !== undefined ? Boolean(req.body.enabled) : undefined,
+      intervalMinutes: req.body?.intervalMinutes !== undefined ? Number(req.body.intervalMinutes) : undefined,
+      teamId: req.body?.teamId !== undefined ? String(req.body.teamId) : undefined,
+      notifyChannelId: req.body?.notifyChannelId !== undefined ? String(req.body.notifyChannelId) : undefined,
+      checklistMarkdown: typeof req.body?.checklistMarkdown === "string" ? req.body.checklistMarkdown : undefined,
+    });
+    res.json({ ok: true, config });
+  });
+
+  router.post("/heartbeat/pulse", async (_req: Request, res: Response) => {
+    try {
+      const out = await runHeartbeatPulse("manual");
+      res.json(out);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ========================
+  // HYBRID PYTHON / TMUX / PLAYWRIGHT / SEMANTIC / HEARTBEAT STATUS
   // ========================
   router.get("/system/runtime", async (_req: Request, res: Response) => {
-    const [pyStatus, termStatus] = await Promise.all([getPythonWorkerStatus(), listTerminals()]);
+    const [pyStatus, termStatus, semStatus] = await Promise.all([
+      getPythonWorkerStatus(),
+      listTerminals(),
+      getSemanticBrainStatus(),
+    ]);
     res.json({
-      version: "6.0.0",
+      version: "6.5.0",
       nodeVersion: process.version,
       pythonWorker: pyStatus,
       tmuxAvailable: termStatus.tmux,
       activeTerminals: termStatus.sessions.length,
       runningJobs: listBackgroundJobs(50).filter((j) => j.status === "running" || j.status === "queued").length,
+      semanticMemory: semStatus,
+      heartbeat: getHeartbeatConfig(),
     });
   });
 
@@ -2027,7 +2102,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "6.0.0",
+      version: "6.5.0",
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),

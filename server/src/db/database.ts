@@ -269,6 +269,15 @@ function initSchema(db: DatabaseSync): void {
       started_at TEXT NOT NULL DEFAULT '',
       finished_at TEXT NOT NULL DEFAULT ''
     );
+
+    CREATE TABLE IF NOT EXISTS heartbeat_logs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'ok',
+      summary TEXT NOT NULL DEFAULT '',
+      alerted INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Safe idempotent column migrations for upgraded databases

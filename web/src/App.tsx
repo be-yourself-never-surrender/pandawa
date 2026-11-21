@@ -241,7 +241,7 @@ export const App: React.FC = () => {
         )}
         {tab === "providers" && <ProvidersPage />}
         {tab === "skills" && <SkillsPage onOpenFile={handleOpenBrainFile} />}
-        {tab === "automation" && <AutomationPage />}
+        {tab === "automation" && <AutomationPage onOpenFile={handleOpenBrainFile} />}
         {tab === "settings" && <SettingsPage onPasswordChanged={() => setUsingDefaultPassword(false)} />}
       </main>
 

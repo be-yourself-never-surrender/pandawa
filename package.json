@@ -1,6 +1,6 @@
 {
   "name": "pandawa",
-  "version": "6.0.0",
+  "version": "6.5.0",
   "description": "Pandawa OS — Hybrid TypeScript + Python Living Agentic Team OS with Visual [[Wikilink]] Brains, Shared PTY/tmux Terminals, Execute & Verify Loops & Multi-AI Routing",
   "private": false,
   "type": "module",

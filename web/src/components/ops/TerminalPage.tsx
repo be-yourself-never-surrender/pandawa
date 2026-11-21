@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Terminal as XTerm } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 import {
   Terminal,
   Plus,
@@ -12,8 +15,10 @@ import {
   Clock,
   Send,
   Sparkles,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
-import { apiFetch } from "../../api/client";
+import { apiFetch, getStoredToken } from "../../api/client";
 
 interface TerminalSession {
   name: string;
@@ -46,24 +51,34 @@ interface TerminalPageProps {
   onOpenSession?: (sessionId: string) => void;
 }
 
+function base64ToUint8(b64: string): Uint8Array {
+  const bin = window.atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
   const [sessions, setSessions] = useState<TerminalSession[]>([]);
   const [tmuxReady, setTmuxReady] = useState<boolean>(true);
   const [activeName, setActiveName] = useState<string>("");
-  const [output, setOutput] = useState<string>("");
-  const [cwd, setCwd] = useState<string>("");
+  const [ptyConnected, setPtyConnected] = useState<boolean>(false);
+  const [reconnectSeq, setReconnectSeq] = useState<number>(0);
   const [cmdInput, setCmdInput] = useState<string>("");
-  const [running, setRunning] = useState<boolean>(false);
-  const [autoFollow, setAutoFollow] = useState<boolean>(true);
   const [newName, setNewName] = useState<string>("");
   const [copiedAttach, setCopiedAttach] = useState<string>("");
   const [jobs, setJobs] = useState<BackgroundJob[]>([]);
   const [runtimeInfo, setRuntimeInfo] = useState<{
     pythonWorker?: { ok?: boolean; python?: string; capabilities?: Record<string, boolean> };
     tmuxAvailable?: boolean;
+    semanticMemory?: { totalChunks?: number; mode?: string };
   } | null>(null);
 
-  const preRef = useRef<HTMLPreElement | null>(null);
+  const termContainerRef = useRef<HTMLDivElement | null>(null);
+  const xtermRef = useRef<XTerm | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const loadAll = useCallback(async () => {
     const [tRes, jRes, rRes] = await Promise.all([
@@ -72,6 +87,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
       apiFetch<{
         pythonWorker?: { ok?: boolean; python?: string; capabilities?: Record<string, boolean> };
         tmuxAvailable?: boolean;
+        semanticMemory?: { totalChunks?: number; mode?: string };
       }>("/api/system/runtime"),
     ]);
     setTmuxReady(Boolean(tRes.tmux));
@@ -84,58 +100,137 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
     });
   }, []);
 
-  const loadOutput = useCallback(async (name: string) => {
-    if (!name) {
-      setOutput("");
-      return;
-    }
-    try {
-      const res = await apiFetch<{ ok: boolean; output?: string; cwd?: string }>(
-        `/api/terminals/${encodeURIComponent(name)}/output?lines=300`
-      );
-      if (res.ok) {
-        setOutput(res.output || "");
-        if (res.cwd) setCwd(res.cwd);
-      }
-    } catch {
-      // ignore transient error
-    }
-  }, []);
-
   useEffect(() => {
     loadAll().catch(() => {});
   }, [loadAll]);
 
-  useEffect(() => {
-    if (!activeName) return;
-    loadOutput(activeName);
-    if (!autoFollow) return;
-    const timer = window.setInterval(() => {
-      loadOutput(activeName);
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [activeName, autoFollow, loadOutput]);
-
-  // React immediately when any agent executes in a shared terminal or updates a background job
+  // React immediately when any agent creates/closes a terminal or updates a background job
   useEffect(() => {
     const latest = liveEvents[liveEvents.length - 1];
     if (!latest) return;
     const t = String(latest.type || "");
-    if (t === "terminal_output" || t === "terminal_updated" || t === "terminal_exec") {
+    if (t === "terminal_updated" || t === "terminal_exec") {
       loadAll().catch(() => {});
-      if (activeName) loadOutput(activeName);
     } else if (t === "background_job_updated") {
       apiFetch<{ jobs: BackgroundJob[] }>("/api/jobs")
         .then((r) => setJobs(r.jobs || []))
         .catch(() => {});
     }
-  }, [liveEvents, activeName, loadAll, loadOutput]);
+  }, [liveEvents, loadAll]);
 
+  // Mount real-time 60fps xterm.js <-> WebSocket PTY <-> tmux stream whenever activeName changes
   useEffect(() => {
-    if (autoFollow && preRef.current) {
-      preRef.current.scrollTop = preRef.current.scrollHeight;
+    const container = termContainerRef.current;
+    if (!activeName || !container) {
+      setPtyConnected(false);
+      return;
     }
-  }, [output, autoFollow]);
+
+    container.innerHTML = "";
+    const term = new XTerm({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace",
+      scrollback: 5000,
+      theme: {
+        background: "#030509",
+        foreground: "#e2e8f0",
+        cursor: "#34d399",
+        selectionBackground: "rgba(245, 158, 11, 0.3)",
+        black: "#0f172a",
+        red: "#f43f5e",
+        green: "#34d399",
+        yellow: "#fbbf24",
+        blue: "#38bdf8",
+        magenta: "#a78bfa",
+        cyan: "#22d3ee",
+        white: "#f1f5f9",
+        brightBlack: "#475569",
+        brightRed: "#fb7185",
+        brightGreen: "#6ee7b7",
+        brightYellow: "#fcd34d",
+        brightBlue: "#7dd3fc",
+        brightMagenta: "#c4b5fd",
+        brightCyan: "#67e8f9",
+        brightWhite: "#ffffff",
+      },
+    });
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(container);
+    try {
+      fitAddon.fit();
+    } catch {
+      // ignore initial fit race
+    }
+    term.focus();
+    xtermRef.current = term;
+
+    const token = getStoredToken() || "";
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const cols = term.cols || 120;
+    const rows = term.rows || 32;
+    const wsUrl = `${proto}://${window.location.host}/ws/terminal?token=${encodeURIComponent(token)}&name=${encodeURIComponent(activeName)}&cols=${cols}&rows=${rows}`;
+
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setPtyConnected(true);
+      try {
+        fitAddon.fit();
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      } catch {
+        // ignore
+      }
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data)) as { type?: string; b64?: string; message?: string };
+        if (msg.type === "data" && msg.b64) {
+          term.write(base64ToUint8(msg.b64));
+        } else if (msg.type === "error" && msg.message) {
+          term.writeln(`\r\n\x1b[31m[PTY Error] ${msg.message}\x1b[0m`);
+        } else if (msg.type === "exit") {
+          setPtyConnected(false);
+        }
+      } catch {
+        // ignore malformed packet
+      }
+    };
+
+    ws.onclose = () => setPtyConnected(false);
+    ws.onerror = () => setPtyConnected(false);
+
+    const dataDisp = term.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data }));
+      }
+    });
+
+    const resizeObs = new ResizeObserver(() => {
+      try {
+        fitAddon.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      } catch {
+        // ignore
+      }
+    });
+    resizeObs.observe(container);
+
+    return () => {
+      resizeObs.disconnect();
+      dataDisp.dispose();
+      ws.close();
+      wsRef.current = null;
+      term.dispose();
+      xtermRef.current = null;
+      setPtyConnected(false);
+    };
+  }, [activeName, reconnectSeq]);
 
   async function handleOpenTerminal(e: React.FormEvent) {
     e.preventDefault();
@@ -148,35 +243,29 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
     await loadAll();
     const slug = target.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
     setActiveName(slug || "main");
-    await loadOutput(slug || "main");
   }
 
-  async function handleExec(e: React.FormEvent) {
-    e.preventDefault();
-    if (!cmdInput.trim() || running) return;
-    const target = activeName || "main";
-    const cmd = cmdInput.trim();
-    setCmdInput("");
-    setRunning(true);
-    try {
-      await apiFetch(`/api/terminals/${encodeURIComponent(target)}/exec`, {
-        method: "POST",
-        body: JSON.stringify({ command: cmd, timeoutSec: 30 }),
-      });
-      await loadAll();
-      await loadOutput(target);
-    } finally {
-      setRunning(false);
+  function sendRawInput(data: string) {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "input", data }));
+      xtermRef.current?.focus();
     }
   }
 
-  async function sendSpecialKey(key: string) {
-    if (!activeName) return;
-    await apiFetch(`/api/terminals/${encodeURIComponent(activeName)}/send`, {
-      method: "POST",
-      body: JSON.stringify({ key }),
-    });
-    await loadOutput(activeName);
+  async function handleQuickCommand(e: React.FormEvent) {
+    e.preventDefault();
+    if (!cmdInput.trim()) return;
+    const cmd = cmdInput.trim();
+    setCmdInput("");
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "input", data: `${cmd}\r` }));
+      xtermRef.current?.focus();
+    } else if (activeName) {
+      await apiFetch(`/api/terminals/${encodeURIComponent(activeName)}/exec`, {
+        method: "POST",
+        body: JSON.stringify({ command: cmd, timeoutSec: 30 }),
+      });
+    }
   }
 
   async function handleClose(name: string) {
@@ -195,7 +284,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
         <div className="p-3.5 border-b border-slate-800/80 space-y-2.5">
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
-              <Terminal className="w-3.5 h-3.5 text-emerald-400" /> Shared Terminals
+              <Terminal className="w-3.5 h-3.5 text-emerald-400" /> Shared PTY Terminals
             </h2>
             <button
               onClick={() => loadAll()}
@@ -233,7 +322,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
               tmux {tmuxReady ? "✓" : "off"}
             </span>
             <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/35 text-cyan-300">
-              Py {runtimeInfo?.pythonWorker?.python || "3.x"}
+              Py {runtimeInfo?.pythonWorker?.python || "…"}
             </span>
             <span
               className={`px-2 py-0.5 rounded-full border ${
@@ -351,20 +440,32 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
             ))}
             {jobs.length === 0 && (
               <div className="text-[11px] text-slate-500 px-1">
-                Toggle <strong>Background</strong> in Mission Room to launch 24/7 autonomous daemon missions.
+                Toggle <strong>BG</strong> in Mission Room to launch 24/7 autonomous daemon missions.
               </div>
             )}
           </div>
         </div>
       </aside>
 
-      {/* Main Live Terminal Screen */}
+      {/* Main Real-Time xterm.js PTY Screen */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="min-h-14 px-4 py-2.5 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-sm font-bold text-white flex items-center gap-2">
+            <div className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
               <Cpu className="w-4 h-4 text-emerald-400 shrink-0" />
-              {activeSession ? `Terminal: ${activeSession.name}` : "Pandawa Living Terminal"}
+              {activeSession ? `PTY: ${activeSession.name}` : "Pandawa Live Interactive PTY Terminal"}
+              {activeName && (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold inline-flex items-center gap-1 ${
+                    ptyConnected
+                      ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                      : "bg-slate-800 border-slate-700 text-slate-400"
+                  }`}
+                >
+                  {ptyConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+                  {ptyConnected ? "xterm.js PTY Live" : "Disconnected"}
+                </span>
+              )}
               {activeSession && (
                 <code className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-amber-300">
                   {activeSession.attachCommand}
@@ -372,59 +473,46 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
               )}
             </div>
             <div className="text-[11px] text-slate-400 truncate mt-0.5">
-              {cwd
-                ? `cwd: ${cwd} · Shared live between You and all Pandawa Agents`
-                : "Stateful tmux/PTY sessions where AI agents & humans work side by side"}
+              Real-time ANSI interactive terminal — click inside to type directly (vim, htop, python, node) alongside Pandawa agents
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap text-xs">
             <button
-              onClick={() => setAutoFollow((a) => !a)}
-              className={`px-2.5 py-1.5 rounded-lg border font-medium cursor-pointer ${
-                autoFollow
-                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                  : "bg-slate-800 border-slate-700 text-slate-400"
-              }`}
-            >
-              {autoFollow ? "● Live Follow" : "Paused"}
-            </button>
-            <button
-              onClick={() => sendSpecialKey("C-c")}
-              disabled={!activeName}
+              onClick={() => sendRawInput("\x03")}
+              disabled={!ptyConnected}
               className="px-2.5 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-40"
             >
               <Square className="w-3 h-3" /> Ctrl+C
             </button>
             <button
-              onClick={() => sendSpecialKey("C-l")}
-              disabled={!activeName}
+              onClick={() => sendRawInput("\x0c")}
+              disabled={!ptyConnected}
               className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer disabled:opacity-40"
             >
               Clear
             </button>
             <button
-              onClick={() => activeName && loadOutput(activeName)}
+              onClick={() => setReconnectSeq((s) => s + 1)}
               disabled={!activeName}
               className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 cursor-pointer disabled:opacity-40"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Pull
+              <RefreshCw className="w-3.5 h-3.5" /> Reconnect
             </button>
           </div>
         </header>
 
-        {/* Terminal Viewport */}
-        <div className="flex-1 min-h-0 bg-[#05070c] p-4 flex flex-col">
+        {/* Full Interactive xterm.js Canvas */}
+        <div className="flex-1 min-h-0 bg-[#05070c] p-3 flex flex-col">
           {!activeName ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-3">
               <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/35 flex items-center justify-center">
                 <Sparkles className="w-6 h-6 text-emerald-400" />
               </div>
-              <h3 className="text-base font-bold text-white">Living Multi-Agent Terminal OS</h3>
+              <h3 className="text-base font-bold text-white">Real-Time Interactive Multi-Agent PTY</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Every terminal opened here (or by Arjuna, Bima &amp; Sadewa) runs inside a persistent{" "}
-                <code>tmux</code> session. <code>cd</code>, virtualenvs, servers, and interactive CLIs stay alive—and
-                teammates can inspect each other&apos;s live output!
+                Powered by <strong>xterm.js + WebSocket PTY + tmux</strong>. Full ANSI colors, interactive shells,
+                live servers, and instant keystrokes—shared seamlessly between you and Arjuna, Bima &amp; Sadewa!
               </p>
               <button
                 onClick={async () => {
@@ -434,27 +522,25 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
                   });
                   await loadAll();
                   setActiveName("main");
-                  await loadOutput("main");
                 }}
                 className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
               >
-                <Play className="w-3.5 h-3.5" /> Start Main Shared Terminal
+                <Play className="w-3.5 h-3.5" /> Launch Interactive Main PTY
               </button>
             </div>
           ) : (
-            <pre
-              ref={preRef}
-              className="flex-1 overflow-auto font-mono text-xs leading-relaxed text-emerald-300/95 whitespace-pre-wrap break-words bg-[#030509] border border-slate-800/90 rounded-xl p-4 shadow-inner"
-            >
-              {output || "$ (terminal ready — type a command below or let a Pandawa agent execute here)"}
-            </pre>
+            <div
+              ref={termContainerRef}
+              onClick={() => xtermRef.current?.focus()}
+              className="flex-1 min-h-0 w-full rounded-xl overflow-hidden border border-slate-800/90 bg-[#030509] p-2 shadow-inner"
+            />
           )}
         </div>
 
-        {/* Interactive Command Input */}
+        {/* Quick Send Bar (in addition to typing directly inside xterm.js!) */}
         <form
-          onSubmit={handleExec}
-          className="p-3.5 bg-[#0d111b] border-t border-slate-800/80 flex items-center gap-2"
+          onSubmit={handleQuickCommand}
+          className="px-3.5 py-2.5 bg-[#0d111b] border-t border-slate-800/80 flex items-center gap-2"
         >
           <span className="font-mono text-xs font-bold text-emerald-400 shrink-0">
             {activeName || "main"} $
@@ -462,15 +548,15 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
           <input
             value={cmdInput}
             onChange={(e) => setCmdInput(e.target.value)}
-            placeholder="Run any command in this shared persistent terminal (e.g. ls -la, python3 --version, git status)..."
+            placeholder="Type directly in the terminal above, OR paste a command here and press Enter..."
             className="flex-1 bg-[#05070c] border border-slate-700 focus:border-emerald-500 rounded-xl px-3.5 py-2 font-mono text-xs text-white outline-none"
           />
           <button
             type="submit"
-            disabled={!cmdInput.trim() || running}
+            disabled={!cmdInput.trim() || !activeName}
             className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shrink-0"
           >
-            <Send className="w-3.5 h-3.5" /> {running ? "Running..." : "Run"}
+            <Send className="w-3.5 h-3.5" /> Send
           </button>
         </form>
       </div>

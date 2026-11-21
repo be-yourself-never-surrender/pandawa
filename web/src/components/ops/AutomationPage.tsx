@@ -1,7 +1,26 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Clock, Play, Trash2, Radio, Plug, Plus, Send } from "lucide-react";
+import { Clock, Play, Trash2, Radio, Plug, Plus, Send, Activity, FileText } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { TeamItem } from "../../types";
+
+interface HeartbeatConfig {
+  enabled: boolean;
+  intervalMinutes: number;
+  teamId: string;
+  notifyChannelId: string;
+  checklistPath: string;
+  lastPulseAt: string;
+  lastStatus: string;
+}
+
+interface HeartbeatLogItem {
+  id: string;
+  status: "ok" | "alert" | "error";
+  summary: string;
+  alerted: number;
+  duration_ms: number;
+  created_at: string;
+}
 
 interface CronJob {
   id: string;
@@ -41,11 +60,18 @@ interface DiscoveredToolItem {
   description: string;
 }
 
-export const AutomationPage: React.FC = () => {
+interface AutomationPageProps {
+  onOpenFile?: (path: string) => void;
+}
+
+export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile }) => {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [channels, setChannels] = useState<ChannelItem[]>([]);
   const [mcps, setMcps] = useState<McpItem[]>([]);
   const [teams, setTeams] = useState<TeamItem[]>([]);
+  const [hbConfig, setHbConfig] = useState<HeartbeatConfig | null>(null);
+  const [hbLogs, setHbLogs] = useState<HeartbeatLogItem[]>([]);
+  const [pulsing, setPulsing] = useState(false);
 
   // Cron form
   const [cronName, setCronName] = useState("");
@@ -68,17 +94,40 @@ export const AutomationPage: React.FC = () => {
   >({});
 
   const load = useCallback(async () => {
-    const [jRes, cRes, mRes, tRes] = await Promise.all([
+    const [jRes, cRes, mRes, tRes, hRes] = await Promise.all([
       apiFetch<{ jobs: CronJob[] }>("/api/cron"),
       apiFetch<{ channels: ChannelItem[] }>("/api/channels"),
       apiFetch<{ servers: McpItem[] }>("/api/connectors"),
       apiFetch<{ teams: TeamItem[] }>("/api/teams"),
+      apiFetch<{ config: HeartbeatConfig; logs: HeartbeatLogItem[] }>("/api/heartbeat").catch(() => null),
     ]);
     setJobs(jRes.jobs);
     setChannels(cRes.channels);
     setMcps(mRes.servers);
     setTeams(tRes.teams);
+    if (hRes) {
+      setHbConfig(hRes.config);
+      setHbLogs(hRes.logs || []);
+    }
   }, []);
+
+  async function saveHeartbeat(patch: Partial<HeartbeatConfig>) {
+    const res = await apiFetch<{ config: HeartbeatConfig }>("/api/heartbeat", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    setHbConfig(res.config);
+  }
+
+  async function triggerHeartbeatNow() {
+    setPulsing(true);
+    try {
+      await apiFetch("/api/heartbeat/pulse", { method: "POST" });
+      await load();
+    } finally {
+      setPulsing(false);
+    }
+  }
 
   useEffect(() => {
     load().catch(() => {});
@@ -153,6 +202,120 @@ export const AutomationPage: React.FC = () => {
           Schedule recurring Team Pandawa missions, bridge Telegram / Discord / Webhooks, and register external MCP servers.
         </p>
       </div>
+
+      {/* PROACTIVE AUTONOMOUS HEARTBEAT DAEMON (Beyond OpenClaw) */}
+      <section className="rounded-2xl bg-[#0e1320] border border-emerald-500/35 p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+              <Activity className="w-4 h-4" /> Proactive Autonomous Heartbeat Daemon
+              {hbConfig && (
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded-full uppercase font-bold ${
+                    hbConfig.enabled
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {hbConfig.enabled ? `Active · Every ${hbConfig.intervalMinutes}m` : "Paused"}
+                </span>
+              )}
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Periodically wakes Team Pandawa to inspect living terminals, background jobs, open tasks &amp;{" "}
+              <code className="text-amber-300">main-brain/HEARTBEAT.md</code> — silently logs <code>HEARTBEAT_OK</code>{" "}
+              and alerts Telegram/Discord only when real action is needed.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            {onOpenFile && (
+              <button
+                onClick={() => onOpenFile(hbConfig?.checklistPath || "main-brain/HEARTBEAT.md")}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-medium flex items-center gap-1.5 cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5" /> Edit HEARTBEAT.md
+              </button>
+            )}
+            <button
+              onClick={triggerHeartbeatNow}
+              disabled={pulsing}
+              className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Play className="w-3.5 h-3.5" /> {pulsing ? "Pulsing..." : "Pulse Now"}
+            </button>
+          </div>
+        </div>
+
+        {hbConfig && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs bg-[#090c14] border border-slate-800 rounded-xl p-3.5">
+            <label className="flex items-center justify-between gap-2 cursor-pointer">
+              <span className="text-slate-300 font-medium">24/7 Autonomous Daemon</span>
+              <input
+                type="checkbox"
+                checked={hbConfig.enabled}
+                onChange={(e) => saveHeartbeat({ enabled: e.target.checked })}
+                className="w-4 h-4 accent-emerald-400 cursor-pointer"
+              />
+            </label>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-400">Pulse Interval:</span>
+              <select
+                value={hbConfig.intervalMinutes}
+                onChange={(e) => saveHeartbeat({ intervalMinutes: Number(e.target.value) })}
+                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 text-white"
+              >
+                <option value={5}>Every 5 min</option>
+                <option value={15}>Every 15 min</option>
+                <option value={30}>Every 30 min</option>
+                <option value={60}>Every 1 hour</option>
+                <option value={240}>Every 4 hours</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-400">Alert Channel:</span>
+              <select
+                value={hbConfig.notifyChannelId}
+                onChange={(e) => saveHeartbeat({ notifyChannelId: e.target.value })}
+                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 text-white max-w-[160px]"
+              >
+                <option value="">Auto (First Enabled)</option>
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.type})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {hbLogs.length > 0 && (
+          <div className="space-y-1.5 max-h-40 overflow-y-auto">
+            {hbLogs.slice(0, 6).map((l) => (
+              <div
+                key={l.id}
+                className="px-3 py-2 rounded-lg bg-[#090c14] border border-slate-800/80 flex items-start justify-between gap-2 text-[11px]"
+              >
+                <div className="flex items-start gap-2 min-w-0">
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 ${
+                      l.status === "ok"
+                        ? "bg-emerald-500/15 text-emerald-300"
+                        : l.status === "alert"
+                        ? "bg-amber-500/20 text-amber-300"
+                        : "bg-rose-500/20 text-rose-300"
+                    }`}
+                  >
+                    {l.status}
+                  </span>
+                  <span className="text-slate-300 line-clamp-2">{l.summary}</span>
+                </div>
+                <span className="text-[10px] text-slate-500 shrink-0 font-mono">{l.duration_ms}ms</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* CRON SCHEDULER */}
       <section className="rounded-2xl bg-[#0e1320] border border-slate-800 p-5 space-y-4">

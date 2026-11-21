@@ -89,6 +89,8 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
     activeTerminals?: number;
     runningJobs?: number;
     pythonWorker?: { ok?: boolean; python?: string; capabilities?: Record<string, boolean> };
+    semanticMemory?: { totalChunks?: number; mode?: string };
+    heartbeat?: { enabled?: boolean; intervalMinutes?: number; lastStatus?: string };
   } | null>(null);
 
   const load = useCallback(async () => {
@@ -103,6 +105,8 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           activeTerminals?: number;
           runningJobs?: number;
           pythonWorker?: { ok?: boolean; python?: string; capabilities?: Record<string, boolean> };
+          semanticMemory?: { totalChunks?: number; mode?: string };
+          heartbeat?: { enabled?: boolean; intervalMinutes?: number; lastStatus?: string };
         }>("/api/system/runtime").catch(() => null),
       ]);
       setStatus(st);
@@ -164,16 +168,19 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           {runtime && (
             <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px]">
               <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
-                tmux PTY: {runtime.tmuxAvailable ? `${runtime.activeTerminals || 0} active` : "off"}
+                xterm PTY: {runtime.tmuxAvailable ? `${runtime.activeTerminals || 0} live` : "off"}
               </span>
               <span className="px-2 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
-                Python Worker: {runtime.pythonWorker?.python || "3.x"}
+                Python: {runtime.pythonWorker?.python || "3.x"}
               </span>
               <span className="px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-300">
                 Playwright: {runtime.pythonWorker?.capabilities?.playwright ? "Ready" : "Standby"}
               </span>
+              <span className="px-2 py-0.5 rounded-full bg-fuchsia-500/15 border border-fuchsia-500/30 text-fuchsia-300">
+                Semantic Index: {runtime.semanticMemory?.totalChunks || 0} chunks
+              </span>
               <span className="px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                Daemon Jobs: {runtime.runningJobs || 0} running
+                Heartbeat: {runtime.heartbeat?.enabled ? `Every ${runtime.heartbeat.intervalMinutes}m` : "Ready"}
               </span>
             </div>
           )}

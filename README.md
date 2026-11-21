@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-6.0.0-f59e0b?style=for-the-badge" alt="Version 6.0.0"></a>
+  <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-6.5.0-f59e0b?style=for-the-badge" alt="Version 6.5.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Runtime-Node.js%2024%20%2B%20Python%203-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node 24 + Python">
   <img src="https://img.shields.io/badge/Terminal-Shared%20PTY%20%2F%20tmux-06b6d4?style=for-the-badge" alt="Shared PTY / tmux">
@@ -27,11 +27,11 @@
 
 <table>
 <tr><td><b>Execute &amp; Verify Team Engine (35–100 Steps)</b></td><td>Five modes led by <b>Execute &amp; Verify</b> (Architect splits tasks → Specialists build in shared terminals with file locks → Reviewer runs real builds/tests → Auto-fix loop) plus <b>Musyawarah</b>, <b>Parallel</b>, <b>Sequential</b>, and <b>Rapid Council</b>.</td></tr>
-<tr><td><b>Living Shared Terminals (Python PTY / tmux)</b></td><td>Stateful terminal sessions where <code>cd</code>, env vars, virtualenvs, and servers persist across steps. Teammates inspect each other&apos;s terminals (<code>term_read</code>), you watch &amp; type in <b>Web Studio → Live Terminal</b>, or drop directly in via <code>pandawa term attach &lt;name&gt;</code>.</td></tr>
-<tr><td><b>Visual Brain Canvas + Living [[Wikilink]] Vault</b></td><td>n8n-style visual wiring for <b>Main Brains</b>, <b>Team Brains</b>, <b>Agents</b>, <b>AI Models</b>, <b>Files/Folders</b>, and <b>Toolpacks</b>. Core files (<code>soul.md</code>, <code>rules.md</code>) auto-load + follow 1-hop <code>[[wikilinks]]</code>, while skills &amp; docs load progressively on demand.</td></tr>
-<tr><td><b>Hybrid Python Living Worker &amp; Multimodal Vision</b></td><td>On-demand isolated Python worker powering <b>real headless Chromium (Playwright)</b> (click, fill, eval JS, capture screenshots directly into Vision LLMs), <b>PDF / DOCX / XLSX</b> document reading, plus image upload &amp; clipboard paste in Mission Room.</td></tr>
-<tr><td><b>44 Built-In Power Tools + Live MCP</b></td><td>Shared PTY/tmux terminals, live inter-agent <code>team_message</code>/<code>team_inbox</code>, surgical file patching &amp; checkpoints, Python/Node/Bash code execution, zero-key web search, Playwright browser, vision inspection, cron, and live <b>HTTP/SSE + STDIO MCP</b>.</td></tr>
-<tr><td><b>Always-On Daemon + Live TUI + Telegram Control</b></td><td>Decoupled <b>Background Mission Queue</b> survives browser closes. Use <code>pandawa live</code> for an interactive ANSI terminal cockpit, or approve/reject/monitor missions remotely from <b>Telegram</b> (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>, <code>/term</code>).</td></tr>
+<tr><td><b>Real-Time xterm.js PTY Terminal (Python + tmux)</b></td><td>Full 60fps ANSI interactive terminal right inside Web Studio (<code>xterm.js</code> + WebSocket PTY + <code>tmux</code>) — run <code>vim</code>, <code>htop</code>, servers, or REPLs side-by-side with Pandawa agents, inspect teammate terminals (<code>term_read</code>), or attach via <code>pandawa term attach &lt;name&gt;</code>.</td></tr>
+<tr><td><b>Visual Brain Canvas + Hybrid Semantic [[Wikilink]] Vault</b></td><td>n8n-style visual wiring for <b>Main Brains</b>, <b>Team Brains</b>, <b>Agents</b>, <b>AI Models</b>, <b>Files/Folders</b>, and <b>Toolpacks</b>. Core files auto-load + follow 1-hop <code>[[wikilinks]]</code>, paired with <b>Hybrid Semantic Vector + TF-IDF + FTS5</b> search across your entire Brain Vault &amp; memories.</td></tr>
+<tr><td><b>Hybrid Python Living Worker &amp; Multimodal Vision</b></td><td>On-demand isolated Python worker powering <b>real headless Chromium (Playwright)</b> (click, fill, eval JS, capture screenshots directly into Vision LLMs), <b>PDF / DOCX / XLSX</b> document reading, <b>Semantic Vector Memory</b>, plus image upload &amp; clipboard paste.</td></tr>
+<tr><td><b>46 Built-In Power Tools + Live MCP</b></td><td>Shared PTY/tmux terminals, live inter-agent <code>team_message</code>/<code>team_inbox</code>, <code>brain_semantic_search</code>, <code>heartbeat_configure</code>, surgical file patching &amp; checkpoints, Python/Node/Bash execution, zero-key web search, Playwright browser, vision inspection, cron, and live <b>HTTP/SSE + STDIO MCP</b>.</td></tr>
+<tr><td><b>Proactive Heartbeat Daemon + TUI + Telegram Control</b></td><td>24/7 <b>Proactive Autonomous Heartbeat</b> (<code>main-brain/HEARTBEAT.md</code> — silently logs <code>HEARTBEAT_OK</code> and alerts only on real findings), decoupled <b>Background Mission Queue</b>, interactive ANSI TUI (<code>pandawa live</code>), and remote <b>Telegram Approval</b> (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>).</td></tr>
 <tr><td><b>Built for Freedom (Approval Gate Only)</b></td><td>Zero hidden guardrails or command blocklists. Govern execution purely through your <b>Approval Gate</b> (<b>Auto / Approve Shell / Approve Sensitive / Approve All</b>) across Web Popup, Terminal TUI, and Telegram.</td></tr>
 <tr><td><b>Commercial Brain Kits (<code>.pandawa.json</code>)</b></td><td>Export any Team + Layered Brains + <code>soul.md</code>/skills + Canvas wiring into a clean portable kit (all API keys stripped) with an interactive <b>Preview Modal</b> before install.</td></tr>
 </table>
@@ -140,18 +140,18 @@ pandawa backup kit.json           # Export Team + Brains + Canvas into .pandawa.
 
 ---
 
-## Complete Tool Arsenal (44 Built-In Tools · 8 Toolpacks + Live MCP)
+## Complete Tool Arsenal (46 Built-In Tools · 8 Toolpacks + Live MCP)
 
 | Toolpack | Included Tools |
 | --- | --- |
 | **`terminal`** *(Shared PTY/tmux)* | `term_open`, `term_exec`, `term_send`, `term_read`, `term_list`, `term_close` |
-| **`brain`** *(Living Vault & FTS5)* | `brain_search`, `brain_list`, `brain_read`, `brain_write`, `remember_fact`, `learn_skill`, `session_search` |
+| **`brain`** *(Living Vault & Semantic)* | `brain_search`, `brain_semantic_search` (Vector+TF-IDF+Wikilink), `brain_list`, `brain_read`, `brain_write`, `remember_fact`, `learn_skill`, `session_search` |
 | **`team`** *(Live Peer Collaboration)* | `blackboard_post`, `blackboard_read`, `consult_teammate`, `team_todo_manage`, `team_message`, `team_inbox` |
 | **`workspace`** *(Engineering & Docs)* | `workspace_list`, `workspace_read`, `workspace_write`, `workspace_patch`, `workspace_grep`, `checkpoint_create`, `checkpoint_rollback`, `doc_read` (PDF/DOCX/XLSX), `vision_inspect` |
 | **`shell`** *(Exec & Processes)* | `shell_exec`, `code_execute` (Python/Node/Bash), `process_start`, `process_list`, `process_logs`, `process_kill` |
 | **`web`** *(Search & HTTP)* | `web_search` (zero-key DuckDuckGo + optional Tavily), `web_fetch`, `http_request` |
 | **`browser`** *(Playwright + Vision)* | `browser_open`, `browser_interact` (click/fill/press/eval), `browser_screenshot` (auto-attaches to Vision LLM), `browser_extract` |
-| **`automation`** *(24/7 Ops)* | `cron_create`, `cron_list`, `channel_notify` (Telegram / Discord / Webhook) |
+| **`automation`** *(24/7 Heartbeat & Ops)* | `heartbeat_configure`, `cron_create`, `cron_list`, `channel_notify` (Telegram / Discord / Webhook) |
 | **`mcp`** *(Dynamic)* | Live **HTTP/SSE** & **Local STDIO** MCP auto-discovery (`mcp__<server>__<tool>`) |
 
 ---

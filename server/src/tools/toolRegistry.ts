@@ -31,6 +31,8 @@ import {
   closeTerminal,
 } from "./terminalManager.js";
 import { runPythonWorker } from "./pythonWorker.js";
+import { semanticBrainSearch } from "../brains/semanticMemory.js";
+import { getHeartbeatConfig, updateHeartbeatConfig } from "../engine/heartbeatDaemon.js";
 import { dispatchChannelNotification } from "../channels/channelManager.js";
 
 const execAsync = promisify(exec);
@@ -300,6 +302,35 @@ const TOOLS: PandawaTool[] = [
           .all(`%${q}%`, limit);
         return JSON.stringify({ query: q, matches: rows }, null, 2);
       }
+    },
+  },
+  {
+    pack: "brain",
+    definition: {
+      name: "brain_semantic_search",
+      description:
+        "Hybrid semantic vector + TF-IDF + [[wikilink]] conceptual search across ALL Brain files, SKILL.md playbooks, episodic memories, and past sessions (finds related concepts even when exact keywords differ).",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Natural language question or concept to search semantically" },
+          scope: {
+            type: "string",
+            enum: ["all", "brain_file", "memory", "session"],
+            description: "Restrict search scope (default all)",
+          },
+          limit: { type: "number", description: "Max ranked matches (default 8)" },
+        },
+        required: ["query"],
+      },
+    },
+    execute: async (args) => {
+      const q = String(args.query || "").trim();
+      if (!q) return "Query cannot be empty.";
+      const scope = String(args.scope || "all") as "all" | "brain_file" | "memory" | "session";
+      const limit = Math.min(20, Math.max(1, Number(args.limit || 8)));
+      const res = await semanticBrainSearch(q, { scope, limit });
+      return JSON.stringify(res, null, 2);
     },
   },
 
@@ -1363,6 +1394,34 @@ const TOOLS: PandawaTool[] = [
       if (!target) return `Channel "${args.channel_name_or_id}" not found.`;
       const res = await dispatchChannelNotification(target.id, String(args.title), String(args.message));
       return JSON.stringify({ channel: target.name, ...res });
+    },
+  },
+  {
+    pack: "automation",
+    definition: {
+      name: "heartbeat_configure",
+      description:
+        "Inspect or update Pandawa's 24/7 Proactive Autonomous Heartbeat Daemon (enable/disable, change interval minutes, or update main-brain/HEARTBEAT.md watch checklist).",
+      parameters: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean" },
+          interval_minutes: { type: "number", description: "Minutes between autonomous pulses (5 to 1440)" },
+          checklist_markdown: { type: "string", description: "Optional full Markdown update for HEARTBEAT.md" },
+        },
+      },
+    },
+    execute: async (args) => {
+      const hasChange =
+        args.enabled !== undefined || args.interval_minutes !== undefined || args.checklist_markdown !== undefined;
+      const cfg = hasChange
+        ? updateHeartbeatConfig({
+            enabled: args.enabled !== undefined ? Boolean(args.enabled) : undefined,
+            intervalMinutes: args.interval_minutes !== undefined ? Number(args.interval_minutes) : undefined,
+            checklistMarkdown: args.checklist_markdown !== undefined ? String(args.checklist_markdown) : undefined,
+          })
+        : getHeartbeatConfig();
+      return JSON.stringify(cfg, null, 2);
     },
   },
 

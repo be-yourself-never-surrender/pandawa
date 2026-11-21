@@ -17,6 +17,8 @@ import {
   Eye,
   Code,
   PanelLeft,
+  Sparkles,
+  RefreshCw,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { BrainTreeNode, TopologyEdge, TopologyNode } from "../../types";
@@ -42,17 +44,24 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"fts" | "semantic">("semantic");
   const [searchResults, setSearchResults] = useState<Array<{ rel_path: string; title: string; snippet: string }>>([]);
+  const [semanticResults, setSemanticResults] = useState<
+    Array<{ sourceType: string; path: string; title: string; score: number; excerpt: string }>
+  >([]);
+  const [semanticInfo, setSemanticInfo] = useState<{ totalChunks: number; mode: string } | null>(null);
+  const [reindexing, setReindexing] = useState(false);
   const [linkGraph, setLinkGraph] = useState<
     Record<string, { outgoing: string[]; backlinks: string[] }>
   >({});
 
   const loadTree = useCallback(async () => {
-    const [res, gRes] = await Promise.all([
+    const [res, gRes, sRes] = await Promise.all([
       apiFetch<{ tree: BrainTreeNode[] }>("/api/files/tree"),
       apiFetch<{ files: Array<{ path: string; outgoing: string[]; backlinks: string[] }> }>("/api/files/graph").catch(
         () => ({ files: [] })
       ),
+      apiFetch<{ totalChunks?: number; mode?: string }>("/api/brain/semantic/status").catch(() => null),
     ]);
     setTree(res.tree);
     const map: Record<string, { outgoing: string[]; backlinks: string[] }> = {};
@@ -60,6 +69,9 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
       map[f.path] = { outgoing: f.outgoing || [], backlinks: f.backlinks || [] };
     }
     setLinkGraph(map);
+    if (sRes) {
+      setSemanticInfo({ totalChunks: sRes.totalChunks || 0, mode: sRes.mode || "local-semantic" });
+    }
   }, []);
 
   const openFile = useCallback(async (relPath: string) => {
@@ -203,16 +215,39 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
     onPinnedToCanvas();
   }
 
-  async function runSearch(q: string) {
+  async function runSearch(q: string, modeOverride?: "fts" | "semantic") {
     setSearchQuery(q);
+    const activeMode = modeOverride || searchMode;
     if (!q.trim()) {
       setSearchResults([]);
+      setSemanticResults([]);
       return;
     }
-    const res = await apiFetch<{ results: Array<{ rel_path: string; title: string; snippet: string }> }>(
-      `/api/files/search?q=${encodeURIComponent(q)}`
-    );
-    setSearchResults(res.results);
+    if (activeMode === "semantic") {
+      const res = await apiFetch<{
+        results?: Array<{ sourceType: string; path: string; title: string; score: number; excerpt: string }>;
+      }>(`/api/brain/semantic/search?q=${encodeURIComponent(q)}&limit=12`);
+      setSemanticResults(res.results || []);
+    } else {
+      const res = await apiFetch<{ results: Array<{ rel_path: string; title: string; snippet: string }> }>(
+        `/api/files/search?q=${encodeURIComponent(q)}`
+      );
+      setSearchResults(res.results);
+    }
+  }
+
+  async function triggerReindex() {
+    setReindexing(true);
+    try {
+      const res = await apiFetch<{ totalChunks?: number; documents?: number }>("/api/brain/semantic/reindex", {
+        method: "POST",
+      });
+      await loadTree();
+      setNotice(`Semantic indexed ${res.totalChunks || 0} chunks`);
+      setTimeout(() => setNotice(""), 2500);
+    } finally {
+      setReindexing(false);
+    }
   }
 
   function renderTree(nodes: BrainTreeNode[], depth = 0) {
@@ -381,9 +416,48 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               <input
                 value={searchQuery}
                 onChange={(e) => runSearch(e.target.value)}
-                placeholder="FTS5 search Brain files..."
+                placeholder={searchMode === "semantic" ? "Semantic vector search..." : "FTS5 exact keyword search..."}
                 className="w-full bg-[#080a0f] border border-slate-800 focus:border-amber-500 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-200 outline-none"
               />
+            </div>
+
+            <div className="flex items-center justify-between gap-1 text-[10px]">
+              <div className="flex rounded-lg bg-[#080a0f] border border-slate-800 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchMode("semantic");
+                    if (searchQuery.trim()) runSearch(searchQuery, "semantic");
+                  }}
+                  className={`px-2 py-0.5 rounded flex items-center gap-1 cursor-pointer ${
+                    searchMode === "semantic" ? "bg-violet-500/25 text-violet-300 font-semibold" : "text-slate-400"
+                  }`}
+                >
+                  <Sparkles className="w-2.5 h-2.5" /> Semantic
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchMode("fts");
+                    if (searchQuery.trim()) runSearch(searchQuery, "fts");
+                  }}
+                  className={`px-2 py-0.5 rounded cursor-pointer ${
+                    searchMode === "fts" ? "bg-amber-500/20 text-amber-300 font-semibold" : "text-slate-400"
+                  }`}
+                >
+                  FTS5
+                </button>
+              </div>
+              <button
+                type="button"
+                disabled={reindexing}
+                onClick={triggerReindex}
+                title={`Reindex semantic vector memory (${semanticInfo?.mode || "hybrid"})`}
+                className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-2.5 h-2.5 ${reindexing ? "animate-spin" : ""}`} />
+                {semanticInfo ? `${semanticInfo.totalChunks}v` : "Index"}
+              </button>
             </div>
 
             <div className="text-[10px] text-slate-500 truncate">
@@ -399,21 +473,51 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
             {searchQuery.trim() ? (
               <div className="space-y-1.5 p-1">
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 px-1">
-                  Search Results ({searchResults.length})
-                </div>
-                {searchResults.map((r) => (
-                  <button
-                    key={r.rel_path}
-                    onClick={() => openFile(r.rel_path)}
-                    className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-slate-800 cursor-pointer"
-                  >
-                    <div className="text-xs font-mono text-amber-300 truncate">{r.rel_path}</div>
-                    <div className="text-[11px] text-slate-400 line-clamp-2 mt-0.5">{r.snippet}</div>
-                  </button>
-                ))}
-                {searchResults.length === 0 && (
-                  <div className="text-xs text-slate-500 p-2">No matches found.</div>
+                {searchMode === "semantic" ? (
+                  <>
+                    <div className="text-[10px] uppercase tracking-wider text-violet-400 px-1">
+                      Semantic Matches ({semanticResults.length})
+                    </div>
+                    {semanticResults.map((r) => (
+                      <button
+                        key={`${r.sourceType}_${r.path}`}
+                        onClick={() => {
+                          if (r.sourceType === "brain_file") openFile(r.path);
+                        }}
+                        className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-violet-500/25 cursor-pointer space-y-0.5"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] font-mono text-violet-300 truncate">{r.path}</span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200 shrink-0">
+                            {r.sourceType === "brain_file" ? `${r.score}` : r.sourceType}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 line-clamp-2">{r.excerpt}</div>
+                      </button>
+                    ))}
+                    {semanticResults.length === 0 && (
+                      <div className="text-xs text-slate-500 p-2">No semantic matches found.</div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500 px-1">
+                      FTS5 Results ({searchResults.length})
+                    </div>
+                    {searchResults.map((r) => (
+                      <button
+                        key={r.rel_path}
+                        onClick={() => openFile(r.rel_path)}
+                        className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-slate-800 cursor-pointer"
+                      >
+                        <div className="text-xs font-mono text-amber-300 truncate">{r.rel_path}</div>
+                        <div className="text-[11px] text-slate-400 line-clamp-2 mt-0.5">{r.snippet}</div>
+                      </button>
+                    ))}
+                    {searchResults.length === 0 && (
+                      <div className="text-xs text-slate-500 p-2">No matches found.</div>
+                    )}
+                  </>
                 )}
               </div>
             ) : (

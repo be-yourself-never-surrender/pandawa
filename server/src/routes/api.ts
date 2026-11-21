@@ -1136,7 +1136,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({ ok: true });
   });
 
-  router.get("/mcp", (_req: Request, res: Response) => {
+  const handleListMcp = (_req: Request, res: Response) => {
     const db = getDb();
     const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
     res.json({
@@ -1146,9 +1146,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         enabled: Boolean(r.enabled),
       })),
     });
-  });
+  };
 
-  router.post("/mcp", (req: Request, res: Response) => {
+  const handleCreateMcp = (req: Request, res: Response) => {
     const db = getDb();
     const id = generateId("mcp");
     db.prepare(
@@ -1162,9 +1162,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       JSON.stringify(req.body?.headers || {})
     );
     res.json({ id });
-  });
+  };
 
-  router.post("/mcp/:id/discover", async (req: Request, res: Response) => {
+  const handleDiscoverMcp = async (req: Request, res: Response) => {
     try {
       const db = getDb();
       const srv = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(String(req.params.id)) as unknown as
@@ -1179,13 +1179,23 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     } catch (err) {
       res.status(400).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
-  });
+  };
 
-  router.delete("/mcp/:id", (req: Request, res: Response) => {
+  const handleDeleteMcp = (req: Request, res: Response) => {
     const db = getDb();
     db.prepare("DELETE FROM mcp_servers WHERE id = ?").run(String(req.params.id));
     res.json({ ok: true });
-  });
+  };
+
+  router.get("/connectors", handleListMcp);
+  router.post("/connectors", handleCreateMcp);
+  router.post("/connectors/:id/discover", handleDiscoverMcp);
+  router.delete("/connectors/:id", handleDeleteMcp);
+
+  router.get("/mcp", handleListMcp);
+  router.post("/mcp", handleCreateMcp);
+  router.post("/mcp/:id/discover", handleDiscoverMcp);
+  router.delete("/mcp/:id", handleDeleteMcp);
 
   // ========================
   // USER-CONTROLLED APPROVAL GATE (No Hidden Guardrails)

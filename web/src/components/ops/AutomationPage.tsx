@@ -71,7 +71,7 @@ export const AutomationPage: React.FC = () => {
     const [jRes, cRes, mRes, tRes] = await Promise.all([
       apiFetch<{ jobs: CronJob[] }>("/api/cron"),
       apiFetch<{ channels: ChannelItem[] }>("/api/channels"),
-      apiFetch<{ servers: McpItem[] }>("/api/mcp"),
+      apiFetch<{ servers: McpItem[] }>("/api/connectors"),
       apiFetch<{ teams: TeamItem[] }>("/api/teams"),
     ]);
     setJobs(jRes.jobs);
@@ -134,7 +134,7 @@ export const AutomationPage: React.FC = () => {
   async function addMcp(e: React.FormEvent) {
     e.preventDefault();
     if (!mcpName.trim() || !mcpUrl.trim()) return;
-    await apiFetch("/api/mcp", {
+    await apiFetch("/api/connectors", {
       method: "POST",
       body: JSON.stringify({ name: mcpName.trim(), transport: mcpTransport, urlOrCmd: mcpUrl.trim() }),
     });
@@ -395,7 +395,7 @@ export const AutomationPage: React.FC = () => {
                           setMcpDiscovered((p) => ({ ...p, [m.id]: { loading: true } }));
                           try {
                             const r = await apiFetch<{ ok: boolean; tools: DiscoveredToolItem[] }>(
-                              `/api/mcp/${m.id}/discover`,
+                              `/api/connectors/${m.id}/discover`,
                               { method: "POST" }
                             );
                             setMcpDiscovered((p) => ({ ...p, [m.id]: { tools: r.tools } }));
@@ -412,7 +412,7 @@ export const AutomationPage: React.FC = () => {
                       </button>
                       <button
                         onClick={async () => {
-                          await apiFetch(`/api/mcp/${m.id}`, { method: "DELETE" });
+                          await apiFetch(`/api/connectors/${m.id}`, { method: "DELETE" });
                           await load();
                         }}
                         className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"

@@ -49,10 +49,11 @@ if [ -w /usr/local/bin ]; then
 fi
 
 echo ""
-echo "  ✅ Pandawa OS v6.0 installed successfully!"
+echo "  ✅ Pandawa OS v7.0 installed successfully!"
 echo ""
 echo "  Start Web Studio : cd $INSTALL_DIR && PANDAWA_PORT=$PORT npm start"
-echo "  Open Browser     : http://localhost:$PORT (default password: 11111111)"
+echo "  Open Browser     : http://127.0.0.1:$PORT (initial random password printed on first boot & saved in data/.initial_password)"
+echo "  Remote VPS Bind  : PANDAWA_HOST=0.0.0.0 PANDAWA_PORT=$PORT npm start (recommended behind Caddy HTTPS)"
 echo "  Live Terminal OS : pandawa live | pandawa term list | pandawa doctor"
 echo "  Optional Python  : bash $INSTALL_DIR/runtime/python_worker/setup.sh (Playwright + PDF/DOCX/XLSX)"
 echo ""

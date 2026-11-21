@@ -2,6 +2,8 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 
+export const PANDAWA_VERSION = "7.0.0";
+
 export const ROOT_DIR = process.env.PANDAWA_ROOT || process.cwd();
 export const DATA_DIR = process.env.PANDAWA_DATA_DIR || path.join(ROOT_DIR, "data");
 export const BRAINS_DIR = path.join(DATA_DIR, "brains");
@@ -12,8 +14,10 @@ export const WEB_DIST_DIR = path.join(ROOT_DIR, "web", "dist");
 export const PYTHON_WORKER_DIR = path.join(ROOT_DIR, "runtime", "python_worker");
 
 export const PORT = Number(process.env.PANDAWA_PORT || 7777);
-export const HOST = process.env.PANDAWA_HOST || "0.0.0.0";
-export const DEFAULT_PASSWORD = process.env.PANDAWA_DEFAULT_PASSWORD || "11111111";
+// Secure default: bind loopback unless explicitly overridden (Docker / systemd VPS sets PANDAWA_HOST=0.0.0.0)
+export const HOST = process.env.PANDAWA_HOST || "127.0.0.1";
+// If unset on fresh install, authService generates a strong unique random initial password
+export const DEFAULT_PASSWORD = process.env.PANDAWA_DEFAULT_PASSWORD || "";
 
 export function ensureDirectories(): void {
   fs.mkdirSync(DATA_DIR, { recursive: true });

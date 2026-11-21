@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  PANDAWA_VERSION,
   PORT,
   HOST,
   WEB_DIST_DIR,
@@ -14,7 +15,7 @@ import {
   ensureDirectories,
 } from "./config.js";
 import { seedInitialData } from "./db/seed.js";
-import { verifyToken } from "./auth/authService.js";
+import { consumeWsTicket } from "./auth/authService.js";
 import { createApiRouter } from "./routes/api.js";
 import { startCronScheduler, stopCronScheduler } from "./scheduler/cronEngine.js";
 import { startHeartbeatDaemon, stopHeartbeatDaemon } from "./engine/heartbeatDaemon.js";
@@ -27,8 +28,51 @@ import { reindexSemanticBrain } from "./brains/semanticMemory.js";
 ensureDirectories();
 seedInitialData();
 
+const extraAllowedOrigins = new Set(
+  String(process.env.PANDAWA_CORS_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+function isOriginAllowed(origin: string | undefined, hostHeader: string | undefined): boolean {
+  // Requests with no Origin (same-origin navigation, curl, CLI, mobile apps) are allowed
+  if (!origin) return true;
+  if (extraAllowedOrigins.has("*") || extraAllowedOrigins.has(origin)) return true;
+  // Allow Vite dev server during local development
+  if (origin === "http://localhost:5173" || origin === "http://127.0.0.1:5173") return true;
+  try {
+    const parsed = new URL(origin);
+    if (hostHeader && parsed.host.toLowerCase() === hostHeader.toLowerCase()) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 const app = express();
-app.use(cors());
+
+// Strict Same-Origin + Allowlist CORS (prevents malicious websites from probing localhost:7777)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const host = req.headers.host;
+  if (!origin) {
+    next();
+    return;
+  }
+  if (isOriginAllowed(origin, host)) {
+    cors({ origin, credentials: false })(req, res, next);
+    return;
+  }
+  if (req.method === "OPTIONS") {
+    res.status(403).end();
+    return;
+  }
+  res.status(403).json({ error: `CORS origin denied: ${origin}` });
+});
+
 app.use(express.json({ limit: "50mb" }));
 
 const server = http.createServer(app);
@@ -41,7 +85,7 @@ const clients = new Set<WebSocket>();
 
 wss.on("connection", (ws) => {
   clients.add(ws);
-  ws.send(JSON.stringify({ type: "connected", timestamp: new Date().toISOString() }));
+  ws.send(JSON.stringify({ type: "connected", version: PANDAWA_VERSION, timestamp: new Date().toISOString() }));
   ws.on("close", () => clients.delete(ws));
   ws.on("error", () => clients.delete(ws));
 });
@@ -130,9 +174,16 @@ termWss.on("connection", (ws, req) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
+  const origin = req.headers.origin;
+  if (!isOriginAllowed(origin, req.headers.host)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const token = url.searchParams.get("token") || "";
-  if (!verifyToken(token).valid) {
+  const ticket = url.searchParams.get("ticket") || "";
+  if (!consumeWsTicket(ticket).valid) {
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
@@ -161,7 +212,7 @@ function broadcast(event: Record<string, unknown>): void {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pandawa", version: "6.5.0" });
+  res.json({ ok: true, service: "pandawa", version: PANDAWA_VERSION });
 });
 
 setTerminalBroadcast(broadcast);
@@ -178,13 +229,12 @@ if (fs.existsSync(WEB_DIST_DIR)) {
 startCronScheduler(broadcast);
 startHeartbeatDaemon(broadcast);
 syncTelegramPollers(broadcast);
-// Warm semantic brain index asynchronously on startup
 setTimeout(() => {
   reindexSemanticBrain().catch(() => {});
 }, 2500);
 
 server.listen(PORT, HOST, () => {
-  console.log(`[Pandawa OS v6.5] Living Agentic OS running at http://${HOST}:${PORT}`);
+  console.log(`[Pandawa OS v${PANDAWA_VERSION}] Living Agentic OS running at http://${HOST}:${PORT}`);
 });
 
 function shutdown(): void {
@@ -193,7 +243,25 @@ function shutdown(): void {
   stopAllTelegramPollers();
   killAllManagedProcesses();
   shutdownAllStdioMcp();
+  for (const ws of clients) {
+    try {
+      ws.terminate();
+    } catch {
+      // ignore
+    }
+  }
+  for (const ws of termWss.clients) {
+    try {
+      ws.terminate();
+    } catch {
+      // ignore
+    }
+  }
   server.close(() => process.exit(0));
+  if (typeof server.closeAllConnections === "function") {
+    server.closeAllConnections();
+  }
+  setTimeout(() => process.exit(0), 2000).unref();
 }
 
 process.on("SIGINT", shutdown);

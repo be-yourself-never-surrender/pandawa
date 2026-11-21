@@ -1,15 +1,20 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Router, type Request, type Response } from "express";
-import { generateId } from "../config.js";
-import { getDb, logAudit } from "../db/database.js";
+import { PANDAWA_VERSION, generateId } from "../config.js";
+import { getDb, getSetting, setSetting, logAudit } from "../db/database.js";
 import {
   verifyPassword,
   changePassword,
   issueToken,
+  issueWsTicket,
   requireAuth,
   isUsingDefaultPassword,
+  checkLoginRateLimit,
+  recordLoginFailure,
+  clearLoginFailures,
 } from "../auth/authService.js";
 import {
   listBrainTree,
@@ -37,6 +42,7 @@ import { listAllToolPacks } from "../tools/toolRegistry.js";
 import { executeCronJob } from "../scheduler/cronEngine.js";
 import {
   dispatchChannelNotification,
+  decryptChannelConfig,
   syncTelegramPollers,
   getTelegramPollerStatuses,
 } from "../channels/channelManager.js";
@@ -121,18 +127,53 @@ function maskProvider(p: ProviderRecord) {
   };
 }
 
+const CHANNEL_SECRET_KEYS = new Set(["botToken", "webhookUrl", "secret"]);
+const webhookHits = new Map<string, { count: number; windowStart: number }>();
+
+function maskSecretValue(val: string): string {
+  const plain = decryptSecret(val || "");
+  if (!plain) return "";
+  if (plain.length > 8) return `${plain.slice(0, 4)}••••${plain.slice(-4)}`;
+  return "••••••";
+}
+
+function safeEqualStrings(a: string, b: string): boolean {
+  const ba = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
 export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void): Router {
   const router = Router();
 
   // ========================
-  // AUTH (Public Login)
+  // AUTH (Public Login with Per-IP Rate Limit + Lockout)
   // ========================
   router.post("/auth/login", (req: Request, res: Response) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const rl = checkLoginRateLimit(ip);
+    if (!rl.allowed) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      res.status(429).json({
+        error: `Too many failed login attempts. Try again in ${rl.retryAfterSec}s.`,
+        retryAfterSec: rl.retryAfterSec,
+      });
+      return;
+    }
+
     const password = String(req.body?.password || "");
     if (!verifyPassword(password)) {
+      const fail = recordLoginFailure(ip);
+      if (fail.locked) {
+        res.setHeader("Retry-After", String(fail.retryAfterSec));
+      }
+      logAudit("anon", "auth.login_failed", ip, `Login rejected (locked=${fail.locked})`);
       res.status(401).json({ error: "Invalid password" });
       return;
     }
+
+    clearLoginFailures(ip);
     const token = issueToken("admin");
     logAudit("admin", "auth.login", "session", "Logged in to Pandawa");
     res.json({
@@ -141,9 +182,22 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     });
   });
 
-  // Public inbound webhook endpoint (validated by channel secret)
+  // Public inbound webhook endpoint (MANDATORY secret validated via constant-time compare + rate limit)
   router.post("/webhooks/:channelId", async (req: Request, res: Response) => {
     try {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const now = Date.now();
+      const wh = webhookHits.get(ip);
+      if (wh && now - wh.windowStart < 60_000) {
+        if (wh.count >= 30) {
+          res.status(429).json({ error: "Webhook rate limit exceeded (30/min)" });
+          return;
+        }
+        wh.count += 1;
+      } else {
+        webhookHits.set(ip, { count: 1, windowStart: now });
+      }
+
       const db = getDb();
       const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND enabled = 1").get(String(req.params.channelId)) as
         | { id: string; name: string; config_json: string; target_type: string; target_id: string }
@@ -152,8 +206,14 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         res.status(404).json({ error: "Channel not found or disabled" });
         return;
       }
-      const cfg = JSON.parse(ch.config_json || "{}") as { secret?: string };
-      if (cfg.secret && req.headers["x-pandawa-secret"] !== cfg.secret) {
+      const cfg = decryptChannelConfig(ch.config_json);
+      const expectedSecret = (cfg.secret || "").trim();
+      const providedSecret = String(req.headers["x-pandawa-secret"] || "");
+      if (!expectedSecret) {
+        res.status(403).json({ error: "Webhook channel has no secret configured; refusing unauthenticated trigger." });
+        return;
+      }
+      if (!providedSecret || !safeEqualStrings(providedSecret, expectedSecret)) {
         res.status(403).json({ error: "Invalid webhook secret" });
         return;
       }
@@ -182,8 +242,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     }
   });
 
-  // All routes below require valid auth token
+  // All routes below require valid Authorization: Bearer <token> header
   router.use(requireAuth);
+
+  // Single-use short-lived WebSocket ticket (30s) so JWT never appears in WebSocket URLs
+  router.post("/auth/ws-ticket", (_req: Request, res: Response) => {
+    res.json(issueWsTicket("admin"));
+  });
 
   router.get("/auth/me", (_req: Request, res: Response) => {
     res.json({
@@ -1486,31 +1551,61 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const rows = db.prepare("SELECT * FROM channels ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
     const pollers = getTelegramPollerStatuses();
     res.json({
-      channels: rows.map((r) => ({
-        ...r,
-        config: JSON.parse(String(r.config_json || "{}")),
-        enabled: Boolean(r.enabled),
-        poller: pollers.find((p) => p.channelId === String(r.id)) || null,
-      })),
+      channels: rows.map((r) => {
+        const rawCfg = JSON.parse(String(r.config_json || "{}")) as Record<string, string>;
+        const maskedCfg: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rawCfg)) {
+          maskedCfg[k] = CHANNEL_SECRET_KEYS.has(k) ? maskSecretValue(v) : v;
+        }
+        return {
+          id: r.id,
+          name: r.name,
+          type: r.type,
+          target_type: r.target_type,
+          target_id: r.target_id,
+          created_at: r.created_at,
+          config: maskedCfg,
+          enabled: Boolean(r.enabled),
+          poller: pollers.find((p) => p.channelId === String(r.id)) || null,
+        };
+      }),
     });
   });
 
   router.post("/channels", (req: Request, res: Response) => {
     const db = getDb();
     const id = generateId("ch");
+    const type = String(req.body?.type || "webhook");
+    const incomingCfg = (req.body?.config && typeof req.body.config === "object"
+      ? req.body.config
+      : {}) as Record<string, unknown>;
+    const encryptedCfg: Record<string, string> = {};
+    let generatedWebhookSecret = "";
+
+    for (const [k, v] of Object.entries(incomingCfg)) {
+      const sv = String(v ?? "").trim();
+      encryptedCfg[k] = CHANNEL_SECRET_KEYS.has(k) && sv ? encryptSecret(sv) : sv;
+    }
+
+    // Ensure every webhook channel ALWAYS has a strong secret (auto-generated if omitted)
+    if (type === "webhook" && !encryptedCfg.secret) {
+      generatedWebhookSecret = crypto.randomBytes(24).toString("hex");
+      encryptedCfg.secret = encryptSecret(generatedWebhookSecret);
+    }
+
     db.prepare(
       `INSERT INTO channels (id, name, type, config_json, target_type, target_id, enabled)
        VALUES (?, ?, ?, ?, ?, ?, 1)`
     ).run(
       id,
       String(req.body?.name || "New Channel"),
-      String(req.body?.type || "webhook"),
-      JSON.stringify(req.body?.config || {}),
+      type,
+      JSON.stringify(encryptedCfg),
       String(req.body?.targetType || "team"),
       String(req.body?.targetId || "team_pandawa")
     );
     syncTelegramPollers(broadcast);
-    res.json({ id });
+    res.json({ id, ...(generatedWebhookSecret ? { webhookSecret: generatedWebhookSecret } : {}) });
   });
 
   router.post("/channels/:id/test", async (req: Request, res: Response) => {
@@ -1533,17 +1628,36 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const db = getDb();
     const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
     res.json({
-      servers: rows.map((r) => ({
-        ...r,
-        headers: JSON.parse(String(r.headers_json || "{}")),
-        enabled: Boolean(r.enabled),
-      })),
+      servers: rows.map((r) => {
+        const rawHdrs = JSON.parse(String(r.headers_json || "{}")) as Record<string, string>;
+        const maskedHdrs: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rawHdrs)) {
+          maskedHdrs[k] = maskSecretValue(v);
+        }
+        return {
+          id: r.id,
+          name: r.name,
+          transport: r.transport,
+          url_or_cmd: r.url_or_cmd,
+          created_at: r.created_at,
+          headers: maskedHdrs,
+          enabled: Boolean(r.enabled),
+        };
+      }),
     });
   };
 
   const handleCreateMcp = (req: Request, res: Response) => {
     const db = getDb();
     const id = generateId("mcp");
+    const rawHdrs = (req.body?.headers && typeof req.body.headers === "object"
+      ? req.body.headers
+      : {}) as Record<string, unknown>;
+    const encHdrs: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rawHdrs)) {
+      const sv = String(v ?? "").trim();
+      encHdrs[k] = sv ? encryptSecret(sv) : "";
+    }
     db.prepare(
       `INSERT INTO mcp_servers (id, name, transport, url_or_cmd, headers_json, enabled)
        VALUES (?, ?, ?, ?, ?, 1)`
@@ -1552,7 +1666,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       String(req.body?.name || "MCP Server"),
       String(req.body?.transport || "http"),
       String(req.body?.urlOrCmd || ""),
-      JSON.stringify(req.body?.headers || {})
+      JSON.stringify(encHdrs)
     );
     res.json({ id });
   };
@@ -2135,6 +2249,34 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   });
 
   // ========================
+  // RUNTIME POLICIES (Token Budget Cap & Optional Private-IP SSRF Policy)
+  // ========================
+  router.get("/system/policies", (_req: Request, res: Response) => {
+    const rawBudget = getSetting("max_tokens_per_mission");
+    res.json({
+      maxTokensPerMission: rawBudget !== null ? Number(rawBudget) : 250_000,
+      ssrfBlockPrivate: getSetting("ssrf_block_private") === "1",
+    });
+  });
+
+  router.put("/system/policies", (req: Request, res: Response) => {
+    if (req.body?.maxTokensPerMission !== undefined) {
+      const v = Math.max(0, Math.round(Number(req.body.maxTokensPerMission) || 0));
+      setSetting("max_tokens_per_mission", String(v));
+    }
+    if (req.body?.ssrfBlockPrivate !== undefined) {
+      setSetting("ssrf_block_private", req.body.ssrfBlockPrivate ? "1" : "0");
+    }
+    const rawBudget = getSetting("max_tokens_per_mission");
+    logAudit("admin", "system.policies_update", "policies", `budget=${rawBudget}, ssrfPrivate=${getSetting("ssrf_block_private")}`);
+    res.json({
+      ok: true,
+      maxTokensPerMission: rawBudget !== null ? Number(rawBudget) : 250_000,
+      ssrfBlockPrivate: getSetting("ssrf_block_private") === "1",
+    });
+  });
+
+  // ========================
   // HYBRID PYTHON / TMUX / PLAYWRIGHT / SEMANTIC / HEARTBEAT STATUS
   // ========================
   router.get("/system/runtime", async (_req: Request, res: Response) => {
@@ -2144,7 +2286,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       getSemanticBrainStatus(),
     ]);
     res.json({
-      version: "6.5.0",
+      version: PANDAWA_VERSION,
       nodeVersion: process.version,
       pythonWorker: pyStatus,
       tmuxAvailable: termStatus.tmux,
@@ -2192,7 +2334,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "6.5.0",
+      version: PANDAWA_VERSION,
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),

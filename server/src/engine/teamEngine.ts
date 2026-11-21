@@ -1,9 +1,24 @@
-import { generateId } from "../config.js";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { WORKSPACE_DIR, generateId } from "../config.js";
 import { getDb } from "../db/database.js";
 import type { LLMImageAttachment, LLMMessage } from "../providers/llmClient.js";
 import { getTeamMembers, type AgentRecord } from "./contextCompiler.js";
 import { runAgentTurn, type AgentRunResult } from "./agentRunner.js";
+import { toolRequiresApproval, requestApproval } from "./approvalManager.js";
 import { clearSessionFileLocks } from "../tools/toolRegistry.js";
+
+const execAsync = promisify(exec);
+
+export interface VerificationCheckResult {
+  title: string;
+  command: string;
+  exitCode: number;
+  passed: boolean;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
 
 export interface TeamMissionResult {
   teamId: string;
@@ -13,6 +28,95 @@ export interface TeamMissionResult {
   synthesis: AgentRunResult;
   blackboardCount: number;
   verified?: boolean;
+  verificationChecks?: VerificationCheckResult[];
+}
+
+export async function runProgrammaticVerifyCommands(
+  tasks: Array<{ title: string; verifyCmd?: string }>,
+  options?: {
+    cwd?: string;
+    reviewerId?: string;
+    signal?: AbortSignal;
+    onEvent?: (ev: Record<string, unknown>) => void;
+    skipApproval?: boolean;
+  }
+): Promise<VerificationCheckResult[]> {
+  const results: VerificationCheckResult[] = [];
+  const cwd = options?.cwd || WORKSPACE_DIR;
+  const seen = new Set<string>();
+
+  for (const t of tasks) {
+    const cmd = (t.verifyCmd || "").trim();
+    if (!cmd || seen.has(cmd)) continue;
+    seen.add(cmd);
+
+    if (!options?.skipApproval && toolRequiresApproval("shell_exec")) {
+      const decision = await requestApproval({
+        agentId: options?.reviewerId || "verifier",
+        agentName: "Pandawa Programmatic Verifier",
+        toolName: "verify_cmd",
+        args: { task: t.title, command: cmd },
+        signal: options?.signal,
+        onEvent: options?.onEvent,
+      });
+      if (!decision.approved) {
+        results.push({
+          title: t.title,
+          command: cmd,
+          exitCode: -1,
+          passed: false,
+          stdout: "",
+          stderr: `Verification command rejected by user${decision.reason ? `: ${decision.reason}` : "."}`,
+          durationMs: 0,
+        });
+        continue;
+      }
+    }
+
+    const started = Date.now();
+    try {
+      const { stdout, stderr } = await execAsync(cmd, {
+        cwd,
+        timeout: 60_000,
+        maxBuffer: 2 * 1024 * 1024,
+      });
+      results.push({
+        title: t.title,
+        command: cmd,
+        exitCode: 0,
+        passed: true,
+        stdout: stdout.slice(0, 4000),
+        stderr: stderr.slice(0, 2000),
+        durationMs: Date.now() - started,
+      });
+    } catch (err: unknown) {
+      const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+      results.push({
+        title: t.title,
+        command: cmd,
+        exitCode: typeof e.code === "number" ? e.code : 1,
+        passed: false,
+        stdout: String(e.stdout || "").slice(0, 4000),
+        stderr: String(e.stderr || e.message || String(err)).slice(0, 2500),
+        durationMs: Date.now() - started,
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * Machine-enforced verification gate:
+ * If programmatic verify commands were run, ALL must exit 0 for verified=true
+ * (prevents false-positive VERDICT: PASS hallucinations from LLM reviewers).
+ */
+export function computeVerificationVerdict(checks: VerificationCheckResult[], reviewerText: string): boolean {
+  const reviewerRejected = /VERDICT:\s*NEEDS_FIX/i.test(reviewerText);
+  const reviewerPassed = /VERDICT:\s*PASS/i.test(reviewerText) && !reviewerRejected;
+  if (checks.length > 0) {
+    return checks.every((c) => c.passed) && !reviewerRejected;
+  }
+  return reviewerPassed;
 }
 
 interface TeamRow {
@@ -300,6 +404,7 @@ export async function runTeamMission(params: {
       const maxFixCycles = Math.max(1, Math.min(3, team.max_rounds || 2));
       let verified = false;
       let lastFeedback = "";
+      let lastChecks: VerificationCheckResult[] = [];
 
       for (let cycle = 1; cycle <= maxFixCycles; cycle++) {
         if (params.signal?.aborted) throw new Error("Mission stopped by user.");
@@ -394,12 +499,36 @@ export async function runTeamMission(params: {
 
         if (params.signal?.aborted) throw new Error("Mission stopped by user.");
 
-        // Phase 3: Real Verification Loop (Reviewer actually runs checks in terminal!)
+        // Phase 3: Programmatic Verification Runner + Reviewer Inspection
         params.onEvent?.({
           type: "team_phase",
           phase: "verification",
-          detail: `${reviewer.avatar} ${reviewer.name} running real verification & tests in shared terminal...`,
+          detail: `${reviewer.avatar} ${reviewer.name} running programmatic exit-code verification & QA checks...`,
         });
+
+        // 3A. Machine-enforced execution of all planned verifyCmd checks
+        const progChecks = await runProgrammaticVerifyCommands(
+          taskRecords.map((tr) => ({ title: tr.task.title, verifyCmd: tr.task.verifyCmd })),
+          {
+            reviewerId: reviewer.id,
+            signal: params.signal,
+            onEvent: params.onEvent,
+          }
+        );
+        lastChecks = progChecks;
+
+        const progReportText =
+          progChecks.length > 0
+            ? `## Programmatic Verification Runner (Machine Exit Codes)\n` +
+              progChecks
+                .map(
+                  (c) =>
+                    `- **${c.title}** | \`${c.command}\` → **${c.passed ? "PASS (exit 0)" : `FAIL (exit ${c.exitCode})`}** (${c.durationMs}ms)\n` +
+                    (c.stdout ? `  STDOUT: ${c.stdout.slice(0, 800)}\n` : "") +
+                    (c.stderr ? `  STDERR: ${c.stderr.slice(0, 800)}\n` : "")
+                )
+                .join("\n")
+            : "(No explicit verifyCmd provided by planner — run real build/test checks in terminal now.)";
 
         const buildDigest = execResults
           .map((r) => `### ${r.avatar} ${r.agentName} (${r.stepsUsed || 0} steps, ${r.toolTrace.length} tool calls)\n${r.content}`)
@@ -413,39 +542,43 @@ export async function runTeamMission(params: {
           prompt:
             `User Mission:\n${params.userPrompt}\n\n` +
             `Specialist Execution Reports (Cycle ${cycle}/${maxFixCycles}):\n${buildDigest}\n\n` +
+            `${progReportText}\n\n` +
             `PERFORM REAL VERIFICATION NOW:\n` +
-            `1. Check active terminals (\`term_list\` / \`term_read\`) and workspace files (\`workspace_list\` / \`workspace_read\`).\n` +
-            `2. Run actual build, syntax, unit test, or HTTP/curl checks in a persistent terminal (\`term_exec\`).\n` +
-            `3. Start your final conclusion line with EXACTLY \`VERDICT: PASS\` if everything genuinely works, OR \`VERDICT: NEEDS_FIX\` followed by the exact failing command/error and who should fix it.`,
+            `1. Review the programmatic exit-code results above and inspect active terminals/workspace if needed.\n` +
+            `2. Run any additional build/test/curl checks via \`term_exec\`.\n` +
+            `3. Start your final conclusion line with EXACTLY \`VERDICT: PASS\` ONLY if all checks genuinely pass, OR \`VERDICT: NEEDS_FIX\` followed by the exact failing command/error.`,
           extraSystemNote:
-            "You are the Verification Gate in Pandawa Execute & Verify Mode. Never rubber-stamp—run real commands to verify.",
+            "You are the Verification Gate in Pandawa Execute & Verify Mode. Machine exit codes are authoritative; never rubber-stamp failing builds.",
           onEvent: params.onEvent,
         });
 
         contributions.push(verifyRes);
+        const cyclePassed = computeVerificationVerdict(progChecks, verifyRes.content);
         saveMessage({
           sessionId: params.sessionId,
           role: "agent",
           agentId: verifyRes.agentId,
-          agentName: `${verifyRes.agentName} (Verify #${cycle})`,
+          agentName: `${verifyRes.agentName} (Verify #${cycle} · ${cyclePassed ? "PASS" : "NEEDS FIX"})`,
           modelUsed: verifyRes.model,
-          content: verifyRes.content,
+          content: progChecks.length > 0 ? `${progReportText}\n\n---\n\n${verifyRes.content}` : verifyRes.content,
           reasoning: verifyRes.reasoning,
           toolCalls: verifyRes.toolTrace,
           meta: {
             avatar: verifyRes.avatar,
             providerName: verifyRes.providerName,
             phase: "verification",
+            programmaticChecks: progChecks,
+            passed: cyclePassed,
             stepsUsed: verifyRes.stepsUsed,
             durationMs: verifyRes.durationMs,
           },
         });
 
-        if (/VERDICT:\s*PASS/i.test(verifyRes.content) && !/VERDICT:\s*NEEDS_FIX/i.test(verifyRes.content)) {
+        if (cyclePassed) {
           verified = true;
           break;
         }
-        lastFeedback = verifyRes.content.slice(0, 2800);
+        lastFeedback = `${progReportText}\n\nReviewer Critique:\n${verifyRes.content}`.slice(0, 3200);
       }
 
       // Phase 4: Final Synthesis Delivery
@@ -529,6 +662,7 @@ export async function runTeamMission(params: {
         synthesis,
         blackboardCount: bbCount,
         verified,
+        verificationChecks: lastChecks,
       };
     }
 

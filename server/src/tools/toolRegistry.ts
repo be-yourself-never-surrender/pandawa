@@ -31,6 +31,7 @@ import {
   closeTerminal,
 } from "./terminalManager.js";
 import { runPythonWorker } from "./pythonWorker.js";
+import { assertSafeOutboundUrl } from "./netGuard.js";
 import { semanticBrainSearch } from "../brains/semanticMemory.js";
 import { getHeartbeatConfig, updateHeartbeatConfig } from "../engine/heartbeatDaemon.js";
 import { dispatchChannelNotification } from "../channels/channelManager.js";
@@ -38,7 +39,8 @@ import { dispatchChannelNotification } from "../channels/channelManager.js";
 const execAsync = promisify(exec);
 const CHECKPOINTS_DIR = path.join(DATA_DIR, "checkpoints");
 
-// Lightweight advisory file ownership tracker per active mission session to prevent silent parallel overwrites
+// Enforced per-session workspace file lock (prevents parallel multi-agent lost updates)
+const FILE_LOCK_TTL_MS = 90_000;
 const workspaceFileLocks = new Map<string, { owner: string; updatedAt: number }>();
 
 export function clearSessionFileLocks(sessionId: string): void {
@@ -48,17 +50,37 @@ export function clearSessionFileLocks(sessionId: string): void {
   }
 }
 
-function checkOrClaimFileLock(sessionId: string | undefined, relPath: string, agentName: string): string | null {
-  if (!sessionId) return null;
+export function releaseAgentFileLocks(sessionId: string | undefined, agentName: string): void {
+  if (!sessionId) return;
+  const prefix = `${sessionId}::`;
+  for (const [key, val] of workspaceFileLocks.entries()) {
+    if (key.startsWith(prefix) && val.owner === agentName) {
+      workspaceFileLocks.delete(key);
+    }
+  }
+}
+
+export function acquireFileLock(
+  sessionId: string | undefined,
+  relPath: string,
+  agentName: string
+): { acquired: boolean; holder?: string } {
+  if (!sessionId) return { acquired: true };
   const key = `${sessionId}::${relPath.replace(/\\/g, "/").replace(/^\/+/, "")}`;
   const now = Date.now();
   const existing = workspaceFileLocks.get(key);
-  // Expire locks after 10 minutes
-  if (existing && existing.owner !== agentName && now - existing.updatedAt < 600_000) {
-    return existing.owner;
+  if (existing && existing.owner !== agentName && now - existing.updatedAt < FILE_LOCK_TTL_MS) {
+    return { acquired: false, holder: existing.owner };
   }
   workspaceFileLocks.set(key, { owner: agentName, updatedAt: now });
-  return null;
+  return { acquired: true };
+}
+
+function atomicWriteFileSync(fullPath: string, content: string): void {
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  const tmpPath = `${fullPath}.pdw_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.tmp`;
+  fs.writeFileSync(tmpPath, content, "utf8");
+  fs.renameSync(tmpPath, fullPath);
 }
 
 export interface ToolExecutionContext {
@@ -659,13 +681,12 @@ const TOOLS: PandawaTool[] = [
     execute: async (args, ctx) => {
       const rel = String(args.path || "");
       const full = resolveWorkspacePath(rel);
-      const otherOwner = checkOrClaimFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, String(args.content || ""), "utf8");
-      const warn = otherOwner
-        ? ` (Note: ${otherOwner} also edited this file recently — consider posting a team_message to coordinate.)`
-        : "";
-      return `Wrote workspace file ${args.path}.${warn}`;
+      const lock = acquireFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
+      if (!lock.acquired) {
+        return `LOCK_CONFLICT: File "${rel}" is currently actively locked by teammate "${lock.holder}". Do NOT overwrite their work—coordinate via team_message or wait for them to finish, then workspace_read before patching.`;
+      }
+      atomicWriteFileSync(full, String(args.content || ""));
+      return `Wrote workspace file ${args.path} atomically (lock held by ${ctx.runtime.agent.name}).`;
     },
   },
   {
@@ -688,7 +709,10 @@ const TOOLS: PandawaTool[] = [
       const rel = String(args.path || "");
       const full = resolveWorkspacePath(rel);
       if (!fs.existsSync(full)) return `File not found: ${args.path}`;
-      const otherOwner = checkOrClaimFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
+      const lock = acquireFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
+      if (!lock.acquired) {
+        return `LOCK_CONFLICT: File "${rel}" is currently actively locked by teammate "${lock.holder}". Coordinate via team_message and retry after their turn completes.`;
+      }
       const orig = fs.readFileSync(full, "utf8");
       const target = String(args.target || "");
       const replacement = String(args.replacement ?? "");
@@ -696,11 +720,8 @@ const TOOLS: PandawaTool[] = [
         return `Target text not found in ${args.path}. Read the file first to verify exact whitespace.`;
       }
       const next = args.replace_all ? orig.split(target).join(replacement) : orig.replace(target, replacement);
-      fs.writeFileSync(full, next, "utf8");
-      const warn = otherOwner
-        ? ` (Note: ${otherOwner} also edited this file recently — sync via team_message.)`
-        : "";
-      return `Patched ${args.path} successfully.${warn}`;
+      atomicWriteFileSync(full, next);
+      return `Patched ${args.path} atomically (lock held by ${ctx.runtime.agent.name}).`;
     },
   },
   {
@@ -1089,12 +1110,12 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//i.test(url)) return "Invalid URL: must start with http:// or https://";
+      await assertSafeOutboundUrl(url);
       const resp = await fetch(url, {
         method: String(args.method || "GET"),
         signal: ctx.signal || AbortSignal.timeout(20_000),
         headers: {
-          "User-Agent": "Pandawa-Agentic-Team/4.0",
+          "User-Agent": "Pandawa-Agentic-OS/7.0",
           ...(args.body ? { "Content-Type": "application/json" } : {}),
         },
         body: args.body ? String(args.body) : undefined,
@@ -1122,7 +1143,7 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
+      await assertSafeOutboundUrl(url);
       const headers = (args.headers && typeof args.headers === "object" ? args.headers : {}) as Record<string, string>;
       const resp = await fetch(url, {
         method: String(args.method || "GET"),
@@ -1165,6 +1186,7 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
+      await assertSafeOutboundUrl(url);
       const wantShot = Boolean(args.screenshot);
       const shotRel = wantShot ? `screenshots/open_${Date.now()}.png` : "";
       const shotFull = wantShot ? resolveWorkspacePath(shotRel) : "";
@@ -1203,6 +1225,7 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
+      await assertSafeOutboundUrl(url);
       const actions = Array.isArray(args.actions) ? args.actions : [];
       const wantShot = args.screenshot !== false;
       const shotRel = wantShot ? `screenshots/act_${Date.now()}.png` : "";
@@ -1233,9 +1256,9 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
+      await assertSafeOutboundUrl(url);
       const resp = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0 PandawaBrowser/6.0" },
+        headers: { "User-Agent": "Mozilla/5.0 PandawaBrowser/7.0" },
         signal: ctx.signal || AbortSignal.timeout(20_000),
       });
       const html = await resp.text();
@@ -1283,7 +1306,7 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
+      await assertSafeOutboundUrl(url);
       const outRel = String(args.output_path || `screenshots/shot_${Date.now()}.png`);
       const outFull = resolveWorkspacePath(outRel);
       fs.mkdirSync(path.dirname(outFull), { recursive: true });

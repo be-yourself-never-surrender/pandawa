@@ -75,21 +75,40 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
   const [previewBundle, setPreviewBundle] = useState<PreviewBundleData | null>(null);
   const [installingBundle, setInstallingBundle] = useState<boolean>(false);
   const [analytics, setAnalytics] = useState<AnalyticsData>({ byAgent: [], byModel: [] });
+  const [maxTokensCap, setMaxTokensCap] = useState<number>(250000);
+  const [ssrfBlockPrivate, setSsrfBlockPrivate] = useState<boolean>(false);
+  const [policyNotice, setPolicyNotice] = useState<string>("");
 
   const load = useCallback(async () => {
-    const [st, au, tm, an] = await Promise.all([
+    const [st, au, tm, an, pol] = await Promise.all([
       apiFetch<SystemStatus>("/api/system/status"),
       apiFetch<{ logs: AuditItem[] }>("/api/system/audit"),
       apiFetch<{ teams: TeamItem[] }>("/api/teams"),
       apiFetch<AnalyticsData>("/api/system/analytics"),
+      apiFetch<{ maxTokensPerMission: number; ssrfBlockPrivate: boolean }>("/api/system/policies").catch(() => null),
     ]);
     setStatus(st);
     if (st.approvalMode) setApprovalMode(st.approvalMode);
     setAudits(au.logs);
     setTeams(tm.teams);
     setAnalytics(an);
+    if (pol) {
+      setMaxTokensCap(pol.maxTokensPerMission);
+      setSsrfBlockPrivate(pol.ssrfBlockPrivate);
+    }
     if (tm.teams.length > 0 && !exportTeamId) setExportTeamId(tm.teams[0].id);
   }, [exportTeamId]);
+
+  async function savePolicies(nextBudget: number, nextSsrf: boolean) {
+    setMaxTokensCap(nextBudget);
+    setSsrfBlockPrivate(nextSsrf);
+    await apiFetch("/api/system/policies", {
+      method: "PUT",
+      body: JSON.stringify({ maxTokensPerMission: nextBudget, ssrfBlockPrivate: nextSsrf }),
+    });
+    setPolicyNotice("Runtime policies saved!");
+    setTimeout(() => setPolicyNotice(""), 2400);
+  }
 
   async function handleExportBundle() {
     const q = exportTeamId ? `?teamId=${encodeURIComponent(exportTeamId)}&includeMainBrain=true` : "?includeMainBrain=true";
@@ -247,8 +266,8 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
         <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5">
           {[
             { id: "auto", title: "Auto (Full Freedom)", desc: "Run all tools & shell immediately with zero popups" },
-            { id: "approve_shell", title: "Approve Shell Only", desc: "Ask approval before shell_exec; all other tools auto" },
-            { id: "approve_sensitive", title: "Approve Sensitive", desc: "Ask approval for shell, file writes & MCP calls" },
+            { id: "approve_shell", title: "Approve Shell Only", desc: "Ask approval before shell/PTY/code execution; other tools auto" },
+            { id: "approve_sensitive", title: "Approve Sensitive", desc: "Ask approval for shell, file writes, HTTP/browser & MCP calls" },
             { id: "approve_all", title: "Approve All Tools", desc: "Ask approval before every single tool execution" },
           ].map((opt) => (
             <button
@@ -266,8 +285,34 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
             </button>
           ))}
         </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/80 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400">Token Budget Cap / Turn (0 = unlimited):</span>
+            <input
+              type="number"
+              min={0}
+              step={25000}
+              value={maxTokensCap}
+              onChange={(e) => setMaxTokensCap(Math.max(0, Number(e.target.value)))}
+              onBlur={() => savePolicies(maxTokensCap, ssrfBlockPrivate)}
+              className="w-28 bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 font-mono text-white"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => savePolicies(maxTokensCap, !ssrfBlockPrivate)}
+            className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+              ssrfBlockPrivate
+                ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                : "bg-slate-800/80 border-slate-700 text-slate-300"
+            }`}
+          >
+            SSRF Private-LAN Block: {ssrfBlockPrivate ? "STRICT ON" : "DEV MODE (Cloud Metadata Always Blocked)"}
+          </button>
+          {policyNotice && <span className="text-emerald-400 text-[11px]">{policyNotice}</span>}
+        </div>
         <div className="text-[11px] text-emerald-400/90 flex items-center gap-1.5 pt-1">
-          <CheckCircle2 className="w-3.5 h-3.5" /> Provider API keys are encrypted at rest with AES-256-GCM vault protection.
+          <CheckCircle2 className="w-3.5 h-3.5" /> Provider API keys, Telegram tokens, Webhook secrets &amp; MCP headers are encrypted at rest (AES-256-GCM).
         </div>
       </div>
 

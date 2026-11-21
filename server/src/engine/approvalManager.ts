@@ -29,6 +29,11 @@ const SENSITIVE_TOOLS = new Set([
   "workspace_write",
   "workspace_patch",
   "brain_write",
+  "http_request",
+  "web_fetch",
+  "browser_open",
+  "browser_interact",
+  "channel_notify",
 ]);
 
 const pendingMap = new Map<string, InternalApproval>();

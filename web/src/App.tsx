@@ -84,55 +84,66 @@ export const App: React.FC = () => {
         .catch(() => {});
     }
 
-    function connectWs() {
+    async function connectWs() {
       if (disposed) return;
-      ws = createRealtimeSocket((ev) => {
-        const evType = String(ev.type || "");
-        if (evType !== "agent_token") {
-          setLiveEvents((prev) => [...prev.slice(-30), ev]);
-        }
+      try {
+        ws = await createRealtimeSocket((ev) => {
+          const evType = String(ev.type || "");
+          if (evType !== "agent_token") {
+            setLiveEvents((prev) => [...prev.slice(-30), ev]);
+          }
 
-        if (evType === "agent_start" && typeof ev.agentId === "string") {
-          const aid = ev.agentId;
-          setActiveAgentIds((prev) => new Set([...prev, aid]));
-        } else if (evType === "agent_done" && typeof ev.agentId === "string") {
-          const aid = ev.agentId;
-          setActiveAgentIds((prev) => {
-            const next = new Set(prev);
-            next.delete(aid);
-            return next;
-          });
-        } else if (evType === "mission_aborted") {
-          setActiveAgentIds(new Set());
-          setStreamingBuffers({});
-        } else if (evType === "agent_token" && typeof ev.agentId === "string") {
-          const aid = ev.agentId;
-          const delta = String(ev.delta || "");
-          setStreamingBuffers((prev) => {
-            const existing = prev[aid] || {
-              agentId: aid,
-              agentName: String(ev.agentName || aid),
-              avatar: String(ev.avatar || "⚡"),
-              model: String(ev.model || ""),
-              text: "",
-            };
-            return {
-              ...prev,
-              [aid]: { ...existing, text: existing.text + delta },
-            };
-          });
-        } else if (evType === "approval_required" && ev.approval) {
-          const item = ev.approval as PendingApprovalItem;
-          setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
-        } else if (evType === "approval_resolved" && typeof ev.id === "string") {
-          setPendingApprovals((prev) => prev.filter((x) => x.id !== ev.id));
-          if (typeof ev.mode === "string") setApprovalMode(ev.mode);
-        } else if (evType === "approval_mode_changed" && typeof ev.mode === "string") {
-          setApprovalMode(ev.mode);
+          if (evType === "agent_start" && typeof ev.agentId === "string") {
+            const aid = ev.agentId;
+            setActiveAgentIds((prev) => new Set([...prev, aid]));
+          } else if (evType === "agent_done" && typeof ev.agentId === "string") {
+            const aid = ev.agentId;
+            setActiveAgentIds((prev) => {
+              const next = new Set(prev);
+              next.delete(aid);
+              return next;
+            });
+          } else if (evType === "mission_aborted") {
+            setActiveAgentIds(new Set());
+            setStreamingBuffers({});
+          } else if (evType === "agent_token" && typeof ev.agentId === "string") {
+            const aid = ev.agentId;
+            const delta = String(ev.delta || "");
+            setStreamingBuffers((prev) => {
+              const existing = prev[aid] || {
+                agentId: aid,
+                agentName: String(ev.agentName || aid),
+                avatar: String(ev.avatar || "⚡"),
+                model: String(ev.model || ""),
+                text: "",
+              };
+              return {
+                ...prev,
+                [aid]: { ...existing, text: existing.text + delta },
+              };
+            });
+          } else if (evType === "approval_required" && ev.approval) {
+            const item = ev.approval as PendingApprovalItem;
+            setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
+          } else if (evType === "approval_resolved" && typeof ev.id === "string") {
+            setPendingApprovals((prev) => prev.filter((x) => x.id !== ev.id));
+            if (typeof ev.mode === "string") setApprovalMode(ev.mode);
+          } else if (evType === "approval_mode_changed" && typeof ev.mode === "string") {
+            setApprovalMode(ev.mode);
+          }
+        });
+      } catch {
+        if (!disposed) {
+          const delay = Math.min(8000, 1000 * Math.pow(2, attempt++));
+          retryTimer = window.setTimeout(connectWs, delay);
         }
-      });
+        return;
+      }
 
-      if (!ws) return;
+      if (!ws || disposed) {
+        ws?.close();
+        return;
+      }
       ws.onopen = () => {
         attempt = 0;
         setWsConnected(true);
@@ -161,7 +172,7 @@ export const App: React.FC = () => {
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-[#080a0f] flex items-center justify-center text-sm text-slate-400">
-        Loading Pandawa OS v6.0...
+        Loading Pandawa OS v7.0...
       </div>
     );
   }

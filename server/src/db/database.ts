@@ -1,7 +1,19 @@
+import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { DB_PATH, ensureDirectories } from "../config.js";
 
 let _db: DatabaseSync | null = null;
+
+function tightenDbPermissions(): void {
+  if (process.platform === "win32") return;
+  for (const p of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+    try {
+      if (fs.existsSync(p)) fs.chmodSync(p, 0o600);
+    } catch {
+      // ignore chmod errors on restricted filesystems
+    }
+  }
+}
 
 export function getDb(): DatabaseSync {
   if (_db) return _db;
@@ -10,6 +22,7 @@ export function getDb(): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   initSchema(db);
+  tightenDbPermissions();
   _db = db;
   return db;
 }

@@ -1,5 +1,5 @@
 import { generateId } from "../config.js";
-import { getDb } from "../db/database.js";
+import { getDb, getSetting } from "../db/database.js";
 import { decryptSecret } from "../auth/cryptoVault.js";
 import {
   callLLM,
@@ -8,7 +8,7 @@ import {
   type ProviderRecord,
 } from "../providers/llmClient.js";
 import { compileAgentRuntime, type CompiledAgentRuntime } from "./contextCompiler.js";
-import { getToolsForPacks, executeTool } from "../tools/toolRegistry.js";
+import { getToolsForPacks, executeTool, releaseAgentFileLocks } from "../tools/toolRegistry.js";
 import { getAllLiveMcpTools } from "../mcp/mcpClient.js";
 
 export interface AgentRunResult {
@@ -308,6 +308,8 @@ export async function runAgentTurn(params: {
 
   const configuredMax = Number(runtime.agent.max_iterations || 35);
   const maxIter = Math.min(100, Math.max(1, params.maxIterations ?? configuredMax));
+  const rawBudget = getSetting("max_tokens_per_mission");
+  const tokenBudget = rawBudget !== null ? Number(rawBudget) : 250_000; // 0 = unlimited
   const toolTrace: Array<{ name: string; args: Record<string, unknown>; result: string }> = [];
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
@@ -319,6 +321,12 @@ export async function runAgentTurn(params: {
     for (let step = 0; step < maxIter; step++) {
       if (params.signal?.aborted) {
         throw new Error("Mission stopped by user.");
+      }
+      if (tokenBudget > 0 && totalPromptTokens + totalCompletionTokens >= tokenBudget) {
+        finalContent =
+          (finalContent ? `${finalContent}\n\n` : "") +
+          `[Token budget cap reached: ${totalPromptTokens + totalCompletionTokens}/${tokenBudget} tokens. Increase or set max_tokens_per_mission=0 in Settings if needed.]`;
+        break;
       }
       stepsUsed = step + 1;
 
@@ -500,6 +508,7 @@ export async function runAgentTurn(params: {
       }
     }
   } finally {
+    releaseAgentFileLocks(params.sessionId, runtime.agent.name);
     params.onEvent?.({
       type: "agent_done",
       agentId: runtime.agent.id,

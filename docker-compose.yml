@@ -4,11 +4,14 @@ services:
     container_name: pandawa
     restart: unless-stopped
     ports:
-      - "${PANDAWA_PORT:-7777}:7777"
+      # Bound to localhost by default for safety; put Caddy/Nginx HTTPS in front for public access
+      - "${PANDAWA_BIND_IP:-127.0.0.1}:${PANDAWA_PORT:-7777}:7777"
     environment:
       - PANDAWA_PORT=7777
       - PANDAWA_HOST=0.0.0.0
-      - PANDAWA_DEFAULT_PASSWORD=${PANDAWA_DEFAULT_PASSWORD:-11111111}
+      # Leave empty to auto-generate a unique random password printed in `docker logs pandawa`
+      - PANDAWA_DEFAULT_PASSWORD=${PANDAWA_DEFAULT_PASSWORD:-}
+      - PANDAWA_CORS_ORIGINS=${PANDAWA_CORS_ORIGINS:-}
     volumes:
       - pandawa_data:/app/data
 

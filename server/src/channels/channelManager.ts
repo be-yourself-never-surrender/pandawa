@@ -1,5 +1,6 @@
 import { generateId } from "../config.js";
 import { getDb } from "../db/database.js";
+import { decryptSecret } from "../auth/cryptoVault.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
 import { runTeamMission } from "../engine/teamEngine.js";
 import {
@@ -33,6 +34,21 @@ interface PollerHandle {
 const pollers = new Map<string, PollerHandle>();
 let _broadcast: ((ev: Record<string, unknown>) => void) | undefined;
 
+const SECRET_CHANNEL_FIELDS = new Set(["botToken", "webhookUrl", "secret"]);
+
+export function decryptChannelConfig(configJson: string): Record<string, string> {
+  try {
+    const raw = JSON.parse(configJson || "{}") as Record<string, string>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      out[k] = SECRET_CHANNEL_FIELDS.has(k) ? decryptSecret(String(v || "")) : String(v || "");
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export async function dispatchChannelNotification(
   channelId: string,
   title: string,
@@ -42,12 +58,7 @@ export async function dispatchChannelNotification(
   const ch = db.prepare("SELECT * FROM channels WHERE id = ?").get(channelId) as ChannelRow | undefined;
   if (!ch) return { ok: false, detail: "Channel not found" };
 
-  let cfg: Record<string, string> = {};
-  try {
-    cfg = JSON.parse(ch.config_json || "{}") as Record<string, string>;
-  } catch {
-    cfg = {};
-  }
+  const cfg = decryptChannelConfig(ch.config_json);
 
   try {
     if (ch.type === "discord" && cfg.webhookUrl) {
@@ -250,7 +261,7 @@ export function syncTelegramPollers(broadcast?: (ev: Record<string, unknown>) =>
         .prepare("SELECT * FROM channels WHERE type = 'telegram' AND enabled = 1")
         .all() as unknown as ChannelRow[];
       for (const ch of tgChannels) {
-        const cfg = JSON.parse(ch.config_json || "{}") as Record<string, string>;
+        const cfg = decryptChannelConfig(ch.config_json);
         if (!cfg.botToken?.trim() || !cfg.chatId?.trim()) continue;
         const preview = JSON.stringify(record.args).slice(0, 320);
         const body =
@@ -285,12 +296,7 @@ export function syncTelegramPollers(broadcast?: (ev: Record<string, unknown>) =>
   // Start new enabled telegram pollers
   for (const ch of rows) {
     if (pollers.has(ch.id)) continue;
-    let cfg: Record<string, string> = {};
-    try {
-      cfg = JSON.parse(ch.config_json || "{}") as Record<string, string>;
-    } catch {
-      cfg = {};
-    }
+    const cfg = decryptChannelConfig(ch.config_json);
     if (!cfg.botToken?.trim()) continue;
 
     const handle: PollerHandle = {

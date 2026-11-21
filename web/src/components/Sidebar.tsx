@@ -156,7 +156,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
             {wsConnected ? "Realtime Live" : "Connecting..."}
           </span>
-          <span className="text-slate-600 font-mono">v6.5</span>
+          <span className="text-slate-600 font-mono">v7.0</span>
         </div>
 
         <button

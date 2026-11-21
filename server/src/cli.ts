@@ -4,7 +4,16 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
-import { PORT, HOST, DATA_DIR, BRAINS_DIR, WORKSPACE_DIR, ensureDirectories, generateId } from "./config.js";
+import {
+  PANDAWA_VERSION,
+  PORT,
+  HOST,
+  DATA_DIR,
+  BRAINS_DIR,
+  WORKSPACE_DIR,
+  ensureDirectories,
+  generateId,
+} from "./config.js";
 import { getDb } from "./db/database.js";
 import { seedInitialData } from "./db/seed.js";
 import { listSkills } from "./brains/brainFs.js";
@@ -44,7 +53,7 @@ const C = {
 
 function printHelp() {
   console.log(`
-${C.amber}${C.bold}⚡ Pandawa v6.0 — Living Agentic OS & Layered Brain CLI${C.reset}
+${C.amber}${C.bold}⚡ Pandawa OS v${PANDAWA_VERSION} — Living Agentic OS & Layered Brain CLI${C.reset}
 
 ${C.bold}Usage:${C.reset}
   pandawa start                      Start Pandawa Web Studio, API & Background Daemon (port ${PORT})
@@ -86,7 +95,7 @@ async function cmdStatus() {
   const jobs = listBackgroundJobs(20);
   const activeJobs = jobs.filter((j) => j.status === "running" || j.status === "queued").length;
 
-  console.log(`\n${C.amber}${C.bold}⚡ PANDAWA v6.0 — LIVING AGENTIC OS STATUS${C.reset}`);
+  console.log(`\n${C.amber}${C.bold}⚡ PANDAWA v${PANDAWA_VERSION} — LIVING AGENTIC OS STATUS${C.reset}`);
   console.log(`   Data Dir       : ${DATA_DIR}`);
   console.log(`   Approval Mode  : ${C.cyan}${getApprovalMode()}${C.reset}`);
   console.log(`   Brains (${brains.length})     : ${brains.map((b) => `[${b.layer}] ${b.name}`).join(", ")}`);
@@ -106,7 +115,7 @@ async function cmdStatus() {
 }
 
 async function cmdDoctor() {
-  console.log(`\n${C.cyan}${C.bold}🩺 PANDAWA v6.0 DOCTOR — Hybrid Runtime Diagnostics${C.reset}`);
+  console.log(`\n${C.cyan}${C.bold}🩺 PANDAWA v${PANDAWA_VERSION} DOCTOR — Hybrid Runtime Diagnostics${C.reset}`);
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   console.log(`   [${nodeMajor >= 22 ? "OK" : "WARN"}] Node.js ${process.version}`);
   try {
@@ -417,7 +426,7 @@ async function cmdLive(initialPrompt: string) {
     return;
   }
 
-  console.log(`\n${C.amber}${C.bold}⚡ Pandawa v6.0 — Live Interactive Terminal OS${C.reset}`);
+  console.log(`\n${C.amber}${C.bold}⚡ Pandawa v${PANDAWA_VERSION} — Live Interactive Terminal OS${C.reset}`);
   console.log(
     `${C.dim}   Target: ${targetType}:${targetId} | Approval: ${getApprovalMode()} | Type /mode execute for Plan→Build→Verify${C.reset}`
   );

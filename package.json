@@ -1,10 +1,13 @@
 {
   "name": "pandawa",
-  "version": "6.5.0",
-  "description": "Pandawa OS — Hybrid TypeScript + Python Living Agentic Team OS with Visual [[Wikilink]] Brains, Shared PTY/tmux Terminals, Execute & Verify Loops & Multi-AI Routing",
+  "version": "7.0.0",
+  "description": "Pandawa OS — Hardened Hybrid TypeScript + Python Living Agentic Team OS with Visual [[Wikilink]] Brains, xterm.js PTY Terminals, Programmatic Execute & Verify & Multi-AI Routing",
   "private": false,
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "bin": {
     "pandawa": "dist/server/cli.js"
   },
@@ -14,6 +17,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "npm --prefix web run build",
     "build": "npm run build:server && npm run build:web",
+    "test": "node --test server/tests/*.test.mjs",
     "start": "node dist/server/index.js"
   },
   "dependencies": {

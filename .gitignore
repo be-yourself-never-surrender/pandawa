@@ -3,6 +3,9 @@ web/node_modules/
 dist/
 web/dist/
 data/
+runtime/python_worker/.venv/
+__pycache__/
+*.pyc
 .env
 *.log
 *.db

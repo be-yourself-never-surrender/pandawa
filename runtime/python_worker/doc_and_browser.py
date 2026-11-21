@@ -6,9 +6,11 @@ full Python ecosystem power (PDF/DOCX/XLSX parsing + interactive Playwright brow
 """
 import json
 import os
+import socket
 import sys
 import tempfile
 import traceback
+import urllib.parse
 import zipfile
 
 TEXT_EXTS = {
@@ -106,10 +108,37 @@ def action_doc_read(payload: dict) -> dict:
         return {"ok": False, "error": f"Failed reading {ext}: {ex}"}
 
 
+BLOCKED_META_HOSTS = {"metadata.google.internal", "metadata.goog", "metadata.azure.com", "instance-data"}
+BLOCKED_META_IPS = {"169.254.169.254", "169.254.170.2", "100.100.100.200", "fd00:ec2::254"}
+
+
+def is_metadata_url(url: str) -> str | None:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return "Empty hostname"
+        if host in BLOCKED_META_HOSTS or host in BLOCKED_META_IPS:
+            return f"Blocked cloud metadata host: {host}"
+        try:
+            for info in socket.getaddrinfo(host, None):
+                ip = info[4][0].lower().replace("::ffff:", "")
+                if ip in BLOCKED_META_IPS:
+                    return f"Blocked cloud metadata IP: {ip}"
+        except Exception:
+            pass
+    except Exception:
+        return "Invalid URL"
+    return None
+
+
 def action_browser_run(payload: dict) -> dict:
     url = str(payload.get("url", "")).strip()
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL must start with http:// or https://"}
+    meta_err = is_metadata_url(url)
+    if meta_err:
+        return {"ok": False, "error": meta_err}
 
     actions = payload.get("actions") or []
     wait_ms = max(200, min(15000, int(payload.get("waitMs", 1200))))

@@ -155,7 +155,7 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         <div className="pointer-events-none absolute -top-20 -right-20 w-72 h-72 rounded-full bg-amber-500/10 blur-3xl" />
         <div className="space-y-1.5 relative z-10 max-w-2xl">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/35 text-[11px] font-semibold text-amber-300">
-            <Sparkles className="w-3 h-3" /> Pandawa Living OS v{status?.version || "6.0.0"}
+            <Sparkles className="w-3 h-3" /> Pandawa Living OS v{status?.version || "7.0.0"}
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">
             Command Center — Living Agentic OS &amp; Brain HQ

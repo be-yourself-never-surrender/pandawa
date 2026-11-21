@@ -40,11 +40,19 @@ export async function apiFetch<T = unknown>(
   return json as T;
 }
 
-export function createRealtimeSocket(onMessage: (ev: Record<string, unknown>) => void): WebSocket | null {
+export async function requestWsTicket(): Promise<string> {
+  const res = await apiFetch<{ ticket: string }>("/api/auth/ws-ticket", { method: "POST" });
+  return res.ticket;
+}
+
+export async function createRealtimeSocket(
+  onMessage: (ev: Record<string, unknown>) => void
+): Promise<WebSocket | null> {
   const token = getStoredToken();
   if (!token) return null;
+  const ticket = await requestWsTicket();
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
+  const ws = new WebSocket(`${proto}//${window.location.host}/ws?ticket=${encodeURIComponent(ticket)}`);
   ws.onmessage = (e) => {
     try {
       const parsed = JSON.parse(e.data) as Record<string, unknown>;

@@ -18,7 +18,7 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
-import { apiFetch, getStoredToken } from "../../api/client";
+import { apiFetch, requestWsTicket } from "../../api/client";
 
 interface TerminalSession {
   name: string;
@@ -166,48 +166,61 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
     term.focus();
     xtermRef.current = term;
 
-    const token = getStoredToken() || "";
+    let disposed = false;
+    let ws: WebSocket | null = null;
+    let dataDisp: { dispose: () => void } | null = null;
+
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const cols = term.cols || 120;
     const rows = term.rows || 32;
-    const wsUrl = `${proto}://${window.location.host}/ws/terminal?token=${encodeURIComponent(token)}&name=${encodeURIComponent(activeName)}&cols=${cols}&rows=${rows}`;
 
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    requestWsTicket()
+      .then((ticket) => {
+        if (disposed) return;
+        const wsUrl = `${proto}://${window.location.host}/ws/terminal?ticket=${encodeURIComponent(ticket)}&name=${encodeURIComponent(activeName)}&cols=${cols}&rows=${rows}`;
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-    ws.onopen = () => {
-      setPtyConnected(true);
-      try {
-        fitAddon.fit();
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-      } catch {
-        // ignore
-      }
-    };
+        ws.onopen = () => {
+          if (disposed) return;
+          setPtyConnected(true);
+          try {
+            fitAddon.fit();
+            ws?.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          } catch {
+            // ignore
+          }
+        };
 
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data)) as { type?: string; b64?: string; message?: string };
-        if (msg.type === "data" && msg.b64) {
-          term.write(base64ToUint8(msg.b64));
-        } else if (msg.type === "error" && msg.message) {
-          term.writeln(`\r\n\x1b[31m[PTY Error] ${msg.message}\x1b[0m`);
-        } else if (msg.type === "exit") {
-          setPtyConnected(false);
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(String(ev.data)) as { type?: string; b64?: string; message?: string };
+            if (msg.type === "data" && msg.b64) {
+              term.write(base64ToUint8(msg.b64));
+            } else if (msg.type === "error" && msg.message) {
+              term.writeln(`\r\n\x1b[31m[PTY Error] ${msg.message}\x1b[0m`);
+            } else if (msg.type === "exit") {
+              setPtyConnected(false);
+            }
+          } catch {
+            // ignore malformed packet
+          }
+        };
+
+        ws.onclose = () => setPtyConnected(false);
+        ws.onerror = () => setPtyConnected(false);
+
+        dataDisp = term.onData((data) => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data }));
+          }
+        });
+      })
+      .catch((err) => {
+        if (!disposed) {
+          term.writeln(`\r\n\x1b[31m[PTY Auth Error] ${err instanceof Error ? err.message : String(err)}\x1b[0m`);
         }
-      } catch {
-        // ignore malformed packet
-      }
-    };
-
-    ws.onclose = () => setPtyConnected(false);
-    ws.onerror = () => setPtyConnected(false);
-
-    const dataDisp = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "input", data }));
-      }
-    });
+      });
 
     let resizeRaf = 0;
     const resizeObs = new ResizeObserver(() => {
@@ -215,7 +228,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
       resizeRaf = window.requestAnimationFrame(() => {
         try {
           fitAddon.fit();
-          if (ws.readyState === WebSocket.OPEN) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
           }
         } catch {
@@ -226,10 +239,11 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
     resizeObs.observe(container);
 
     return () => {
+      disposed = true;
       if (resizeRaf) window.cancelAnimationFrame(resizeRaf);
       resizeObs.disconnect();
-      dataDisp.dispose();
-      ws.close();
+      dataDisp?.dispose();
+      ws?.close();
       wsRef.current = null;
       term.dispose();
       xtermRef.current = null;

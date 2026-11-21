@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import { getDb } from "../db/database.js";
+import { decryptSecret } from "../auth/cryptoVault.js";
 import type { LLMToolDefinition } from "../providers/llmClient.js";
 
 export interface McpServerRow {
@@ -30,7 +31,12 @@ function slugify(s: string): string {
 function parseHeaders(json: string): Record<string, string> {
   try {
     const obj = JSON.parse(json || "{}");
-    return obj && typeof obj === "object" ? (obj as Record<string, string>) : {};
+    if (!obj || typeof obj !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      out[k] = decryptSecret(String(v ?? ""));
+    }
+    return out;
   } catch {
     return {};
   }

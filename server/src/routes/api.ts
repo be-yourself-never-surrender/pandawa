@@ -30,6 +30,12 @@ import {
   reindexAllBrainFiles,
 } from "../brains/brainFs.js";
 import {
+  previewSkillInstall,
+  installSkillsFromSource,
+  uninstallSkill,
+  type UploadedSkillFileInput,
+} from "../skills/skillInstaller.js";
+import {
   testProviderConnection,
   type ProviderRecord,
   type LLMMessage,
@@ -1429,6 +1435,78 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       writeBrainFile(relPath, md);
       logAudit("admin", "skill.create", relPath);
       res.json({ ok: true, path: relPath });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Skill Installer: Preview & Security Scan (GitHub repo/folder, raw SKILL.md URL, .zip URL, or uploaded files)
+  router.post("/skills/preview", async (req: Request, res: Response) => {
+    try {
+      const source = typeof req.body?.source === "string" ? req.body.source.trim() : "";
+      const files = Array.isArray(req.body?.files) ? (req.body.files as UploadedSkillFileInput[]) : undefined;
+      const brainFolder = typeof req.body?.brainFolder === "string" ? req.body.brainFolder.trim() : "main-brain";
+      if (!source && (!files || files.length === 0)) {
+        res.status(400).json({ error: "Provide a skill source (GitHub repo/URL) or upload skill files/.zip." });
+        return;
+      }
+      const result = await previewSkillInstall({
+        source: source || undefined,
+        files,
+        brainFolder,
+        allowLocalPath: false, // Strictly disallow server-local paths over HTTP
+      });
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Skill Installer: Commit selected skills into target Brain vault + provenance metadata + FTS5/semantic reindex
+  router.post("/skills/install", async (req: Request, res: Response) => {
+    try {
+      const source = typeof req.body?.source === "string" ? req.body.source.trim() : "";
+      const files = Array.isArray(req.body?.files) ? (req.body.files as UploadedSkillFileInput[]) : undefined;
+      const brainFolder = typeof req.body?.brainFolder === "string" ? req.body.brainFolder.trim() : "main-brain";
+      const selectedSlugs = Array.isArray(req.body?.selectedSlugs)
+        ? (req.body.selectedSlugs as unknown[]).map((s) => String(s))
+        : undefined;
+      const overwrite = Boolean(req.body?.overwrite);
+      if (!source && (!files || files.length === 0)) {
+        res.status(400).json({ error: "Provide a skill source (GitHub repo/URL) or upload skill files/.zip." });
+        return;
+      }
+      const result = await installSkillsFromSource({
+        source: source || undefined,
+        files,
+        brainFolder,
+        selectedSlugs,
+        overwrite,
+        allowLocalPath: false,
+      });
+      logAudit(
+        "admin",
+        "skill.install",
+        result.source,
+        `installed=${result.installed.map((s) => s.slug).join(",") || "none"} brain=${result.brainFolder}`
+      );
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Uninstall a single skill directory/file (guarded to only allow paths under */skills/<slug>)
+  router.delete("/skills", (req: Request, res: Response) => {
+    try {
+      const target = String(req.query.dirPath || req.query.path || req.body?.dirPath || req.body?.path || "").trim();
+      if (!target) {
+        res.status(400).json({ error: "Skill dirPath or path is required." });
+        return;
+      }
+      const out = uninstallSkill(target);
+      logAudit("admin", "skill.uninstall", out.deleted);
+      res.json({ ok: true, ...out });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }

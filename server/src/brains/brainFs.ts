@@ -285,45 +285,152 @@ export function searchBrainFiles(query: string, limit = 12): Array<{ rel_path: s
   }
 }
 
-export function listSkills(): Array<{
+export interface SkillEntryInfo {
+  slug: string;
   path: string;
+  dirPath: string;
   name: string;
   brainFolder: string;
   description: string;
   content: string;
-}> {
-  const results: Array<{
-    path: string;
-    name: string;
-    brainFolder: string;
-    description: string;
-    content: string;
-  }> = [];
+  fileCount: number;
+  source?: string;
+  installedAt?: string;
+  riskLevel?: "clean" | "review" | "caution";
+}
+
+function parseSkillMeta(content: string, fallbackSlug: string): { name: string; description: string } {
+  let name = "";
+  let description = "";
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (fmMatch) {
+    const fm = fmMatch[1];
+    const n = fm.match(/^name:\s*(.+)$/m);
+    if (n) name = n[1].trim().replace(/^["']|["']$/g, "");
+    const dInline = fm.match(/^description:\s*([^|>\r\n].*)$/m);
+    if (dInline) {
+      description = dInline[1].trim().replace(/^["']|["']$/g, "");
+    } else {
+      const dBlock = fm.match(/^description:\s*[|>]-?\r?\n((?:[ \t]+.+\r?\n?)+)/m);
+      if (dBlock) {
+        description = dBlock[1]
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join(" ");
+      }
+    }
+  }
+  if (!name) {
+    const h1 = content.match(/^#\s+(.+)$/m);
+    name = h1 ? h1[1].trim() : fallbackSlug;
+  }
+  if (!description) {
+    const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+    description = body.replace(/^#.*$/gm, "").trim().slice(0, 180);
+  }
+  return { name, description };
+}
+
+function countNonHiddenFiles(dirFull: string): number {
+  let count = 0;
+  function walkCount(d: string): void {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walkCount(full);
+      else count += 1;
+    }
+  }
+  try {
+    walkCount(dirFull);
+  } catch {
+    // ignore
+  }
+  return Math.max(1, count);
+}
+
+export function listSkills(): SkillEntryInfo[] {
+  const results: SkillEntryInfo[] = [];
 
   function walk(dirFull: string, relPrefix: string): void {
     if (!fs.existsSync(dirFull)) return;
-    for (const entry of fs.readdirSync(dirFull, { withFileTypes: true })) {
+    const entries = fs.readdirSync(dirFull, { withFileTypes: true });
+
+    // If this folder itself contains SKILL.md, treat the whole folder as ONE skill package
+    // (don't list nested references/*.md or examples/*.md as duplicate skills)
+    const skillFile = entries.find((e) => !e.isDirectory() && e.name.toLowerCase() === "skill.md");
+    if (skillFile && relPrefix) {
+      const full = path.join(dirFull, skillFile.name);
+      const rel = `${relPrefix}/${skillFile.name}`;
+      const slug = path.basename(relPrefix);
+      const content = fs.readFileSync(full, "utf8");
+      const { name, description } = parseSkillMeta(content, slug);
+      const brainFolder = rel.includes("/skills/") ? rel.split("/skills/")[0] : rel.split("/")[0] || "main-brain";
+
+      let source: string | undefined;
+      let installedAt: string | undefined;
+      let riskLevel: "clean" | "review" | "caution" | undefined;
+      const metaPath = path.join(dirFull, ".pandawa-skill.json");
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, "utf8")) as {
+            source?: string;
+            installedAt?: string;
+            riskLevel?: "clean" | "review" | "caution";
+          };
+          source = meta.source;
+          installedAt = meta.installedAt;
+          riskLevel = meta.riskLevel;
+        } catch {
+          // ignore malformed metadata
+        }
+      }
+
+      results.push({
+        slug,
+        path: rel,
+        dirPath: relPrefix,
+        name,
+        brainFolder,
+        description,
+        content,
+        fileCount: countNonHiddenFiles(dirFull),
+        source,
+        installedAt,
+        riskLevel,
+      });
+      return;
+    }
+
+    for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       const full = path.join(dirFull, entry.name);
       const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(full, rel);
-      } else if (entry.name.toLowerCase() === "skill.md" || rel.includes("/skills/")) {
-        if (!entry.name.toLowerCase().endsWith(".md")) continue;
+      } else if (rel.includes("/skills/") && entry.name.toLowerCase().endsWith(".md")) {
+        // Legacy standalone skill markdown directly under <brain>/skills/<name>.md
+        const slug = entry.name.replace(/\.md$/i, "");
         const content = fs.readFileSync(full, "utf8");
-        const nameMatch = content.match(/^#\s+(.+)$/m) || content.match(/^name:\s*(.+)$/m);
-        const descMatch = content.match(/^description:\s*(.+)$/m);
-        const name = nameMatch ? nameMatch[1].trim() : path.basename(path.dirname(rel));
-        const description = descMatch
-          ? descMatch[1].trim()
-          : content.replace(/^#.*$/gm, "").trim().slice(0, 140);
-        const brainFolder = rel.split("/")[0] || "main-brain";
-        results.push({ path: rel, name, brainFolder, description, content });
+        const { name, description } = parseSkillMeta(content, slug);
+        const brainFolder = rel.split("/skills/")[0] || "main-brain";
+        results.push({
+          slug,
+          path: rel,
+          dirPath: rel,
+          name,
+          brainFolder,
+          description,
+          content,
+          fileCount: 1,
+        });
       }
     }
   }
 
   walk(BRAINS_DIR, "");
+  results.sort((a, b) => a.name.localeCompare(b.name));
   return results;
 }
 

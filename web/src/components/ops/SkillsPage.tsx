@@ -1,14 +1,72 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { BookOpen, Plus, Brain, Trash2, ExternalLink, Search } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  BookOpen,
+  Plus,
+  Brain,
+  Trash2,
+  ExternalLink,
+  Search,
+  Download,
+  Upload,
+  FolderUp,
+  FileArchive,
+  ShieldCheck,
+  ShieldAlert,
+  AlertTriangle,
+  CheckSquare,
+  Square,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
+  Github,
+  FileCode2,
+} from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { BrainItem } from "../../types";
 
 interface SkillEntry {
+  slug: string;
   path: string;
+  dirPath: string;
   name: string;
   brainFolder: string;
   description: string;
   content: string;
+  fileCount: number;
+  source?: string;
+  installedAt?: string;
+  riskLevel?: "clean" | "review" | "caution";
+}
+
+interface SkillFinding {
+  severity: "high" | "medium" | "info";
+  file: string;
+  line: number;
+  rule: string;
+  snippet: string;
+}
+
+interface SkillPreviewItem {
+  slug: string;
+  name: string;
+  description: string;
+  version?: string;
+  author?: string;
+  sourceSubpath: string;
+  fileCount: number;
+  totalBytes: number;
+  files: string[];
+  markdownPreview: string;
+  riskLevel: "clean" | "review" | "caution";
+  findings: SkillFinding[];
+  alreadyInstalled: boolean;
+  targetDir: string;
+}
+
+interface UploadedSkillPayload {
+  name: string;
+  content?: string;
+  base64?: string;
 }
 
 interface MemoryEntry {
@@ -21,16 +79,46 @@ interface MemoryEntry {
   created_at: string;
 }
 
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ onOpenFile }) => {
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [brains, setBrains] = useState<BrainItem[]>([]);
 
+  // Installer tabs: url | upload | manual
+  const [tab, setTab] = useState<"url" | "upload" | "manual">("url");
+  const [targetBrainFolder, setTargetBrainFolder] = useState("main-brain");
+
+  // GitHub / URL installer state
+  const [sourceInput, setSourceInput] = useState("");
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedSkillPayload[]>([]);
+  const [uploadSummary, setUploadSummary] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [overwrite, setOverwrite] = useState(false);
+  const [previewSource, setPreviewSource] = useState("");
+  const [previewSkills, setPreviewSkills] = useState<SkillPreviewItem[]>([]);
+  const [selectedSlugs, setSelectedSlugs] = useState<Record<string, boolean>>({});
+  const [expandedSlug, setExpandedSlug] = useState<string>("");
+  const [installerNotice, setInstallerNotice] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Manual create state
   const [skillTitle, setSkillTitle] = useState("");
   const [skillDesc, setSkillDesc] = useState("");
   const [skillBody, setSkillBody] = useState("");
-  const [skillBrainFolder, setSkillBrainFolder] = useState("main-brain");
 
+  // Memory state
   const [memContent, setMemContent] = useState("");
   const [memBrainId, setMemBrainId] = useState("brain_main");
   const [memCategory, setMemCategory] = useState("lesson");
@@ -51,6 +139,132 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
     load().catch(() => {});
   }, [load]);
 
+  function resetPreview() {
+    setPreviewSkills([]);
+    setPreviewSource("");
+    setSelectedSlugs({});
+    setExpandedSlug("");
+  }
+
+  async function runPreview(opts: { source?: string; files?: UploadedSkillPayload[] }) {
+    setInstallerNotice(null);
+    setScanning(true);
+    resetPreview();
+    try {
+      const res = await apiFetch<{
+        ok: boolean;
+        source: string;
+        brainFolder: string;
+        skills: SkillPreviewItem[];
+      }>("/api/skills/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          source: opts.source,
+          files: opts.files,
+          brainFolder: targetBrainFolder,
+        }),
+      });
+      setPreviewSource(res.source);
+      setPreviewSkills(res.skills);
+      const sel: Record<string, boolean> = {};
+      for (const s of res.skills) sel[s.slug] = true;
+      setSelectedSlugs(sel);
+      if (res.skills.length === 1) setExpandedSlug(res.skills[0].slug);
+    } catch (err) {
+      setInstallerNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function handleUrlPreview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!sourceInput.trim()) return;
+    setUploadedFiles([]);
+    setUploadSummary("");
+    await runPreview({ source: sourceInput.trim() });
+  }
+
+  async function handleFileSelection(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    setInstallerNotice(null);
+    const staged: UploadedSkillPayload[] = [];
+    for (const file of Array.from(fileList)) {
+      const relName = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+      if (relName.toLowerCase().endsWith(".zip")) {
+        const dataUrl = await readAsDataUrl(file);
+        staged.push({ name: relName, base64: dataUrl });
+      } else {
+        const text = await file.text();
+        staged.push({ name: relName, content: text });
+      }
+    }
+    setUploadedFiles(staged);
+    setUploadSummary(`${staged.length} file(s) selected`);
+    setSourceInput("");
+    await runPreview({ files: staged });
+  }
+
+  async function handleInstallSelected() {
+    const picked = previewSkills.filter((s) => selectedSlugs[s.slug]).map((s) => s.slug);
+    if (picked.length === 0) return;
+    setInstalling(true);
+    setInstallerNotice(null);
+    try {
+      const res = await apiFetch<{
+        ok: boolean;
+        source: string;
+        brainFolder: string;
+        installed: Array<{ slug: string; name: string; path: string; fileCount: number }>;
+        skipped: Array<{ slug: string; reason: string }>;
+      }>("/api/skills/install", {
+        method: "POST",
+        body: JSON.stringify({
+          source: uploadedFiles.length === 0 ? sourceInput.trim() : undefined,
+          files: uploadedFiles.length > 0 ? uploadedFiles : undefined,
+          brainFolder: targetBrainFolder,
+          selectedSlugs: picked,
+          overwrite,
+        }),
+      });
+      const installedCount = res.installed.length;
+      const skippedCount = res.skipped.length;
+      const msgParts: string[] = [];
+      if (installedCount > 0) {
+        msgParts.push(`Installed ${installedCount} skill(s): ${res.installed.map((s) => s.slug).join(", ")}`);
+      }
+      if (skippedCount > 0) {
+        msgParts.push(`Skipped ${skippedCount}: ${res.skipped.map((s) => `${s.slug} (${s.reason})`).join("; ")}`);
+      }
+      setInstallerNotice({
+        ok: installedCount > 0,
+        text: msgParts.join(" · ") || "No skills installed.",
+      });
+      if (installedCount > 0) {
+        resetPreview();
+        setSourceInput("");
+        setUploadedFiles([]);
+        setUploadSummary("");
+        await load(memSearch);
+      }
+    } catch (err) {
+      setInstallerNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function handleUninstallSkill(skill: SkillEntry) {
+    if (!window.confirm(`Uninstall skill "${skill.name}" (${skill.dirPath})?`)) return;
+    try {
+      await apiFetch(`/api/skills?dirPath=${encodeURIComponent(skill.dirPath)}`, { method: "DELETE" });
+      setInstallerNotice({ ok: true, text: `Uninstalled "${skill.name}" (${skill.dirPath}).` });
+      await load(memSearch);
+    } catch (err) {
+      setInstallerNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   async function addSkill(e: React.FormEvent) {
     e.preventDefault();
     if (!skillTitle.trim()) return;
@@ -62,13 +276,14 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
         title: skillTitle.trim(),
         description: skillDesc.trim(),
         instructions: skillBody.trim(),
-        brainFolder: skillBrainFolder,
+        brainFolder: targetBrainFolder,
       }),
     });
     setSkillTitle("");
     setSkillDesc("");
     setSkillBody("");
-    await load();
+    setInstallerNotice({ ok: true, text: `Created skill "${slug}" in ${targetBrainFolder}/skills/${slug}/SKILL.md.` });
+    await load(memSearch);
   }
 
   async function addMemory(e: React.FormEvent) {
@@ -84,79 +299,431 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
       }),
     });
     setMemContent("");
-    await load();
+    await load(memSearch);
+  }
+
+  const selectedCount = previewSkills.filter((s) => selectedSlugs[s.slug]).length;
+
+  function renderRiskBadge(level?: "clean" | "review" | "caution") {
+    if (level === "caution") {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/35">
+          <ShieldAlert className="w-3 h-3" /> CAUTION
+        </span>
+      );
+    }
+    if (level === "review") {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/35">
+          <AlertTriangle className="w-3 h-3" /> REVIEW
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35">
+        <ShieldCheck className="w-3 h-3" /> CLEAN
+      </span>
+    );
   }
 
   return (
     <div className="h-screen overflow-y-auto bg-[#080a0f] p-6 space-y-6">
       <div>
         <h1 className="text-xl font-bold text-white flex items-center gap-2">
-          <BookOpen className="w-5 h-5 text-amber-400" /> Self-Learning Skills & Episodic Memory
+          <BookOpen className="w-5 h-5 text-amber-400" /> Skill Installer, Playbooks &amp; Episodic Memory
         </h1>
         <p className="text-xs text-slate-400 mt-1">
-          Pandawa agents autonomously write reusable <code className="text-amber-300">SKILL.md</code> playbooks and save durable memories into Main Brain or Team Brains.
+          Install <code className="text-amber-300">SKILL.md</code> packages directly from <strong>GitHub repos</strong>,{" "}
+          <strong>raw URLs</strong>, <strong>.zip packs</strong>, or <strong>local folders</strong> with automatic security scanning before install — or let agents self-learn via <code className="text-amber-300">learn_skill</code>.
         </p>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Skills Column */}
+        {/* Skills & Skill Installer Column */}
         <div className="space-y-4">
-          <form onSubmit={addSkill} className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800 space-y-3 text-xs">
-            <div className="font-bold text-amber-300 uppercase tracking-wider">Create Reusable Skill (SKILL.md)</div>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                value={skillTitle}
-                onChange={(e) => setSkillTitle(e.target.value)}
-                placeholder="Skill Title (e.g. Deploy Checklist)"
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
-              />
+          <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800 space-y-3.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Download className="w-4 h-4" /> Pandawa Skill Installer
+              </div>
               <select
-                value={skillBrainFolder}
-                onChange={(e) => setSkillBrainFolder(e.target.value)}
-                className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                aria-label="Target Brain for Skill Installation"
+                value={targetBrainFolder}
+                onChange={(e) => setTargetBrainFolder(e.target.value)}
+                className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1 text-[11px] text-slate-200"
               >
                 {brains.map((b) => (
                   <option key={b.id} value={b.folder_path}>
-                    {b.name} ({b.folder_path})
+                    Target: {b.name} ({b.folder_path})
                   </option>
                 ))}
               </select>
             </div>
-            <input
-              value={skillDesc}
-              onChange={(e) => setSkillDesc(e.target.value)}
-              placeholder="Short description of when agents should apply this skill"
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
-            />
-            <textarea
-              rows={3}
-              value={skillBody}
-              onChange={(e) => setSkillBody(e.target.value)}
-              placeholder="Step-by-step markdown playbook..."
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-            />
-            <button
-              type="submit"
-              disabled={!skillTitle.trim()}
-              className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" /> Save Skill
-            </button>
-          </form>
 
-          <div className="space-y-2.5">
-            {skills.map((s) => (
-              <div key={s.path} className="p-4 rounded-xl bg-[#0e1320] border border-slate-800 space-y-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-bold text-white">{s.name}</div>
+            {/* Mode switcher */}
+            <div className="flex items-center gap-1.5 bg-[#080a0f] p-1 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("url");
+                  setInstallerNotice(null);
+                }}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                  tab === "url" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Github className="w-3.5 h-3.5" /> GitHub / URL
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("upload");
+                  setInstallerNotice(null);
+                }}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                  tab === "upload" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" /> Upload Folder / .zip
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTab("manual");
+                  setInstallerNotice(null);
+                }}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+                  tab === "manual" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Plus className="w-3.5 h-3.5" /> Create Manual
+              </button>
+            </div>
+
+            {/* Tab 1: GitHub / Raw URL / ZIP URL */}
+            {tab === "url" && (
+              <form onSubmit={handleUrlPreview} className="space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <input
+                    value={sourceInput}
+                    onChange={(e) => setSourceInput(e.target.value)}
+                    placeholder="owner/repo, GitHub folder URL, raw SKILL.md URL, or .zip URL..."
+                    className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-lg px-3 py-2 text-white font-mono text-[11px] outline-none"
+                  />
                   <button
-                    onClick={() => onOpenFile(s.path)}
-                    className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer"
+                    type="submit"
+                    disabled={scanning || !sourceInput.trim()}
+                    className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
                   >
-                    <ExternalLink className="w-3 h-3" /> Edit
+                    {scanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                    {scanning ? "Scanning..." : "Inspect & Preview"}
                   </button>
                 </div>
-                <div className="text-[11px] font-mono text-slate-500">{s.path}</div>
+                <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
+                  <span>Supports:</span>
+                  <code className="text-slate-400">anthropics/skills</code>
+                  <code className="text-slate-400">https://github.com/org/repo/tree/main/skills/my-skill</code>
+                  <code className="text-slate-400">https://.../SKILL.md</code>
+                  <code className="text-slate-400">https://.../pack.zip</code>
+                </div>
+              </form>
+            )}
+
+            {/* Tab 2: Upload .zip / Folder / SKILL.md */}
+            {tab === "upload" && (
+              <div className="space-y-2.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".zip,.md,.txt,.py,.sh,.js,.ts,.json,.yaml,.yml"
+                  className="hidden"
+                  onChange={(e) => {
+                    handleFileSelection(e.target.files).catch(() => {});
+                    e.target.value = "";
+                  }}
+                />
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  multiple
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                  className="hidden"
+                  onChange={(e) => {
+                    handleFileSelection(e.target.files).catch(() => {});
+                    e.target.value = "";
+                  }}
+                />
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    disabled={scanning}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-3 rounded-xl bg-[#080a0f] hover:bg-slate-900 border border-dashed border-slate-700 hover:border-amber-500/60 text-slate-300 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition"
+                  >
+                    <FileArchive className="w-5 h-5 text-amber-400" />
+                    <span className="font-semibold">Select .zip or SKILL.md</span>
+                    <span className="text-[10px] text-slate-500">Single skill or multi-skill archive</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={scanning}
+                    onClick={() => folderInputRef.current?.click()}
+                    className="p-3 rounded-xl bg-[#080a0f] hover:bg-slate-900 border border-dashed border-slate-700 hover:border-cyan-500/60 text-slate-300 flex flex-col items-center justify-center gap-1.5 cursor-pointer transition"
+                  >
+                    <FolderUp className="w-5 h-5 text-cyan-400" />
+                    <span className="font-semibold">Select Skill Folder</span>
+                    <span className="text-[10px] text-slate-500">Preserves scripts/ &amp; references/</span>
+                  </button>
+                </div>
+                {uploadSummary && (
+                  <div className="text-[11px] text-slate-400 font-mono">
+                    {scanning ? "Scanning uploaded skill files..." : uploadSummary}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tab 3: Create Manual SKILL.md */}
+            {tab === "manual" && (
+              <form onSubmit={addSkill} className="space-y-2.5">
+                <input
+                  value={skillTitle}
+                  onChange={(e) => setSkillTitle(e.target.value)}
+                  placeholder="Skill Title (e.g. Deploy Checklist)"
+                  className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                />
+                <input
+                  value={skillDesc}
+                  onChange={(e) => setSkillDesc(e.target.value)}
+                  placeholder="Short description of when agents should apply this skill"
+                  className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+                />
+                <textarea
+                  rows={3}
+                  value={skillBody}
+                  onChange={(e) => setSkillBody(e.target.value)}
+                  placeholder="Step-by-step markdown playbook..."
+                  className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+                />
+                <button
+                  type="submit"
+                  disabled={!skillTitle.trim()}
+                  className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Save Skill
+                </button>
+              </form>
+            )}
+
+            {/* Status / Error Banner */}
+            {installerNotice && (
+              <div
+                className={`p-2.5 rounded-lg border text-[11px] ${
+                  installerNotice.ok
+                    ? "bg-emerald-500/10 border-emerald-500/35 text-emerald-300"
+                    : "bg-rose-500/10 border-rose-500/35 text-rose-300"
+                }`}
+              >
+                {installerNotice.text}
+              </div>
+            )}
+
+            {/* Interactive Preview & Security Audit Panel */}
+            {previewSkills.length > 0 && (
+              <div className="rounded-xl bg-[#080a0f] border border-amber-500/35 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-white">
+                      Preview &amp; Security Check ({previewSkills.length} skill{previewSkills.length > 1 ? "s" : ""} found)
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400">
+                      Source: {previewSource} → {targetBrainFolder}/skills/
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allSelected = selectedCount === previewSkills.length;
+                        const next: Record<string, boolean> = {};
+                        for (const s of previewSkills) next[s.slug] = !allSelected;
+                        setSelectedSlugs(next);
+                      }}
+                      className="text-amber-300 hover:text-amber-200 underline cursor-pointer"
+                    >
+                      {selectedCount === previewSkills.length ? "Deselect all" : "Select all"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetPreview}
+                      className="text-slate-400 hover:text-slate-200 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+
+                <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+                  {previewSkills.map((sk) => {
+                    const checked = Boolean(selectedSlugs[sk.slug]);
+                    const isOpen = expandedSlug === sk.slug;
+                    return (
+                      <div
+                        key={sk.slug}
+                        className={`rounded-lg border p-2.5 space-y-2 transition ${
+                          checked ? "bg-[#0e1320] border-amber-500/40" : "bg-[#0a0e17] border-slate-800 opacity-70"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSlugs((prev) => ({ ...prev, [sk.slug]: !prev[sk.slug] }))}
+                              className="mt-0.5 text-amber-400 cursor-pointer shrink-0"
+                            >
+                              {checked ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4 text-slate-500" />}
+                            </button>
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-bold text-white">{sk.name}</span>
+                                <code className="text-[10px] text-cyan-300 bg-cyan-500/10 px-1.5 py-0.5 rounded">
+                                  {sk.slug}
+                                </code>
+                                {renderRiskBadge(sk.riskLevel)}
+                                {sk.alreadyInstalled && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-amber-300">
+                                    Exists
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">{sk.description}</p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedSlug(isOpen ? "" : sk.slug)}
+                            className="text-slate-400 hover:text-white p-1 shrink-0 cursor-pointer"
+                            title="Inspect files & SKILL.md"
+                          >
+                            {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                          </button>
+                        </div>
+
+                        {sk.findings.length > 0 && (
+                          <div className="rounded-md bg-[#07090f] border border-slate-800 p-2 space-y-1 text-[10px]">
+                            {sk.findings.slice(0, isOpen ? 20 : 3).map((f, idx) => (
+                              <div key={idx} className="flex items-start gap-1.5">
+                                <span
+                                  className={`font-bold uppercase shrink-0 ${
+                                    f.severity === "high" ? "text-rose-400" : "text-amber-300"
+                                  }`}
+                                >
+                                  [{f.severity}]
+                                </span>
+                                <span className="text-slate-300">
+                                  <code className="text-slate-400">
+                                    {f.file}:{f.line}
+                                  </code>{" "}
+                                  — {f.rule}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {isOpen && (
+                          <div className="space-y-2 pt-1 border-t border-slate-800/80">
+                            <div className="flex flex-wrap gap-1">
+                              {sk.files.map((fp) => (
+                                <span
+                                  key={fp}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 font-mono text-[10px]"
+                                >
+                                  <FileCode2 className="w-2.5 h-2.5 text-slate-400" /> {fp}
+                                </span>
+                              ))}
+                            </div>
+                            <pre className="max-h-40 overflow-auto rounded-lg bg-[#05070c] border border-slate-800 p-2 text-[10px] font-mono text-slate-300 whitespace-pre-wrap">
+                              {sk.markdownPreview}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                  <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={overwrite}
+                      onChange={(e) => setOverwrite(e.target.checked)}
+                      className="rounded border-slate-700"
+                    />
+                    Overwrite existing skills with same slug
+                  </label>
+                  <button
+                    type="button"
+                    disabled={installing || selectedCount === 0}
+                    onClick={handleInstallSelected}
+                    className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {installing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                    {installing ? "Installing..." : `Install Selected (${selectedCount})`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Installed Skills Library */}
+          <div className="space-y-2.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-300 uppercase tracking-wider">
+                Installed Skills ({skills.length})
+              </span>
+              <span className="text-[11px] font-mono text-slate-500">CLI: pandawa skill install &lt;source&gt;</span>
+            </div>
+
+            {skills.map((s) => (
+              <div key={s.path} className="p-4 rounded-xl bg-[#0e1320] border border-slate-800 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-sm font-bold text-white">{s.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                        {s.fileCount || 1} file{(s.fileCount || 1) > 1 ? "s" : ""}
+                      </span>
+                      {s.riskLevel && renderRiskBadge(s.riskLevel)}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-500 flex flex-wrap items-center gap-2">
+                      <span>{s.path}</span>
+                      {s.source && (
+                        <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                          {s.source}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => onOpenFile(s.path)}
+                      className="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer"
+                    >
+                      <ExternalLink className="w-3 h-3" /> Edit
+                    </button>
+                    <button
+                      aria-label={`Uninstall ${s.name}`}
+                      onClick={() => handleUninstallSkill(s)}
+                      className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
+                      title="Uninstall skill"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
                 <p className="text-xs text-slate-400">{s.description}</p>
               </div>
             ))}

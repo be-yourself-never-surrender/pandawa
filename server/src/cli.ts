@@ -36,6 +36,7 @@ import {
 } from "./tools/terminalManager.js";
 import { getPythonWorkerStatus } from "./tools/pythonWorker.js";
 import { listBackgroundJobs } from "./engine/backgroundRunner.js";
+import { previewSkillInstall, installSkillsFromSource, uninstallSkill } from "./skills/skillInstaller.js";
 
 const [, , cmd = "help", ...rest] = process.argv;
 
@@ -61,6 +62,8 @@ ${C.bold}Usage:${C.reset}
   pandawa chat [prompt]              Alias for 'pandawa live'
   pandawa term [list|open|attach|read|close] [name]
                                      Manage or attach (tmux) directly into living shared agent terminals
+  pandawa skill [list|install|remove] <source|slug> [--brain main-brain] [--overwrite]
+                                     Install skills from GitHub, raw SKILL.md URL, .zip, or local folder
   pandawa status                     Show Brains, Teams, Agents, Providers, Terminals, Jobs & Tool Arsenal
   pandawa doctor                     Check Node, SQLite FTS5, Python Worker, tmux, Playwright & Doc parsers
   pandawa approval <mode>            Set approval mode: auto | approve_shell | approve_sensitive | approve_all
@@ -460,6 +463,107 @@ async function cmdLive(initialPrompt: string) {
   rl.close();
 }
 
+async function cmdSkill(args: string[]) {
+  ensureDirectories();
+  seedInitialData();
+  const sub = (args[0] || "list").toLowerCase();
+
+  if (sub === "list" || sub === "ls") {
+    const skills = listSkills();
+    if (skills.length === 0) {
+      console.log(`${C.dim}No skills installed yet. Run: pandawa skill install <owner/repo|url|path>${C.reset}`);
+      return;
+    }
+    console.log(`\n${C.amber}${C.bold}📚 Installed Pandawa Skills (${skills.length})${C.reset}`);
+    for (const s of skills) {
+      const src = s.source ? ` ${C.dim}[${s.source}]${C.reset}` : "";
+      console.log(`   - ${C.bold}${s.slug}${C.reset} (${s.name}) · ${C.cyan}${s.dirPath}${C.reset} · ${s.fileCount} file(s)${src}`);
+      if (s.description) console.log(`     ${C.dim}${s.description.slice(0, 120)}${C.reset}`);
+    }
+    console.log("");
+    return;
+  }
+
+  if (sub === "install" || sub === "add") {
+    const restArgs = args.slice(1);
+    let source = "";
+    let brainFolder = "main-brain";
+    let overwrite = false;
+    let previewOnly = false;
+    for (let i = 0; i < restArgs.length; i++) {
+      const a = restArgs[i];
+      if (a === "--brain" && restArgs[i + 1]) {
+        brainFolder = restArgs[++i];
+      } else if (a === "--overwrite" || a === "-f") {
+        overwrite = true;
+      } else if (a === "--preview" || a === "--scan") {
+        previewOnly = true;
+      } else if (!a.startsWith("-") && !source) {
+        source = a;
+      }
+    }
+    if (!source) {
+      console.log(`Usage: pandawa skill install <owner/repo|github-url|raw-url|zip|local-path> [--brain main-brain] [--overwrite] [--preview]`);
+      return;
+    }
+
+    console.log(`${C.cyan}Scanning skill source:${C.reset} ${source} ...`);
+    const preview = await previewSkillInstall({ source, brainFolder, allowLocalPath: true });
+    console.log(`\nFound ${C.bold}${preview.skills.length}${C.reset} skill(s) from ${C.cyan}${preview.source}${C.reset}:`);
+    for (const sk of preview.skills) {
+      const badge =
+        sk.riskLevel === "caution"
+          ? `${C.red}[CAUTION]${C.reset}`
+          : sk.riskLevel === "review"
+          ? `${C.amber}[REVIEW]${C.reset}`
+          : `${C.green}[CLEAN]${C.reset}`;
+      console.log(`   • ${C.bold}${sk.slug}${C.reset} ${badge} (${sk.fileCount} file(s)) — ${sk.description.slice(0, 90)}`);
+      for (const f of sk.findings.slice(0, 3)) {
+        console.log(`     ${C.dim}[${f.severity.toUpperCase()}] ${f.file}:${f.line} — ${f.rule}${C.reset}`);
+      }
+    }
+
+    if (previewOnly) {
+      console.log(`\n${C.dim}Preview only (--preview). Re-run without --preview to install.${C.reset}\n`);
+      return;
+    }
+
+    const res = await installSkillsFromSource({
+      source,
+      brainFolder,
+      overwrite,
+      allowLocalPath: true,
+    });
+    if (res.installed.length > 0) {
+      console.log(`\n${C.green}✓ Installed ${res.installed.length} skill(s) into ${res.brainFolder}/skills/:${C.reset}`);
+      for (const s of res.installed) {
+        console.log(`   + ${s.slug} -> ${s.path} (${s.fileCount} file(s))`);
+      }
+    }
+    if (res.skipped.length > 0) {
+      console.log(`\n${C.amber}Skipped ${res.skipped.length} skill(s):${C.reset}`);
+      for (const s of res.skipped) {
+        console.log(`   - ${s.slug}: ${s.reason}`);
+      }
+    }
+    console.log("");
+    return;
+  }
+
+  if (sub === "remove" || sub === "rm" || sub === "uninstall" || sub === "delete") {
+    const target = args[1];
+    if (!target) {
+      console.log("Usage: pandawa skill remove <slug|brain/skills/slug>");
+      return;
+    }
+    const out = uninstallSkill(target);
+    console.log(`${C.green}✓ Uninstalled skill:${C.reset} ${out.deleted}`);
+    return;
+  }
+
+  console.log(`Usage: pandawa skill [list | install <source> | remove <slug>]`);
+}
+
 async function main() {
   switch (cmd) {
     case "start":
@@ -474,6 +578,10 @@ async function main() {
     case "term":
     case "terminal":
       await cmdTerm(rest);
+      break;
+    case "skill":
+    case "skills":
+      await cmdSkill(rest);
       break;
     case "live":
     case "tui":

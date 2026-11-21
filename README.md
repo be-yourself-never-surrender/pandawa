@@ -33,6 +33,7 @@
 <tr><td><b>46 Built-In Power Tools + Live MCP</b></td><td>Shared PTY/tmux terminals, live inter-agent <code>team_message</code>/<code>team_inbox</code>, <code>brain_semantic_search</code>, <code>heartbeat_configure</code>, atomic file patching &amp; checkpoints, Python/Node/Bash execution, web search, Playwright + Vision, cron, and <b>HTTP/STDIO MCP</b>.</td></tr>
 <tr><td><b>Proactive Heartbeat Daemon + Live TUI + Telegram</b></td><td>24/7 <b>Proactive Heartbeat</b> (<code>main-brain/HEARTBEAT.md</code> — logs <code>HEARTBEAT_OK</code> silently and alerts only on real issues), background mission queue (persists across browser closes; pair with <code>systemd</code>/Docker for reboot persistence), ANSI TUI (<code>pandawa live</code>), and Telegram remote approval (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>).</td></tr>
 <tr><td><b>Hardened Security + Zero Hidden Guardrails</b></td><td>Random first-boot password, login rate-limiting, token revocation on password change, single-use WS tickets, encrypted DB secrets (<code>0600</code>), mandatory webhook secrets, cloud-metadata SSRF blocking, token budget caps, and configurable <b>Approval Gate</b> (<code>auto</code> / <code>approve_shell</code> / <code>approve_sensitive</code> / <code>approve_all</code>). See <a href="SECURITY.md">SECURITY.md</a>.</td></tr>
+<tr><td><b>Pandawa Skill Installer (GitHub / URL / .zip / CLI)</b></td><td>Install multi-file <code>SKILL.md</code> packages (preserving <code>scripts/</code> &amp; <code>references/</code>) from <b>GitHub repos/folders</b> (<code>owner/repo</code>), raw URLs, <code>.zip</code> packs, or local folders — with <b>pre-install preview &amp; static security scanning</b> (<code>CLEAN</code> / <code>REVIEW</code> / <code>CAUTION</code>) and 1-click uninstall.</td></tr>
 <tr><td><b>Commercial Brain Kits (<code>.pandawa.json</code>)</b></td><td>Package any Team + Layered Brains + <code>soul.md</code>/skills + Canvas wiring into a portable kit (providers, channels &amp; secrets are never exported) with an interactive <b>Preview Modal</b> before install.</td></tr>
 </table>
 
@@ -121,6 +122,9 @@ pandawa live                      # Interactive ANSI Live TUI (streaming + inlin
 pandawa live "Build & test API"   # Run a live mission straight from terminal
 pandawa term list                 # List all active shared agent terminals (tmux)
 pandawa term attach main          # Jump directly into a living agent terminal (`tmux attach`)
+pandawa skill install owner/repo  # Preview, security-scan & install SKILL.md packs from GitHub/URL/zip/local
+pandawa skill list                # List installed skills across Main Brain & Team Brains
+pandawa skill remove <slug>       # Uninstall a skill package cleanly
 pandawa status                    # Inspect Brains, Teams, Agents, Terminals, Jobs & Tools
 pandawa doctor                    # Verify Node, SQLite FTS5, tmux, Python Worker & Playwright
 pandawa approval approve_shell    # Switch Approval Gate (auto | approve_shell | approve_sensitive | approve_all)

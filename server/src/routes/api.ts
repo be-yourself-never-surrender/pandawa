@@ -1833,7 +1833,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "4.0.0",
+      version: "5.0.0",
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),

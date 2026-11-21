@@ -10,6 +10,7 @@ export const ProvidersPage: React.FC = () => {
   const [newApiKey, setNewApiKey] = useState("");
   const [modelsText, setModelsText] = useState("");
   const [testState, setTestState] = useState<Record<string, { ok: boolean; msg: string; loading?: boolean }>>({});
+  const [quickKeys, setQuickKeys] = useState<Record<string, string>>({});
 
   // Add new custom provider modal
   const [showAdd, setShowAdd] = useState(false);
@@ -18,6 +19,27 @@ export const ProvidersPage: React.FC = () => {
   const [formBaseUrl, setFormBaseUrl] = useState("https://api.openai.com/v1");
   const [formApiKey, setFormApiKey] = useState("");
   const [formModel, setFormModel] = useState("gpt-4.1");
+
+  const PRESETS: Array<{ label: string; kind: "openai" | "anthropic" | "gemini"; baseUrl: string; model: string }> = [
+    { label: "Groq Fast", kind: "openai", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+    { label: "xAI Grok", kind: "openai", baseUrl: "https://api.x.ai/v1", model: "grok-3" },
+    { label: "Mistral AI", kind: "openai", baseUrl: "https://api.mistral.ai/v1", model: "mistral-large-latest" },
+    { label: "Together AI", kind: "openai", baseUrl: "https://api.together.xyz/v1", model: "meta-llama/Llama-3.3-70B-Instruct-Turbo" },
+    { label: "vLLM / Local", kind: "openai", baseUrl: "http://127.0.0.1:8000/v1", model: "local-model" },
+    { label: "Custom Anthropic", kind: "anthropic", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514" },
+  ];
+
+  async function saveQuickKey(id: string) {
+    const key = (quickKeys[id] || "").trim();
+    if (!key) return;
+    await apiFetch(`/api/providers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ apiKey: key }),
+    });
+    setQuickKeys((prev) => ({ ...prev, [id]: "" }));
+    await load();
+    await testProvider(id);
+  }
 
   const load = useCallback(async () => {
     const [pRes, aRes] = await Promise.all([
@@ -127,78 +149,99 @@ export const ProvidersPage: React.FC = () => {
         </button>
       </div>
 
-      {/* Add Provider Form */}
+      {/* Add Provider Form with 1-Click Presets */}
       {showAdd && (
         <form
           onSubmit={createProvider}
-          className="p-5 rounded-2xl bg-[#101522] border border-amber-500/40 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-xs"
+          className="p-5 rounded-2xl bg-[#101522] border border-amber-500/40 space-y-4 text-xs"
         >
-          <div>
-            <label className="text-slate-400 block mb-1">Provider Name</label>
-            <input
-              required
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              placeholder="e.g. Groq Fast / Custom vLLM / LiteLLM"
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
-            />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-300 mr-1">Quick Presets:</span>
+            {PRESETS.map((pr) => (
+              <button
+                key={pr.label}
+                type="button"
+                onClick={() => {
+                  setFormName(pr.label);
+                  setFormKind(pr.kind);
+                  setFormBaseUrl(pr.baseUrl);
+                  setFormModel(pr.model);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 cursor-pointer"
+              >
+                {pr.label}
+              </button>
+            ))}
           </div>
-          <div>
-            <label className="text-slate-400 block mb-1">API Protocol</label>
-            <select
-              value={formKind}
-              onChange={(e) => setFormKind(e.target.value as "openai" | "anthropic" | "gemini")}
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
-            >
-              <option value="openai">OpenAI-Compatible (Chat Completions / Custom Base URL)</option>
-              <option value="anthropic">Anthropic Messages API</option>
-              <option value="gemini">Google Gemini Native API</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-slate-400 block mb-1">Base URL</label>
-            <input
-              required
-              value={formBaseUrl}
-              onChange={(e) => setFormBaseUrl(e.target.value)}
-              placeholder="https://api.example.com/v1"
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-            />
-          </div>
-          <div>
-            <label className="text-slate-400 block mb-1">API Key</label>
-            <input
-              type="password"
-              value={formApiKey}
-              onChange={(e) => setFormApiKey(e.target.value)}
-              placeholder="sk-... (optional for local Ollama)"
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-            />
-          </div>
-          <div>
-            <label className="text-slate-400 block mb-1">Default Model ID</label>
-            <input
-              required
-              value={formModel}
-              onChange={(e) => setFormModel(e.target.value)}
-              placeholder="e.g. llama-3.3-70b-versatile"
-              className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
-            />
-          </div>
-          <div className="flex items-end gap-2">
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold cursor-pointer"
-            >
-              Create Provider
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAdd(false)}
-              className="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 cursor-pointer"
-            >
-              Cancel
-            </button>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div>
+              <label className="text-slate-400 block mb-1">Provider Name</label>
+              <input
+                required
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. Groq Fast / Custom vLLM / LiteLLM"
+                className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+              />
+            </div>
+            <div>
+              <label className="text-slate-400 block mb-1">API Protocol</label>
+              <select
+                value={formKind}
+                onChange={(e) => setFormKind(e.target.value as "openai" | "anthropic" | "gemini")}
+                className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+              >
+                <option value="openai">OpenAI-Compatible (Chat Completions / Custom Base URL)</option>
+                <option value="anthropic">Anthropic Messages API</option>
+                <option value="gemini">Google Gemini Native API</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-slate-400 block mb-1">Base URL</label>
+              <input
+                required
+                value={formBaseUrl}
+                onChange={(e) => setFormBaseUrl(e.target.value)}
+                placeholder="https://api.example.com/v1"
+                className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+              />
+            </div>
+            <div>
+              <label className="text-slate-400 block mb-1">API Key</label>
+              <input
+                type="password"
+                value={formApiKey}
+                onChange={(e) => setFormApiKey(e.target.value)}
+                placeholder="sk-... (encrypted with AES-256-GCM)"
+                className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+              />
+            </div>
+            <div>
+              <label className="text-slate-400 block mb-1">Default Model ID</label>
+              <input
+                required
+                value={formModel}
+                onChange={(e) => setFormModel(e.target.value)}
+                placeholder="e.g. llama-3.3-70b-versatile"
+                className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold cursor-pointer"
+              >
+                Create Provider
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAdd(false)}
+                className="px-4 py-2 rounded-lg bg-slate-800 text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </form>
       )}
@@ -245,9 +288,27 @@ export const ProvidersPage: React.FC = () => {
                   <code className="text-amber-300 truncate ml-2">{p.defaultModel || "—"}</code>
                 </div>
 
-                {p.hasApiKey && (
+                {p.hasApiKey ? (
                   <div className="text-[11px] text-slate-500 font-mono flex items-center gap-1">
-                    <KeyRound className="w-3 h-3" /> {p.apiKeyMasked}
+                    <KeyRound className="w-3 h-3 text-emerald-400" /> {p.apiKeyMasked}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="password"
+                      value={quickKeys[p.id] || ""}
+                      onChange={(e) => setQuickKeys((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                      placeholder="Quick paste API key..."
+                      className="flex-1 min-w-0 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-[11px] font-mono text-white outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={!(quickKeys[p.id] || "").trim()}
+                      onClick={() => saveQuickKey(p.id)}
+                      className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold text-[11px] shrink-0 cursor-pointer"
+                    >
+                      Save &amp; Test
+                    </button>
                   </div>
                 )}
 

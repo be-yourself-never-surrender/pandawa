@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-4.0.0-f59e0b?style=for-the-badge" alt="Version 4.0.0"></a>
+  <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-5.0.0-f59e0b?style=for-the-badge" alt="Version 5.0.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Runtime-Node.js%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js 24+">
   <img src="https://img.shields.io/badge/Database-SQLite%20FTS5-06b6d4?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite FTS5">

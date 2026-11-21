@@ -48,7 +48,7 @@ function broadcast(event: Record<string, unknown>): void {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pandawa", version: "4.0.0" });
+  res.json({ ok: true, service: "pandawa", version: "5.0.0" });
 });
 
 app.use("/api", createApiRouter(broadcast));
@@ -65,7 +65,7 @@ startCronScheduler(broadcast);
 syncTelegramPollers(broadcast);
 
 server.listen(PORT, HOST, () => {
-  console.log(`[Pandawa v4.0] Server running at http://${HOST}:${PORT}`);
+  console.log(`[Pandawa v5.0] Server running at http://${HOST}:${PORT}`);
 });
 
 function shutdown(): void {

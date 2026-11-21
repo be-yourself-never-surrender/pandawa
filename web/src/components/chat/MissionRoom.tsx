@@ -16,10 +16,39 @@ import {
   CheckSquare,
   Terminal,
   RefreshCw,
+  Shield,
+  Zap,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
-import type { AgentItem, BlackboardEntry, MessageItem, SessionItem, TeamItem } from "../../types";
+import type { AgentItem, BlackboardEntry, BrainTreeNode, MessageItem, SessionItem, TeamItem } from "../../types";
 import { MarkdownView } from "../MarkdownView";
+
+const SLASH_SUGGESTIONS = [
+  { cmd: "/new", desc: "Start a fresh mission session" },
+  { cmd: "/mode deliberate", desc: "Musyawarah peer deliberation + cross-review" },
+  { cmd: "/mode parallel", desc: "Parallel co-execution across all active peers" },
+  { cmd: "/mode sequential", desc: "Sequential relay chain between peers" },
+  { cmd: "/mode consensus", desc: "Rapid council synthesis" },
+  { cmd: "/auto", desc: "Switch Approval Gate -> Auto (Full Freedom)" },
+  { cmd: "/approve", desc: "Switch Approval Gate -> Approve Shell Only" },
+  { cmd: "/tasks", desc: "Open Shared Team Task Board" },
+  { cmd: "/processes", desc: "Open Managed Background Processes" },
+];
+
+const QUICK_STARTERS = [
+  "Design a clean REST API + security checklist for our next SaaS product.",
+  "Use web_search to compare top AI agent runtimes in 2026 and write a sharp memo.",
+  "Review @main-brain/soul.md and propose 3 upgrades to our team charter.",
+];
+
+function collectFilePaths(nodes: BrainTreeNode[]): string[] {
+  const out: string[] = [];
+  for (const n of nodes) {
+    if (n.type === "file") out.push(n.path);
+    if (n.children) out.push(...collectFilePaths(n.children));
+  }
+  return out;
+}
 
 interface TeamTaskItem {
   id: string;
@@ -51,9 +80,23 @@ interface MissionRoomProps {
   liveEvents: Array<Record<string, unknown>>;
   streamingBuffers: Record<string, LiveStreamBuffer>;
   onClearStreams: () => void;
+  approvalMode: string;
+  onChangeApprovalMode: (mode: string) => void;
+  initialTeamId?: string | null;
+  initialPrompt?: string | null;
+  onConsumeInitialPrompt?: () => void;
 }
 
-export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingBuffers, onClearStreams }) => {
+export const MissionRoom: React.FC<MissionRoomProps> = ({
+  liveEvents,
+  streamingBuffers,
+  onClearStreams,
+  approvalMode,
+  onChangeApprovalMode,
+  initialTeamId,
+  initialPrompt,
+  onConsumeInitialPrompt,
+}) => {
   const [teams, setTeams] = useState<TeamItem[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
@@ -62,9 +105,10 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
   const [blackboard, setBlackboard] = useState<BlackboardEntry[]>([]);
 
   const [targetType, setTargetType] = useState<"team" | "agent">("team");
-  const [targetId, setTargetId] = useState<string>("team_pandawa");
+  const [targetId, setTargetId] = useState<string>(initialTeamId || "team_pandawa");
   const [selectedPeers, setSelectedPeers] = useState<Set<string>>(new Set());
   const [prompt, setPrompt] = useState("");
+  const [brainFiles, setBrainFiles] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [showHistory, setShowHistory] = useState(() => window.innerWidth >= 1280);
   const [showBlackboard, setShowBlackboard] = useState(() => window.innerWidth >= 1360);
@@ -85,19 +129,36 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
   const abortRef = useRef<AbortController | null>(null);
 
   const loadMeta = useCallback(async () => {
-    const [tRes, aRes, sRes] = await Promise.all([
+    const [tRes, aRes, sRes, fRes] = await Promise.all([
       apiFetch<{ teams: TeamItem[] }>("/api/teams"),
       apiFetch<{ agents: AgentItem[] }>("/api/agents"),
       apiFetch<{ sessions: SessionItem[] }>("/api/sessions"),
+      apiFetch<{ tree: BrainTreeNode[] }>("/api/files/tree"),
     ]);
     setTeams(tRes.teams);
     setAgents(aRes.agents);
     setSessions(sRes.sessions);
+    setBrainFiles(collectFilePaths(fRes.tree));
 
-    if (tRes.teams.length > 0 && selectedPeers.size === 0) {
-      setSelectedPeers(new Set(tRes.teams[0].members.map((m) => m.id)));
+    const matchTeam = tRes.teams.find((t) => t.id === targetId) || tRes.teams[0];
+    if (matchTeam && selectedPeers.size === 0) {
+      setSelectedPeers(new Set(matchTeam.members.map((m) => m.id)));
     }
-  }, [selectedPeers.size]);
+  }, [selectedPeers.size, targetId]);
+
+  useEffect(() => {
+    if (initialTeamId) {
+      setTargetType("team");
+      setTargetId(initialTeamId);
+    }
+  }, [initialTeamId]);
+
+  useEffect(() => {
+    if (initialPrompt) {
+      setPrompt(initialPrompt);
+      onConsumeInitialPrompt?.();
+    }
+  }, [initialPrompt, onConsumeInitialPrompt]);
 
   const loadMessages = useCallback(async (sid: string) => {
     if (!sid) {
@@ -473,19 +534,34 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
             )}
           </div>
 
-          {targetType === "team" && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => setShowBlackboard((s) => !s)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border cursor-pointer ${
-                showBlackboard
-                  ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
-                  : "bg-slate-800 border-slate-700 text-slate-300"
+              onClick={() => onChangeApprovalMode(approvalMode === "auto" ? "approve_shell" : "auto")}
+              title="Toggle Approval Gate mode"
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 border cursor-pointer transition ${
+                approvalMode === "auto"
+                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                  : "bg-slate-800 border-slate-700 text-amber-300"
               }`}
             >
-              <ClipboardList className="w-3.5 h-3.5" />
-              Blackboard ({blackboard.length})
+              {approvalMode === "auto" ? <Zap className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+              {approvalMode === "auto" ? "Full Freedom" : "Approve Shell"}
             </button>
-          )}
+
+            {targetType === "team" && (
+              <button
+                onClick={() => setShowBlackboard((s) => !s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border cursor-pointer ${
+                  showBlackboard
+                    ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                    : "bg-slate-800 border-slate-700 text-slate-300"
+                }`}
+              >
+                <ClipboardList className="w-3.5 h-3.5" />
+                Ops ({blackboard.length + tasks.length})
+              </button>
+            )}
+          </div>
         </header>
 
         {/* Active Peer Roster Pills (clean wrap, no horizontal cutoffs) */}
@@ -523,16 +599,29 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
         {/* Messages Stream */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {messages.length === 0 && (
-            <div className="max-w-xl mx-auto mt-12 text-center space-y-3">
+            <div className="max-w-xl mx-auto mt-10 text-center space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto">
                 <Sparkles className="w-6 h-6 text-amber-400" />
               </div>
-              <h3 className="text-base font-bold text-white">Pandawa Mission Room</h3>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Every teammate reads the wired <strong>Main Brain</strong>, <strong>Team Brain</strong>, and their own{" "}
-                <code className="text-amber-300">soul.md</code> folder, using their assigned AI provider & model,
-                deliberating transparently on the shared Team Blackboard before delivering unified consensus.
-              </p>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-bold text-white">Pandawa Mission Room</h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Every teammate reads the wired <strong>Main Brain</strong>, <strong>Team Brain</strong>, and their own{" "}
+                  <code className="text-amber-300">soul.md</code>, deliberates on the shared Team Blackboard, and delivers unified consensus.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 gap-2 text-left pt-2">
+                {QUICK_STARTERS.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    onClick={() => setPrompt(q)}
+                    className="px-3.5 py-2.5 rounded-xl bg-[#0e1320] hover:bg-[#141c2f] border border-slate-800 hover:border-amber-500/40 text-xs text-slate-300 transition cursor-pointer"
+                  >
+                    ✨ {q}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -665,8 +754,52 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
           <div ref={bottomRef} />
         </div>
 
-        {/* Input Composer */}
-        <form onSubmit={sendMission} className="p-4 bg-[#0d111b] border-t border-slate-800/80">
+        {/* Input Composer with Live / Slash & @ File Autocomplete */}
+        <form onSubmit={sendMission} className="p-4 bg-[#0d111b] border-t border-slate-800/80 relative">
+          {prompt.startsWith("/") && !prompt.includes("\n") && (
+            <div className="absolute bottom-full left-4 right-4 mb-2 rounded-xl bg-[#101626] border border-amber-500/40 shadow-2xl p-1.5 max-h-52 overflow-y-auto z-30">
+              <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                Slash Commands
+              </div>
+              {SLASH_SUGGESTIONS.filter((s) => s.cmd.startsWith(prompt.toLowerCase())).map((s) => (
+                <button
+                  key={s.cmd}
+                  type="button"
+                  onClick={() => setPrompt(s.cmd)}
+                  className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-800/80 text-left flex items-center justify-between gap-2 text-xs cursor-pointer"
+                >
+                  <code className="text-amber-300 font-semibold">{s.cmd}</code>
+                  <span className="text-slate-400 truncate">{s.desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/(^|\s)@[a-zA-Z0-9_./-]*$/.test(prompt) && (
+            <div className="absolute bottom-full left-4 right-4 mb-2 rounded-xl bg-[#101626] border border-cyan-500/40 shadow-2xl p-1.5 max-h-52 overflow-y-auto z-30">
+              <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                Inline Brain File Reference (@file)
+              </div>
+              {brainFiles
+                .filter((fp) => {
+                  const m = prompt.match(/@([a-zA-Z0-9_./-]*)$/);
+                  const q = (m?.[1] || "").toLowerCase();
+                  return !q || fp.toLowerCase().includes(q);
+                })
+                .slice(0, 10)
+                .map((fp) => (
+                  <button
+                    key={fp}
+                    type="button"
+                    onClick={() => setPrompt((prev) => prev.replace(/@[a-zA-Z0-9_./-]*$/, `@${fp} `))}
+                    className="w-full px-2.5 py-1.5 rounded-lg hover:bg-slate-800/80 text-left font-mono text-xs text-cyan-300 truncate cursor-pointer"
+                  >
+                    @{fp}
+                  </button>
+                ))}
+            </div>
+          )}
+
           <div className="flex gap-2">
             <textarea
               rows={2}

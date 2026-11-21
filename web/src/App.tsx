@@ -3,6 +3,7 @@ import { apiFetch, createRealtimeSocket, getStoredToken, setStoredToken } from "
 import type { NavTab } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
 import { Sidebar } from "./components/Sidebar";
+import { OverviewPage } from "./components/OverviewPage";
 import { BrainCanvas } from "./components/canvas/BrainCanvas";
 import { MissionRoom, type LiveStreamBuffer } from "./components/chat/MissionRoom";
 import { BrainExplorer } from "./components/brains/BrainExplorer";
@@ -16,8 +17,13 @@ export const App: React.FC = () => {
   const [authed, setAuthed] = useState<boolean>(false);
   const [checkingAuth, setCheckingAuth] = useState<boolean>(true);
   const [usingDefaultPassword, setUsingDefaultPassword] = useState<boolean>(false);
-  const [tab, setTab] = useState<NavTab>("canvas");
+  const [tab, setTab] = useState<NavTab>("overview");
   const [openFilePath, setOpenFilePath] = useState<string | null>(null);
+  const [focusTeamId, setFocusTeamId] = useState<string | null>(null);
+  const [chatInitialTeamId, setChatInitialTeamId] = useState<string | null>(null);
+  const [chatStarterPrompt, setChatStarterPrompt] = useState<string | null>(null);
+  const [approvalMode, setApprovalMode] = useState<string>("approve_shell");
+
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [liveEvents, setLiveEvents] = useState<Array<Record<string, unknown>>>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalItem[]>([]);
@@ -25,9 +31,7 @@ export const App: React.FC = () => {
   const [streamingBuffers, setStreamingBuffers] = useState<Record<string, LiveStreamBuffer>>({});
 
   useEffect(() => {
-    const onUnauthorized = () => {
-      setAuthed(false);
-    };
+    const onUnauthorized = () => setAuthed(false);
     window.addEventListener("pandawa:unauthorized", onUnauthorized);
     return () => window.removeEventListener("pandawa:unauthorized", onUnauthorized);
   }, []);
@@ -50,6 +54,18 @@ export const App: React.FC = () => {
       .finally(() => setCheckingAuth(false));
   }, []);
 
+  async function handleChangeApprovalMode(nextMode: string) {
+    setApprovalMode(nextMode);
+    try {
+      await apiFetch("/api/approvals/mode", {
+        method: "PUT",
+        body: JSON.stringify({ mode: nextMode }),
+      });
+    } catch {
+      // ignore
+    }
+  }
+
   useEffect(() => {
     if (!authed) return;
     let disposed = false;
@@ -57,10 +73,12 @@ export const App: React.FC = () => {
     let retryTimer: number | null = null;
     let attempt = 0;
 
-    function syncPending() {
-      apiFetch<{ pending: PendingApprovalItem[] }>("/api/approvals")
+    function syncApprovals() {
+      apiFetch<{ mode?: string; pending: PendingApprovalItem[] }>("/api/approvals")
         .then((r) => {
-          if (!disposed) setPendingApprovals(r.pending || []);
+          if (disposed) return;
+          setPendingApprovals(r.pending || []);
+          if (r.mode) setApprovalMode(r.mode);
         })
         .catch(() => {});
     }
@@ -107,6 +125,9 @@ export const App: React.FC = () => {
           setPendingApprovals((prev) => (prev.some((x) => x.id === item.id) ? prev : [...prev, item]));
         } else if (evType === "approval_resolved" && typeof ev.id === "string") {
           setPendingApprovals((prev) => prev.filter((x) => x.id !== ev.id));
+          if (typeof ev.mode === "string") setApprovalMode(ev.mode);
+        } else if (evType === "approval_mode_changed" && typeof ev.mode === "string") {
+          setApprovalMode(ev.mode);
         }
       });
 
@@ -114,7 +135,7 @@ export const App: React.FC = () => {
       ws.onopen = () => {
         attempt = 0;
         setWsConnected(true);
-        syncPending();
+        syncApprovals();
       };
       ws.onclose = () => {
         setWsConnected(false);
@@ -123,12 +144,10 @@ export const App: React.FC = () => {
           retryTimer = window.setTimeout(connectWs, delay);
         }
       };
-      ws.onerror = () => {
-        ws?.close();
-      };
+      ws.onerror = () => ws?.close();
     }
 
-    syncPending();
+    syncApprovals();
     connectWs();
 
     return () => {
@@ -141,7 +160,7 @@ export const App: React.FC = () => {
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-[#080a0f] flex items-center justify-center text-sm text-slate-400">
-        Loading Pandawa Studio v2...
+        Loading Pandawa Studio v5...
       </div>
     );
   }
@@ -169,20 +188,46 @@ export const App: React.FC = () => {
         onSelect={setTab}
         usingDefaultPassword={usingDefaultPassword}
         wsConnected={wsConnected}
+        approvalMode={approvalMode}
         onLogout={() => {
           setStoredToken(null);
           setAuthed(false);
         }}
       />
       <main className="flex-1 min-w-0 h-screen overflow-hidden">
+        {tab === "overview" && (
+          <OverviewPage
+            approvalMode={approvalMode}
+            onChangeApprovalMode={handleChangeApprovalMode}
+            onNavigate={setTab}
+            onStartMission={(teamId, starterPrompt) => {
+              setChatInitialTeamId(teamId);
+              if (starterPrompt) setChatStarterPrompt(starterPrompt);
+              setTab("chat");
+            }}
+            onFocusTeamOnCanvas={(teamId) => {
+              setFocusTeamId(teamId);
+              setTab("canvas");
+            }}
+          />
+        )}
         {tab === "canvas" && (
-          <BrainCanvas onOpenBrainFile={handleOpenBrainFile} activeAgentIds={activeAgentIds} />
+          <BrainCanvas
+            onOpenBrainFile={handleOpenBrainFile}
+            activeAgentIds={activeAgentIds}
+            initialFocusTeamId={focusTeamId}
+          />
         )}
         {tab === "chat" && (
           <MissionRoom
             liveEvents={liveEvents}
             streamingBuffers={streamingBuffers}
             onClearStreams={() => setStreamingBuffers({})}
+            approvalMode={approvalMode}
+            onChangeApprovalMode={handleChangeApprovalMode}
+            initialTeamId={chatInitialTeamId}
+            initialPrompt={chatStarterPrompt}
+            onConsumeInitialPrompt={() => setChatStarterPrompt(null)}
           />
         )}
         {tab === "brains" && (

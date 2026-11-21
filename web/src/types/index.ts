@@ -1,4 +1,5 @@
 export type NavTab =
+  | "overview"
   | "canvas"
   | "chat"
   | "brains"

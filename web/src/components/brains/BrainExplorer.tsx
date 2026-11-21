@@ -33,7 +33,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
     new Set(["main-brain", "teams", "teams/pandawa-core", "agents"])
   );
   const [showTree, setShowTree] = useState(true);
-  const [previewMode, setPreviewMode] = useState(false);
+  const [viewMode, setViewMode] = useState<"edit" | "split" | "preview">("edit");
   const [isDragging, setIsDragging] = useState(false);
   const [uploadFolder, setUploadFolder] = useState("main-brain");
   const [activeFile, setActiveFile] = useState<string>("");
@@ -376,6 +376,11 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             <div className="text-[10px] text-slate-500 truncate">
               Upload target: <code className="text-amber-300/90">{uploadFolder || "root"}</code> (or drag &amp; drop)
             </div>
+            <div className="grid grid-cols-3 gap-1 text-[9px] text-center">
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">main-brain</span>
+              <span className="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">teams/</span>
+              <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">agents/</span>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
@@ -434,13 +439,21 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
                 <CheckCircle2 className="w-3.5 h-3.5" /> {notice}
               </span>
             )}
-            <button
-              onClick={() => setPreviewMode((p) => !p)}
-              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 cursor-pointer"
-            >
-              {previewMode ? <Code className="w-3.5 h-3.5 text-cyan-400" /> : <Eye className="w-3.5 h-3.5 text-cyan-400" />}
-              {previewMode ? "Edit" : "Preview"}
-            </button>
+            <div className="flex rounded-lg bg-[#080a0f] border border-slate-800 p-0.5 text-xs">
+              {(["edit", "split", "preview"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setViewMode(m)}
+                  className={`px-2 py-1 rounded-md capitalize flex items-center gap-1 cursor-pointer ${
+                    viewMode === m ? "bg-slate-800 text-cyan-300 font-semibold" : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {m === "edit" && <Code className="w-3 h-3" />}
+                  {m === "preview" && <Eye className="w-3 h-3" />}
+                  {m}
+                </button>
+              ))}
+            </div>
             {activeFile && (
               <button
                 onClick={() => pinToCanvas(activeFile, false)}
@@ -459,30 +472,35 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
           </div>
         </div>
 
-        {previewMode ? (
-          <div className="flex-1 overflow-y-auto p-6 bg-[#080a0f]">
-            <div className="max-w-3xl">
-              <MarkdownView content={content || "*Empty file*"} />
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {(viewMode === "edit" || viewMode === "split") && (
+            <textarea
+              value={content}
+              onChange={(e) => {
+                setContent(e.target.value);
+                setDirty(true);
+              }}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                  e.preventDefault();
+                  saveCurrentFile();
+                }
+              }}
+              spellCheck={false}
+              placeholder="Write soul.md, rules.md, team charter, SOPs, or drag & drop files..."
+              className={`${
+                viewMode === "split" ? "w-1/2 border-r border-slate-800" : "w-full"
+              } h-full bg-[#080a0f] text-slate-100 font-mono text-sm p-6 outline-none resize-none leading-relaxed`}
+            />
+          )}
+          {(viewMode === "preview" || viewMode === "split") && (
+            <div className={`${viewMode === "split" ? "w-1/2" : "w-full"} h-full overflow-y-auto p-6 bg-[#080a0f]`}>
+              <div className="max-w-3xl">
+                <MarkdownView content={content || "*Empty file*"} />
+              </div>
             </div>
-          </div>
-        ) : (
-          <textarea
-            value={content}
-            onChange={(e) => {
-              setContent(e.target.value);
-              setDirty(true);
-            }}
-            onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-                e.preventDefault();
-                saveCurrentFile();
-              }
-            }}
-            spellCheck={false}
-            placeholder="Write soul.md, rules.md, team charter, SOPs, or drag & drop files..."
-            className="flex-1 w-full bg-[#080a0f] text-slate-100 font-mono text-sm p-6 outline-none resize-none leading-relaxed"
-          />
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

@@ -33,13 +33,14 @@ import {
   Copy,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
-import type { AgentItem, BrainItem, BrainTreeNode, ProviderItem, TopologyEdge, TopologyNode } from "../../types";
+import type { AgentItem, BrainItem, BrainTreeNode, ProviderItem, TeamItem, TopologyEdge, TopologyNode } from "../../types";
 import { PandawaNode, type PandawaNodeData } from "./PandawaNode";
 import { BundlePreviewModal, type PreviewBundleData } from "../BundlePreviewModal";
 
 interface BrainCanvasProps {
   onOpenBrainFile: (filePath: string) => void;
   activeAgentIds: Set<string>;
+  initialFocusTeamId?: string | null;
 }
 
 const RELATION_COLORS: Record<string, string> = {
@@ -68,7 +69,7 @@ function inferRelation(srcType: string, dstType: string): { relation: string; la
   return { relation: "brain_link", label: "brain sync" };
 }
 
-export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activeAgentIds }) => {
+export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activeAgentIds, initialFocusTeamId }) => {
   const nodeTypes = useMemo(() => ({ pandawa: PandawaNode }), []);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PandawaNodeData>>([]);
@@ -76,6 +77,9 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
   const [spawningTpl, setSpawningTpl] = useState(false);
   const [previewBundle, setPreviewBundle] = useState<PreviewBundleData | null>(null);
   const [installingBundle, setInstallingBundle] = useState(false);
+  const [teams, setTeams] = useState<TeamItem[]>([]);
+  const [focusTeamId, setFocusTeamId] = useState<string>(initialFocusTeamId || "all");
+  const [showTip, setShowTip] = useState(true);
 
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [brains, setBrains] = useState<BrainItem[]>([]);
@@ -97,18 +101,20 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
   } | null>(null);
 
   const loadAll = useCallback(async () => {
-    const [topoRes, agentsRes, brainsRes, provRes, treeRes] = await Promise.all([
+    const [topoRes, agentsRes, brainsRes, provRes, treeRes, teamsRes] = await Promise.all([
       apiFetch<{ nodes: TopologyNode[]; edges: TopologyEdge[] }>("/api/topology"),
       apiFetch<{ agents: AgentItem[] }>("/api/agents"),
       apiFetch<{ brains: BrainItem[] }>("/api/brains"),
       apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
       apiFetch<{ tree: BrainTreeNode[] }>("/api/files/tree"),
+      apiFetch<{ teams: TeamItem[] }>("/api/teams"),
     ]);
 
     setAgents(agentsRes.agents);
     setBrains(brainsRes.brains);
     setProviders(provRes.providers);
     setFileChoices(flattenTree(treeRes.tree));
+    setTeams(teamsRes.teams);
 
     const rfNodes: Array<Node<PandawaNodeData>> = topoRes.nodes.map((n) => ({
       id: n.id,
@@ -526,6 +532,65 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
     }
   }
 
+  useEffect(() => {
+    if (initialFocusTeamId) setFocusTeamId(initialFocusTeamId);
+  }, [initialFocusTeamId]);
+
+  // Compute filtered nodes/edges when focusing on a specific Team
+  const { visibleNodes, visibleEdges } = useMemo(() => {
+    if (focusTeamId === "all") return { visibleNodes: nodes, visibleEdges: edges };
+    const team = teams.find((t) => t.id === focusTeamId);
+    if (!team) return { visibleNodes: nodes, visibleEdges: edges };
+
+    const keepIds = new Set<string>();
+    const mainNodes = nodes.filter((n) => n.data.nodeType === "main_brain");
+    for (const m of mainNodes) keepIds.add(m.id);
+
+    const tbNodes = nodes.filter(
+      (n) => n.data.nodeType === "team_brain" && (n.data.refId === team.team_brain_id || n.data.teamId === team.id)
+    );
+    for (const tb of tbNodes) keepIds.add(tb.id);
+
+    // Include 2 hops from team brain (agents -> models, personal folders, toolpacks) + main brain knowledge mounts
+    const frontier = new Set<string>([...tbNodes.map((n) => n.id)]);
+    for (let hop = 0; hop < 2; hop++) {
+      const next = new Set<string>();
+      for (const e of edges) {
+        if (frontier.has(e.source) && !keepIds.has(e.target)) {
+          const targetNode = nodes.find((n) => n.id === e.target);
+          if (targetNode && targetNode.data.nodeType !== "team_brain") {
+            keepIds.add(e.target);
+            next.add(e.target);
+          }
+        } else if (frontier.has(e.target) && !keepIds.has(e.source)) {
+          const srcNode = nodes.find((n) => n.id === e.source);
+          if (srcNode && srcNode.data.nodeType !== "team_brain") {
+            keepIds.add(e.source);
+            next.add(e.source);
+          }
+        }
+      }
+      frontier.clear();
+      for (const x of next) frontier.add(x);
+    }
+    // Include knowledge nodes directly attached to Main Brain
+    for (const e of edges) {
+      if (mainNodes.some((m) => m.id === e.target)) {
+        const s = nodes.find((n) => n.id === e.source);
+        if (s?.data.nodeType === "knowledge") keepIds.add(s.id);
+      }
+      if (mainNodes.some((m) => m.id === e.source)) {
+        const t = nodes.find((n) => n.id === e.target);
+        if (t?.data.nodeType === "knowledge") keepIds.add(t.id);
+      }
+    }
+
+    return {
+      visibleNodes: nodes.filter((n) => keepIds.has(n.id)),
+      visibleEdges: edges.filter((e) => keepIds.has(e.source) && keepIds.has(e.target)),
+    };
+  }, [focusTeamId, nodes, edges, teams]);
+
   return (
     <div className="flex flex-col h-screen bg-[#080a0f]">
       {/* Top Action Palette (n8n style, wraps cleanly on narrow screens) */}
@@ -643,12 +708,59 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
         </div>
       </header>
 
+      {/* Team Focus Filter Strip (cleanly isolates any team when multiple squads exist) */}
+      {teams.length > 1 && (
+        <div className="px-4 py-1.5 bg-[#0a0d15] border-b border-slate-800/70 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
+          <span className="text-slate-500 font-semibold mr-1 shrink-0">Focus View:</span>
+          <button
+            onClick={() => setFocusTeamId("all")}
+            className={`px-2.5 py-1 rounded-full border shrink-0 cursor-pointer transition ${
+              focusTeamId === "all"
+                ? "bg-amber-500/20 border-amber-500/50 text-amber-200 font-semibold"
+                : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            All Teams ({teams.length})
+          </button>
+          {teams.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setFocusTeamId(t.id)}
+              className={`px-2.5 py-1 rounded-full border shrink-0 cursor-pointer transition ${
+                focusTeamId === t.id
+                  ? "bg-violet-500/20 border-violet-500/50 text-violet-200 font-semibold"
+                  : "bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {t.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Main Workspace: Canvas + Inspector */}
       <div className="flex-1 flex min-h-0 relative">
-        <div className="flex-1 h-full">
+        <div className="flex-1 h-full relative">
+          {showTip && (
+            <div className="absolute top-3 left-3 z-20 max-w-md px-3 py-2 rounded-xl bg-[#0d111b]/92 backdrop-blur-md border border-slate-700/80 text-[11px] text-slate-300 flex items-center justify-between gap-3 shadow-lg">
+              <span>
+                <strong className="text-amber-300">Tip:</strong> Drag from any dot handle to wire{" "}
+                <strong>Brains</strong>, <strong>AI Models</strong>, or <code className="text-amber-200">soul.md</code>{" "}
+                files. Click any node to edit.
+              </span>
+              <button
+                aria-label="Dismiss tip"
+                onClick={() => setShowTip(false)}
+                className="text-slate-500 hover:text-white shrink-0 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           <ReactFlow
-            nodes={nodes}
-            edges={edges}
+            nodes={visibleNodes}
+            edges={visibleEdges}
             nodeTypes={nodeTypes}
             onNodesChange={(changes) => {
               onNodesChange(changes);
@@ -807,11 +919,50 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                     <div>
                       <label className="text-slate-400 block mb-1">Model ID</label>
                       <input
+                        list={`models_${selectedAgent.id}`}
                         value={selectedAgent.model}
                         onChange={(e) => saveSelectedAgent({ model: e.target.value })}
                         placeholder="e.g. gpt-4.1, claude-sonnet-4-20250514"
                         className="w-full bg-[#090c14] border border-slate-700 rounded-lg px-2.5 py-1.5 font-mono text-slate-100"
                       />
+                      <datalist id={`models_${selectedAgent.id}`}>
+                        {(providers.find((p) => p.id === selectedAgent.provider_id)?.models || []).map((m) => (
+                          <option key={m} value={m} />
+                        ))}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="text-slate-400 block mb-1.5">Enabled Tool Packs (32 Built-In Tools)</label>
+                      <div className="grid grid-cols-2 gap-1.5 bg-[#090c14] border border-slate-800 rounded-xl p-2.5">
+                        {[
+                          { id: "brain", label: "Brain & FTS5" },
+                          { id: "team", label: "Team & Tasks" },
+                          { id: "workspace", label: "Files & Patch" },
+                          { id: "shell", label: "Shell & Code" },
+                          { id: "web", label: "Web Search" },
+                          { id: "browser", label: "Browser" },
+                          { id: "automation", label: "Cron & Bots" },
+                        ].map((pk) => {
+                          const checked = selectedAgent.toolPacks.includes(pk.id);
+                          return (
+                            <label key={pk.id} className="flex items-center gap-1.5 text-[11px] text-slate-200 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = checked
+                                    ? selectedAgent.toolPacks.filter((x) => x !== pk.id)
+                                    : [...selectedAgent.toolPacks, pk.id];
+                                  saveSelectedAgent({ toolPacks: next });
+                                }}
+                                className="accent-cyan-400"
+                              />
+                              <span className="truncate">{pk.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     <div>

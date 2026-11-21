@@ -82,6 +82,7 @@ export async function runAgentTurn(params: {
   teamId?: string;
   sessionId?: string;
   maxIterations?: number;
+  consultDepth?: number;
   extraSystemNote?: string;
   onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<AgentRunResult> {
@@ -206,6 +207,20 @@ export async function runAgentTurn(params: {
           runtime,
           teamId: params.teamId,
           sessionId: params.sessionId,
+          consultDepth: params.consultDepth ?? 0,
+          consultPeer: async (peerId: string, question: string) => {
+            const peerRes = await runAgentTurn({
+              agentId: peerId,
+              teamId: params.teamId,
+              sessionId: params.sessionId,
+              consultDepth: (params.consultDepth ?? 0) + 1,
+              maxIterations: 3,
+              prompt: `Your Pandawa teammate **${runtime.agent.name}** (${runtime.agent.title}) is consulting you mid-task:\n\n${question}\n\nRespond concisely and directly with your specialist input.`,
+              extraSystemNote: "You are responding to a live peer consultation from a Pandawa teammate.",
+              onEvent: params.onEvent,
+            });
+            return peerRes.content;
+          },
           mcpLookup: liveMcp.lookup,
           onEvent: params.onEvent,
         });

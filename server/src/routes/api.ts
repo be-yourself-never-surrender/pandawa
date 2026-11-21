@@ -39,6 +39,7 @@ import {
   type ApprovalMode,
 } from "../engine/approvalManager.js";
 import { discoverMcpTools, type McpServerRow } from "../mcp/mcpClient.js";
+import { exportTeamBundle, importTeamBundle, type PandawaBundle } from "../bundles/bundleService.js";
 
 function maskProvider(p: ProviderRecord) {
   const key = decryptSecret(p.api_key || "");
@@ -393,6 +394,30 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   router.get("/files/search", (req: Request, res: Response) => {
     const q = String(req.query.q || "");
     res.json({ results: searchBrainFiles(q, 20) });
+  });
+
+  router.post("/files/upload", (req: Request, res: Response) => {
+    try {
+      const folder = String(req.body?.folder || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      const files = Array.isArray(req.body?.files)
+        ? (req.body.files as Array<{ name: string; content: string }>)
+        : [];
+      if (files.length === 0) {
+        res.status(400).json({ error: "No files provided" });
+        return;
+      }
+      const saved: string[] = [];
+      for (const f of files) {
+        const cleanName = String(f.name || "untitled.md").replace(/\\/g, "/").replace(/^\/+/, "");
+        const relPath = folder ? `${folder}/${cleanName}` : cleanName;
+        writeBrainFile(relPath, String(f.content ?? ""));
+        saved.push(relPath);
+      }
+      logAudit("admin", "brain_file.upload", folder || "root", `${saved.length} file(s) uploaded`);
+      res.json({ ok: true, count: saved.length, paths: saved });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ========================
@@ -954,6 +979,32 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   router.get("/memories", (req: Request, res: Response) => {
     const db = getDb();
     const brainId = typeof req.query.brainId === "string" ? req.query.brainId : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q) {
+      const safe = q
+        .replace(/["'*^():-]/g, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((t) => `"${t}"*`)
+        .join(" OR ");
+      if (safe) {
+        try {
+          const matched = db
+            .prepare(
+              `SELECT m.* FROM memories m
+               JOIN memories_fts f ON f.memory_id = m.id
+               WHERE memories_fts MATCH ?
+               ORDER BY m.importance DESC, m.created_at DESC LIMIT 80`
+            )
+            .all(safe);
+          res.json({ memories: matched });
+          return;
+        } catch {
+          // fallback to normal listing
+        }
+      }
+    }
     const rows = brainId
       ? db.prepare("SELECT * FROM memories WHERE brain_id = ? ORDER BY created_at DESC LIMIT 80").all(brainId)
       : db.prepare("SELECT * FROM memories ORDER BY created_at DESC LIMIT 80").all();
@@ -1358,6 +1409,85 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     }
   });
 
+  // ========================
+  // COMMERCIAL BRAIN & TEAM BUNDLES (Export / Import .pandawa.json)
+  // ========================
+  router.get("/bundles/export", (req: Request, res: Response) => {
+    try {
+      const teamId = typeof req.query.teamId === "string" ? req.query.teamId : undefined;
+      const includeMainBrain = req.query.includeMainBrain !== "false";
+      const bundle = exportTeamBundle({ teamId, includeMainBrain });
+      res.json(bundle);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/bundles/import", (req: Request, res: Response) => {
+    try {
+      const bundle = req.body as PandawaBundle;
+      const out = importTeamBundle(bundle);
+      broadcast({ type: "topology_updated" });
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // 1-Click Clean Layered Auto-Layout for Canvas
+  router.post("/topology/auto-layout", (_req: Request, res: Response) => {
+    const db = getDb();
+    const nodes = db.prepare("SELECT id, type, ref_id, data_json FROM canvas_nodes").all() as Array<{
+      id: string;
+      type: string;
+      ref_id: string;
+      data_json: string;
+    }>;
+
+    const groups: Record<string, typeof nodes> = {
+      main_brain: [],
+      team_brain: [],
+      agent: [],
+      provider: [],
+      knowledge_top: [],
+      bottom: [],
+    };
+
+    for (const n of nodes) {
+      if (n.type === "main_brain") groups.main_brain.push(n);
+      else if (n.type === "team_brain") groups.team_brain.push(n);
+      else if (n.type === "agent") groups.agent.push(n);
+      else if (n.type === "provider") groups.provider.push(n);
+      else if (n.type === "knowledge" && String(n.ref_id).startsWith("main-brain/")) groups.knowledge_top.push(n);
+      else groups.bottom.push(n);
+    }
+
+    const upd = db.prepare("UPDATE canvas_nodes SET position_x = ?, position_y = ? WHERE id = ?");
+    const rowWidth = Math.max(groups.agent.length, groups.provider.length, 3) * 280;
+
+    function placeRow(list: typeof nodes, y: number, gap = 280) {
+      if (list.length === 0) return;
+      const totalW = (list.length - 1) * gap;
+      const startX = Math.max(0, Math.round((rowWidth - totalW) / 2));
+      list.forEach((n, idx) => upd.run(startX + idx * gap, y, n.id));
+    }
+
+    // Place top main-brain row flanking with main-brain knowledge files
+    const topCombined = [
+      ...groups.knowledge_top.slice(0, 1),
+      ...groups.main_brain,
+      ...groups.knowledge_top.slice(1),
+    ];
+    placeRow(topCombined, 20, 340);
+    placeRow(groups.team_brain, 220, 340);
+    placeRow(groups.agent, 440, 280);
+    placeRow(groups.provider, 670, 280);
+    placeRow(groups.bottom, 870, 280);
+
+    broadcast({ type: "topology_updated" });
+    res.json({ ok: true });
+  });
+
   router.get("/tools", (_req: Request, res: Response) => {
     res.json({ packs: listAllToolPacks() });
   });
@@ -1367,16 +1497,19 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   // ========================
   router.get("/system/status", (_req: Request, res: Response) => {
     const db = getDb();
+    const allProvs = db.prepare("SELECT * FROM providers").all() as unknown as ProviderRecord[];
+    const readyProviders = allProvs.filter((p) => {
+      if (!p.enabled) return false;
+      const k = decryptSecret(p.api_key || "");
+      return k.trim().length > 0;
+    }).length;
+
     const counts = {
       brains: (db.prepare("SELECT COUNT(*) as c FROM brains").get() as { c: number }).c,
       agents: (db.prepare("SELECT COUNT(*) as c FROM agents").get() as { c: number }).c,
       teams: (db.prepare("SELECT COUNT(*) as c FROM teams").get() as { c: number }).c,
-      providers: (db.prepare("SELECT COUNT(*) as c FROM providers").get() as { c: number }).c,
-      configuredProviders: (
-        db.prepare("SELECT COUNT(*) as c FROM providers WHERE enabled=1 AND length(trim(api_key)) > 0 AND api_key != 'ollama'").get() as {
-          c: number;
-        }
-      ).c,
+      providers: allProvs.length,
+      configuredProviders: readyProviders,
       sessions: (db.prepare("SELECT COUNT(*) as c FROM sessions").get() as { c: number }).c,
       memories: (db.prepare("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c,
       skills: listSkills().length,
@@ -1393,7 +1526,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "2.0.0",
+      version: "2.5.0",
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),

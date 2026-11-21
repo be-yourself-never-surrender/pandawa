@@ -103,7 +103,7 @@ export const PandawaNode: React.FC<NodeProps> = ({ data, selected }) => {
 
   return (
     <div
-      className={`min-w-[205px] max-w-[250px] rounded-xl bg-[#111623]/95 backdrop-blur-md border transition-all ${
+      className={`w-[220px] rounded-xl bg-[#111623]/95 backdrop-blur-md border transition-all ${
         theme.border
       } ${theme.glow} ${selected ? "ring-2 ring-white/80 scale-[1.02]" : ""} ${
         d.isActive ? "ring-2 ring-emerald-400 shadow-[0_0_32px_rgba(16,185,129,0.55)] animate-pulse" : ""

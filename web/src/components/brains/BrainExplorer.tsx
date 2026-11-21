@@ -13,9 +13,14 @@ import {
   ChevronDown,
   CheckCircle2,
   Edit3,
+  Upload,
+  Eye,
+  Code,
+  PanelLeft,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { BrainTreeNode, TopologyEdge, TopologyNode } from "../../types";
+import { MarkdownView } from "../MarkdownView";
 
 interface BrainExplorerProps {
   initialFilePath?: string | null;
@@ -27,6 +32,10 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   const [expanded, setExpanded] = useState<Set<string>>(
     new Set(["main-brain", "teams", "teams/pandawa-core", "agents"])
   );
+  const [showTree, setShowTree] = useState(true);
+  const [previewMode, setPreviewMode] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadFolder, setUploadFolder] = useState("main-brain");
   const [activeFile, setActiveFile] = useState<string>("");
   const [content, setContent] = useState<string>("");
   const [dirty, setDirty] = useState(false);
@@ -48,8 +57,9 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
       setActiveFile(res.path);
       setContent(res.content);
       setDirty(false);
+      const dir = res.path.includes("/") ? res.path.split("/").slice(0, -1).join("/") : "";
+      if (dir) setUploadFolder(dir);
     } catch {
-      // Fallback: if file does not exist, open main-brain/soul.md
       try {
         const fb = await apiFetch<{ path: string; content: string }>(
           `/api/files/read?path=${encodeURIComponent("main-brain/soul.md")}`
@@ -90,6 +100,23 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
     } finally {
       setSaving(false);
     }
+  }
+
+  async function uploadFileList(fileList: FileList | null, targetDir = uploadFolder) {
+    if (!fileList || fileList.length === 0) return;
+    const payload: Array<{ name: string; content: string }> = [];
+    for (const file of Array.from(fileList)) {
+      const text = await file.text();
+      payload.push({ name: file.name, content: text });
+    }
+    const res = await apiFetch<{ count: number; paths: string[] }>("/api/files/upload", {
+      method: "POST",
+      body: JSON.stringify({ folder: targetDir, files: payload }),
+    });
+    await loadTree();
+    if (res.paths[0]) await openFile(res.paths[0]);
+    setNotice(`Uploaded ${res.count} file(s) to ${targetDir || "root"}!`);
+    setTimeout(() => setNotice(""), 2800);
   }
 
   async function createNewFile(prefix = "") {
@@ -190,6 +217,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             }`}
             onClick={() => {
               if (node.type === "folder") {
+                setUploadFolder(node.path);
                 setExpanded((prev) => {
                   const next = new Set(prev);
                   if (next.has(node.path)) next.delete(node.path);
@@ -231,6 +259,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               {node.type === "folder" && (
                 <button
                   title="New file in folder"
+                  aria-label="New file in folder"
                   onClick={() => createNewFile(node.path)}
                   className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-white"
                 >
@@ -239,6 +268,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               )}
               <button
                 title="Pin to Brain Canvas"
+                aria-label="Pin to Brain Canvas"
                 onClick={() => pinToCanvas(node.path, node.type === "folder")}
                 className="p-1 rounded hover:bg-amber-500/20 text-amber-400"
               >
@@ -246,6 +276,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               </button>
               <button
                 title="Rename"
+                aria-label="Rename"
                 onClick={() => handleRename(node.path)}
                 className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-white"
               >
@@ -253,6 +284,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
               </button>
               <button
                 title="Delete"
+                aria-label="Delete"
                 onClick={() => handleDelete(node.path)}
                 className="p-1 rounded hover:bg-rose-500/20 text-rose-400"
               >
@@ -267,122 +299,190 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   }
 
   return (
-    <div className="flex h-screen bg-[#080a0f]">
-      {/* Left Explorer Pane */}
-      <div className="w-80 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
-        <div className="p-3.5 border-b border-slate-800/80 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-              Brain Files & Folders
-            </h2>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => createNewFile("")}
-                title="New File (e.g. soul.md)"
-                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
-              >
-                <FilePlus className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => createNewFolder(true)}
-                title="New Complete Brain Folder (soul.md + rules.md + memory.md)"
-                className="px-2 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
-              >
-                <FolderPlus className="w-3.5 h-3.5" /> + Brain Kit
-              </button>
-            </div>
-          </div>
-
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
-              value={searchQuery}
-              onChange={(e) => runSearch(e.target.value)}
-              placeholder="FTS5 search across all Brain files..."
-              className="w-full bg-[#080a0f] border border-slate-800 focus:border-amber-500 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-200 outline-none"
-            />
+    <div
+      className="flex h-screen bg-[#080a0f] relative"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setIsDragging(true);
+      }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        uploadFileList(e.dataTransfer.files, uploadFolder);
+      }}
+    >
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-40 bg-amber-500/10 border-2 border-dashed border-amber-400 flex items-center justify-center backdrop-blur-xs">
+          <div className="px-6 py-4 rounded-2xl bg-[#0d111b] border border-amber-500/50 text-amber-300 font-semibold text-sm shadow-2xl">
+            Drop files here to upload into <code className="text-white">{uploadFolder || "root"}</code>
           </div>
         </div>
+      )}
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {searchQuery.trim() ? (
-            <div className="space-y-1.5 p-1">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 px-1">
-                Search Results ({searchResults.length})
-              </div>
-              {searchResults.map((r) => (
-                <button
-                  key={r.rel_path}
-                  onClick={() => openFile(r.rel_path)}
-                  className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-slate-800 cursor-pointer"
+      {/* Left Explorer Pane (Collapsible) */}
+      {showTree && (
+        <div className="w-64 lg:w-72 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
+          <div className="p-3 border-b border-slate-800/80 space-y-2.5">
+            <div className="flex items-center justify-between gap-1">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200 truncate">
+                Brain Files
+              </h2>
+              <div className="flex items-center gap-1 shrink-0">
+                <label
+                  title={`Upload documents into ${uploadFolder || "root"}`}
+                  className="p-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/35 text-cyan-300 cursor-pointer"
                 >
-                  <div className="text-xs font-mono text-amber-300 truncate">{r.rel_path}</div>
-                  <div className="text-[11px] text-slate-400 line-clamp-2 mt-0.5">{r.snippet}</div>
+                  <Upload className="w-3.5 h-3.5" />
+                  <input
+                    type="file"
+                    multiple
+                    accept=".md,.txt,.json,.yaml,.yml,.csv,.ts,.tsx,.js,.py,.sql,.sh,.xml,.html,.css"
+                    className="hidden"
+                    onChange={(e) => {
+                      uploadFileList(e.target.files, uploadFolder);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+                <button
+                  onClick={() => createNewFile(uploadFolder)}
+                  title="New File (e.g. soul.md)"
+                  aria-label="New File"
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
+                >
+                  <FilePlus className="w-3.5 h-3.5" />
                 </button>
-              ))}
-              {searchResults.length === 0 && (
-                <div className="text-xs text-slate-500 p-2">No matches found.</div>
-              )}
+                <button
+                  onClick={() => createNewFolder(true)}
+                  title="New Complete Brain Folder (soul.md + rules.md + memory.md)"
+                  className="px-2 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" /> Kit
+                </button>
+              </div>
             </div>
-          ) : (
-            renderTree(tree)
-          )}
+
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                value={searchQuery}
+                onChange={(e) => runSearch(e.target.value)}
+                placeholder="FTS5 search Brain files..."
+                className="w-full bg-[#080a0f] border border-slate-800 focus:border-amber-500 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-200 outline-none"
+              />
+            </div>
+
+            <div className="text-[10px] text-slate-500 truncate">
+              Upload target: <code className="text-amber-300/90">{uploadFolder || "root"}</code> (or drag &amp; drop)
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+            {searchQuery.trim() ? (
+              <div className="space-y-1.5 p-1">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 px-1">
+                  Search Results ({searchResults.length})
+                </div>
+                {searchResults.map((r) => (
+                  <button
+                    key={r.rel_path}
+                    onClick={() => openFile(r.rel_path)}
+                    className="w-full text-left p-2 rounded-lg bg-[#090c14] hover:bg-slate-800/80 border border-slate-800 cursor-pointer"
+                  >
+                    <div className="text-xs font-mono text-amber-300 truncate">{r.rel_path}</div>
+                    <div className="text-[11px] text-slate-400 line-clamp-2 mt-0.5">{r.snippet}</div>
+                  </button>
+                ))}
+                {searchResults.length === 0 && (
+                  <div className="text-xs text-slate-500 p-2">No matches found.</div>
+                )}
+              </div>
+            ) : (
+              renderTree(tree)
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Right Code / Markdown Editor */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="h-14 px-4 bg-[#0d111b] border-b border-slate-800/80 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-xs font-mono text-amber-300 truncate">
-              {activeFile || "Select or create a Brain file"}
-              {dirty && <span className="text-rose-400 ml-1.5">● unsaved</span>}
-            </div>
-            <div className="text-[11px] text-slate-500">
-              Changes immediately update live Agent context & SQLite FTS5 search
+        <div className="min-h-14 px-4 py-2.5 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <button
+              onClick={() => setShowTree((s) => !s)}
+              title="Toggle file tree"
+              aria-label="Toggle file tree"
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer shrink-0"
+            >
+              <PanelLeft className="w-3.5 h-3.5" />
+            </button>
+            <div className="min-w-0">
+              <div className="text-xs font-mono font-semibold text-amber-300 truncate">
+                {activeFile || "Select or create a Brain file"}
+                {dirty && <span className="text-rose-400 ml-1.5">● unsaved</span>}
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">
+                Live synced to Agent Brain runtime &amp; SQLite FTS5
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
             {notice && (
-              <span className="text-xs text-emerald-400 flex items-center gap-1">
+              <span className="text-xs text-emerald-400 flex items-center gap-1 mr-1">
                 <CheckCircle2 className="w-3.5 h-3.5" /> {notice}
               </span>
             )}
+            <button
+              onClick={() => setPreviewMode((p) => !p)}
+              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 cursor-pointer"
+            >
+              {previewMode ? <Code className="w-3.5 h-3.5 text-cyan-400" /> : <Eye className="w-3.5 h-3.5 text-cyan-400" />}
+              {previewMode ? "Edit" : "Preview"}
+            </button>
             {activeFile && (
               <button
                 onClick={() => pinToCanvas(activeFile, false)}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1 cursor-pointer"
               >
-                <Pin className="w-3.5 h-3.5 text-amber-400" /> Pin to Canvas
+                <Pin className="w-3.5 h-3.5 text-amber-400" /> Pin
               </button>
             )}
             <button
               onClick={saveCurrentFile}
               disabled={!activeFile || saving}
-              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
             >
-              <Save className="w-3.5 h-3.5" /> {saving ? "Saving..." : "Save (Ctrl+S)"}
+              <Save className="w-3.5 h-3.5" /> {saving ? "Saving..." : "Save"}
             </button>
           </div>
         </div>
 
-        <textarea
-          value={content}
-          onChange={(e) => {
-            setContent(e.target.value);
-            setDirty(true);
-          }}
-          onKeyDown={(e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-              e.preventDefault();
-              saveCurrentFile();
-            }
-          }}
-          spellCheck={false}
-          placeholder="Write soul.md, rules.md, team charter, SOPs, or custom markdown instructions..."
-          className="flex-1 w-full bg-[#080a0f] text-slate-100 font-mono text-sm p-6 outline-none resize-none leading-relaxed"
-        />
+        {previewMode ? (
+          <div className="flex-1 overflow-y-auto p-6 bg-[#080a0f]">
+            <div className="max-w-3xl">
+              <MarkdownView content={content || "*Empty file*"} />
+            </div>
+          </div>
+        ) : (
+          <textarea
+            value={content}
+            onChange={(e) => {
+              setContent(e.target.value);
+              setDirty(true);
+            }}
+            onKeyDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                e.preventDefault();
+                saveCurrentFile();
+              }
+            }}
+            spellCheck={false}
+            placeholder="Write soul.md, rules.md, team charter, SOPs, or drag & drop files..."
+            className="flex-1 w-full bg-[#080a0f] text-slate-100 font-mono text-sm p-6 outline-none resize-none leading-relaxed"
+          />
+        )}
       </div>
     </div>
   );

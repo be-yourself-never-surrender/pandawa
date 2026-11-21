@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ShieldCheck, Lock, Sparkles, ArrowRight } from "lucide-react";
+import { ShieldCheck, Lock, Sparkles, ArrowRight, Eye, EyeOff } from "lucide-react";
 import { apiFetch, setStoredToken } from "../api/client";
 
 interface LoginScreenProps {
@@ -8,6 +8,7 @@ interface LoginScreenProps {
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
   const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -65,13 +66,21 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
-                  type="password"
+                  type={showPw ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter password (default: 11111111)"
                   autoFocus
-                  className="w-full bg-[#090c14] border border-slate-700/80 focus:border-amber-500 rounded-xl pl-10 pr-4 py-3 text-sm text-white placeholder-slate-500 outline-none transition"
+                  className="w-full bg-[#090c14] border border-slate-700/80 focus:border-amber-500 rounded-xl pl-10 pr-10 py-3 text-sm text-white placeholder-slate-500 outline-none transition"
                 />
+                <button
+                  type="button"
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  onClick={() => setShowPw((s) => !s)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
 
@@ -84,7 +93,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
             <button
               type="submit"
               disabled={loading || !password}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:opacity-50 text-slate-950 font-semibold text-sm flex items-center justify-center gap-2 transition shadow-lg shadow-amber-500/20 cursor-pointer"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-950 font-semibold text-sm flex items-center justify-center gap-2 transition shadow-lg shadow-amber-500/20 disabled:shadow-none cursor-pointer"
             >
               {loading ? "Authenticating..." : "Enter Pandawa Studio"}
               <ArrowRight className="w-4 h-4" />

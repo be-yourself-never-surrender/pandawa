@@ -417,32 +417,32 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
-  // Layer 1: Main Brain + Knowledge mount
-  insertNode.run(
-    "node_main_brain",
-    "main_brain",
-    "brain_main",
-    "Main Brain (Pandawa Core)",
-    420,
-    40,
-    JSON.stringify({ folderPath: "main-brain", color: "#f59e0b", subtitle: "Global Soul, Rules & Skills" })
-  );
+  // Layer 1: Main Brain + Knowledge mounts (clean generous spacing, zero overlap)
   insertNode.run(
     "node_know_main_soul",
     "knowledge",
     "main-brain/soul.md",
     "main-brain/soul.md",
-    80,
-    40,
+    140,
+    20,
     JSON.stringify({ path: "main-brain/soul.md", isFolder: false, color: "#fbbf24" })
+  );
+  insertNode.run(
+    "node_main_brain",
+    "main_brain",
+    "brain_main",
+    "Main Brain (Pandawa Core)",
+    560,
+    20,
+    JSON.stringify({ folderPath: "main-brain", color: "#f59e0b", subtitle: "Global Soul, Rules & Skills" })
   );
   insertNode.run(
     "node_know_main_rules",
     "knowledge",
     "main-brain/rules.md",
     "main-brain/rules.md",
-    790,
-    40,
+    980,
+    20,
     JSON.stringify({ path: "main-brain/rules.md", isFolder: false, color: "#fbbf24" })
   );
 
@@ -452,19 +452,66 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "team_brain",
     "brain_team_core",
     "Team Brain: Pandawa Core",
-    420,
+    560,
     220,
     JSON.stringify({ folderPath: "teams/pandawa-core", teamId: "team_pandawa", color: "#8b5cf6", subtitle: "Shared Team Blackboard & Memory" })
   );
 
-  // Layer 3: Multi-AI Model Providers
+  // Layer 3: 5 Pandawa Agents (directly below Team Brain — zero cross-row collisions!)
+  insertNode.run(
+    "node_agent_yudhistira",
+    "agent",
+    "agent_yudhistira",
+    "Yudhistira",
+    0,
+    440,
+    JSON.stringify({ agentId: "agent_yudhistira", avatar: "👑", role: "Chief Strategist", purpose: "strategy", color: "#f59e0b" })
+  );
+  insertNode.run(
+    "node_agent_bima",
+    "agent",
+    "agent_bima",
+    "Bima",
+    280,
+    440,
+    JSON.stringify({ agentId: "agent_bima", avatar: "🔥", role: "Execution Powerhouse", purpose: "execution", color: "#ef4444" })
+  );
+  insertNode.run(
+    "node_agent_arjuna",
+    "agent",
+    "agent_arjuna",
+    "Arjuna",
+    560,
+    440,
+    JSON.stringify({ agentId: "agent_arjuna", avatar: "🏹", role: "Precision Architect", purpose: "coding", color: "#06b6d4" })
+  );
+  insertNode.run(
+    "node_agent_nakula",
+    "agent",
+    "agent_nakula",
+    "Nakula",
+    840,
+    440,
+    JSON.stringify({ agentId: "agent_nakula", avatar: "🧭", role: "Deep Researcher", purpose: "research", color: "#10b981" })
+  );
+  insertNode.run(
+    "node_agent_sadewa",
+    "agent",
+    "agent_sadewa",
+    "Sadewa",
+    1120,
+    440,
+    JSON.stringify({ agentId: "agent_sadewa", avatar: "🛡️", role: "Security & QA Reviewer", purpose: "review", color: "#a855f7" })
+  );
+
+  // Layer 4: Multi-AI Model Providers (cleanly below each Agent)
   insertNode.run(
     "node_prov_anthropic",
     "provider",
     "prov_anthropic",
     "Anthropic · Claude Sonnet 4",
-    40,
-    380,
+    0,
+    670,
     JSON.stringify({ providerId: "prov_anthropic", model: "claude-sonnet-4-20250514", purpose: "Strategy", color: "#d97706" })
   );
   insertNode.run(
@@ -473,7 +520,7 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "prov_openai",
     "OpenAI · GPT-4.1",
     280,
-    380,
+    670,
     JSON.stringify({ providerId: "prov_openai", model: "gpt-4.1", purpose: "Execution", color: "#10b981" })
   );
   insertNode.run(
@@ -481,8 +528,8 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "provider",
     "prov_deepseek",
     "DeepSeek · Coding",
-    510,
-    380,
+    560,
+    670,
     JSON.stringify({ providerId: "prov_deepseek", model: "deepseek-chat", purpose: "Coding", color: "#06b6d4" })
   );
   insertNode.run(
@@ -490,8 +537,8 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "provider",
     "prov_gemini",
     "Google · Gemini 2.5 Flash",
-    740,
-    380,
+    840,
+    670,
     JSON.stringify({ providerId: "prov_gemini", model: "gemini-2.5-flash", purpose: "Research", color: "#3b82f6" })
   );
   insertNode.run(
@@ -499,75 +546,19 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "provider",
     "prov_openrouter",
     "OpenRouter · Hermes 405B",
-    980,
-    380,
+    1120,
+    670,
     JSON.stringify({ providerId: "prov_openrouter", model: "nousresearch/hermes-3-llama-3.1-405b", purpose: "Review", color: "#a855f7" })
   );
 
-  // Layer 4: 5 Pandawa Agents
-  insertNode.run(
-    "node_agent_yudhistira",
-    "agent",
-    "agent_yudhistira",
-    "Yudhistira",
-    40,
-    570,
-    JSON.stringify({ agentId: "agent_yudhistira", avatar: "👑", role: "Chief Strategist", color: "#f59e0b" })
-  );
-  insertNode.run(
-    "node_agent_bima",
-    "agent",
-    "agent_bima",
-    "Bima",
-    280,
-    570,
-    JSON.stringify({ agentId: "agent_bima", avatar: "🔥", role: "Execution Powerhouse", color: "#ef4444" })
-  );
-  insertNode.run(
-    "node_agent_arjuna",
-    "agent",
-    "agent_arjuna",
-    "Arjuna",
-    510,
-    570,
-    JSON.stringify({ agentId: "agent_arjuna", avatar: "🏹", role: "Precision Architect", color: "#06b6d4" })
-  );
-  insertNode.run(
-    "node_agent_nakula",
-    "agent",
-    "agent_nakula",
-    "Nakula",
-    740,
-    570,
-    JSON.stringify({ agentId: "agent_nakula", avatar: "🧭", role: "Deep Researcher", color: "#10b981" })
-  );
-  insertNode.run(
-    "node_agent_sadewa",
-    "agent",
-    "agent_sadewa",
-    "Sadewa",
-    980,
-    570,
-    JSON.stringify({ agentId: "agent_sadewa", avatar: "🛡️", role: "Security & QA Reviewer", color: "#a855f7" })
-  );
-
   // Layer 5: Agent Personal Folders & Toolpacks
-  insertNode.run(
-    "node_know_arjuna",
-    "knowledge",
-    "agents/arjuna",
-    "agents/arjuna/ (soul.md)",
-    490,
-    760,
-    JSON.stringify({ path: "agents/arjuna", isFolder: true, color: "#06b6d4" })
-  );
   insertNode.run(
     "node_know_yudhistira",
     "knowledge",
     "agents/yudhistira",
     "agents/yudhistira/ (soul.md)",
-    30,
-    760,
+    0,
+    870,
     JSON.stringify({ path: "agents/yudhistira", isFolder: true, color: "#f59e0b" })
   );
   insertNode.run(
@@ -575,17 +566,26 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     "toolpack",
     "workspace_shell",
     "Workspace & Shell Tools",
-    270,
-    760,
+    280,
+    870,
     JSON.stringify({ packs: ["workspace", "shell"], color: "#ec4899" })
+  );
+  insertNode.run(
+    "node_know_arjuna",
+    "knowledge",
+    "agents/arjuna",
+    "agents/arjuna/ (soul.md)",
+    560,
+    870,
+    JSON.stringify({ path: "agents/arjuna", isFolder: true, color: "#06b6d4" })
   );
   insertNode.run(
     "node_tool_web",
     "toolpack",
     "web_research",
     "Web Fetch & HTTP Tools",
-    750,
-    760,
+    840,
+    870,
     JSON.stringify({ packs: ["web"], color: "#14b8a6" })
   );
 
@@ -594,39 +594,38 @@ Perceptive, foresighted, and thorough. You spot hidden flaws, security holes, ra
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  // Main Brain <- Knowledge
-  insertEdge.run("edge_soul_main", "node_know_main_soul", "node_main_brain", "", "", "knowledge_mount", "read_write", "soul.md", 1, "{}");
-  insertEdge.run("edge_rules_main", "node_know_main_rules", "node_main_brain", "", "", "knowledge_mount", "read", "rules.md", 1, "{}");
+  // Main Brain <- Knowledge (use left/right handles cleanly)
+  insertEdge.run("edge_soul_main", "node_know_main_soul", "node_main_brain", "right", "left", "knowledge_mount", "read_write", "soul.md", 1, "{}");
+  insertEdge.run("edge_rules_main", "node_know_main_rules", "node_main_brain", "left", "right", "knowledge_mount", "read", "rules.md", 1, "{}");
 
   // Main Brain -> Team Brain
-  insertEdge.run("edge_main_team", "node_main_brain", "node_team_brain", "", "", "brain_link", "sync", "inherits + sync", 1, "{}");
+  insertEdge.run("edge_main_team", "node_main_brain", "node_team_brain", "bottom", "top", "brain_link", "sync", "inherits + sync", 1, "{}");
 
   // Team Brain -> Agents
-  insertEdge.run("edge_tb_yud", "node_team_brain", "node_agent_yudhistira", "", "", "brain_link", "read_write", "team brain", 1, "{}");
-  insertEdge.run("edge_tb_bim", "node_team_brain", "node_agent_bima", "", "", "brain_link", "read_write", "team brain", 1, "{}");
-  insertEdge.run("edge_tb_arj", "node_team_brain", "node_agent_arjuna", "", "", "brain_link", "read_write", "team brain", 1, "{}");
-  insertEdge.run("edge_tb_nak", "node_team_brain", "node_agent_nakula", "", "", "brain_link", "read_write", "team brain", 1, "{}");
-  insertEdge.run("edge_tb_sad", "node_team_brain", "node_agent_sadewa", "", "", "brain_link", "read_write", "team brain", 1, "{}");
+  insertEdge.run("edge_tb_yud", "node_team_brain", "node_agent_yudhistira", "bottom", "top", "brain_link", "read_write", "team brain", 1, "{}");
+  insertEdge.run("edge_tb_bim", "node_team_brain", "node_agent_bima", "bottom", "top", "brain_link", "read_write", "team brain", 1, "{}");
+  insertEdge.run("edge_tb_arj", "node_team_brain", "node_agent_arjuna", "bottom", "top", "brain_link", "read_write", "team brain", 1, "{}");
+  insertEdge.run("edge_tb_nak", "node_team_brain", "node_agent_nakula", "bottom", "top", "brain_link", "read_write", "team brain", 1, "{}");
+  insertEdge.run("edge_tb_sad", "node_team_brain", "node_agent_sadewa", "bottom", "top", "brain_link", "read_write", "team brain", 1, "{}");
 
-  // Multi-AI Model bindings -> Agents
-  insertEdge.run("edge_m_yud", "node_prov_anthropic", "node_agent_yudhistira", "", "", "model_binding", "read", "strategy AI", 1, "{}");
-  insertEdge.run("edge_m_bim", "node_prov_openai", "node_agent_bima", "", "", "model_binding", "read", "exec AI", 1, "{}");
-  insertEdge.run("edge_m_arj", "node_prov_deepseek", "node_agent_arjuna", "", "", "model_binding", "read", "coding AI", 1, "{}");
-  insertEdge.run("edge_m_nak", "node_prov_gemini", "node_agent_nakula", "", "", "model_binding", "read", "research AI", 1, "{}");
-  insertEdge.run("edge_m_sad", "node_prov_openrouter", "node_agent_sadewa", "", "", "model_binding", "read", "review AI", 1, "{}");
+  // Multi-AI Model bindings -> Agents (below agents -> bottom handle)
+  insertEdge.run("edge_m_yud", "node_agent_yudhistira", "node_prov_anthropic", "bottom", "top", "model_binding", "read", "strategy AI", 1, "{}");
+  insertEdge.run("edge_m_bim", "node_agent_bima", "node_prov_openai", "bottom", "top", "model_binding", "read", "exec AI", 1, "{}");
+  insertEdge.run("edge_m_arj", "node_agent_arjuna", "node_prov_deepseek", "bottom", "top", "model_binding", "read", "coding AI", 1, "{}");
+  insertEdge.run("edge_m_nak", "node_agent_nakula", "node_prov_gemini", "bottom", "top", "model_binding", "read", "research AI", 1, "{}");
+  insertEdge.run("edge_m_sad", "node_agent_sadewa", "node_prov_openrouter", "bottom", "top", "model_binding", "read", "review AI", 1, "{}");
 
-  // Personal Folders & Tools -> Agents
-  insertEdge.run("edge_k_yud", "node_know_yudhistira", "node_agent_yudhistira", "", "", "knowledge_mount", "read_write", "personal folder", 0, "{}");
-  insertEdge.run("edge_k_arj", "node_know_arjuna", "node_agent_arjuna", "", "", "knowledge_mount", "read_write", "personal folder", 0, "{}");
-  insertEdge.run("edge_t_bim", "node_tool_workspace", "node_agent_bima", "", "", "tool_grant", "read_write", "tools", 0, "{}");
-  insertEdge.run("edge_t_arj", "node_tool_workspace", "node_agent_arjuna", "", "", "tool_grant", "read_write", "tools", 0, "{}");
-  insertEdge.run("edge_t_nak", "node_tool_web", "node_agent_nakula", "", "", "tool_grant", "read", "tools", 0, "{}");
+  // Personal Folders & Tools -> directly wired to Agents (clean smoothstep routing)
+  insertEdge.run("edge_k_yud", "node_agent_yudhistira", "node_know_yudhistira", "left", "left", "knowledge_mount", "read_write", "soul.md", 0, "{}");
+  insertEdge.run("edge_k_arj", "node_agent_arjuna", "node_know_arjuna", "bottom", "top", "knowledge_mount", "read_write", "soul.md", 0, "{}");
+  insertEdge.run("edge_t_bim", "node_agent_bima", "node_tool_workspace", "bottom", "top", "tool_grant", "read_write", "tools", 0, "{}");
+  insertEdge.run("edge_t_nak", "node_agent_nakula", "node_tool_web", "bottom", "top", "tool_grant", "read", "tools", 0, "{}");
 
   // Peer Collaboration Links (Agentic Team horizontal mesh)
-  insertEdge.run("edge_peer_1", "node_agent_yudhistira", "node_agent_bima", "", "", "peer_collab", "sync", "peer", 0, "{}");
-  insertEdge.run("edge_peer_2", "node_agent_bima", "node_agent_arjuna", "", "", "peer_collab", "sync", "peer", 0, "{}");
-  insertEdge.run("edge_peer_3", "node_agent_arjuna", "node_agent_nakula", "", "", "peer_collab", "sync", "peer", 0, "{}");
-  insertEdge.run("edge_peer_4", "node_agent_nakula", "node_agent_sadewa", "", "", "peer_collab", "sync", "peer", 0, "{}");
+  insertEdge.run("edge_peer_1", "node_agent_yudhistira", "node_agent_bima", "right", "left", "peer_collab", "sync", "peer", 0, "{}");
+  insertEdge.run("edge_peer_2", "node_agent_bima", "node_agent_arjuna", "right", "left", "peer_collab", "sync", "peer", 0, "{}");
+  insertEdge.run("edge_peer_3", "node_agent_arjuna", "node_agent_nakula", "right", "left", "peer_collab", "sync", "peer", 0, "{}");
+  insertEdge.run("edge_peer_4", "node_agent_nakula", "node_agent_sadewa", "right", "left", "peer_collab", "sync", "peer", 0, "{}");
 
   reindexAllBrainFiles();
 }

@@ -11,9 +11,11 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  History,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BlackboardEntry, MessageItem, SessionItem, TeamItem } from "../../types";
+import { MarkdownView } from "../MarkdownView";
 
 export interface LiveStreamBuffer {
   agentId: string;
@@ -42,7 +44,8 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
   const [selectedPeers, setSelectedPeers] = useState<Set<string>>(new Set());
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
-  const [showBlackboard, setShowBlackboard] = useState(true);
+  const [showHistory, setShowHistory] = useState(() => window.innerWidth >= 1280);
+  const [showBlackboard, setShowBlackboard] = useState(() => window.innerWidth >= 1360);
   const [expandedPeers, setExpandedPeers] = useState<Set<string>>(new Set());
 
   // Add blackboard directive form
@@ -203,8 +206,9 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
 
   return (
     <div className="flex h-screen bg-[#080a0f]">
-      {/* Left Sessions List */}
-      <div className="w-64 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
+      {/* Left Sessions List (Collapsible for clean narrow-screen UX) */}
+      {showHistory && (
+      <div className="w-60 shrink-0 bg-[#0d111b] border-r border-slate-800/80 flex flex-col">
         <div className="p-3 border-b border-slate-800/80">
           <button
             onClick={() => {
@@ -219,8 +223,13 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2 py-1">
-            Mission History
+            Mission History ({sessions.length})
           </div>
+          {sessions.length === 0 && (
+            <div className="p-3 rounded-xl bg-[#090c14] border border-slate-800/70 text-[11px] text-slate-500 text-center">
+              No missions yet. Send a mission to start your first team session.
+            </div>
+          )}
           {sessions.map((s) => (
             <div
               key={s.id}
@@ -240,6 +249,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
                 <div className="text-[10px] text-slate-500 uppercase">{s.target_type}</div>
               </div>
               <button
+                aria-label="Delete session"
                 onClick={async (e) => {
                   e.stopPropagation();
                   await apiFetch(`/api/sessions/${s.id}`, { method: "DELETE" });
@@ -257,12 +267,24 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
           ))}
         </div>
       </div>
+      )}
 
       {/* Center Mission Chat */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Mission Target Bar */}
-        <header className="px-4 py-3 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
+        <header className="px-4 py-3 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setShowHistory((s) => !s)}
+              title="Toggle Mission History"
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border cursor-pointer ${
+                showHistory
+                  ? "bg-slate-800 border-slate-700 text-white"
+                  : "bg-[#080a0f] border-slate-800 text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <History className="w-3.5 h-3.5" /> History
+            </button>
             <div className="flex rounded-lg bg-[#080a0f] border border-slate-800 p-0.5 text-xs">
               <button
                 onClick={() => {
@@ -344,9 +366,9 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
           )}
         </header>
 
-        {/* Active Peer Roster Pills */}
+        {/* Active Peer Roster Pills (clean wrap, no horizontal cutoffs) */}
         {targetType === "team" && activeTeam && (
-          <div className="px-4 py-2 bg-[#0a0d15] border-b border-slate-800/60 flex items-center gap-2 overflow-x-auto text-[11px]">
+          <div className="px-4 py-2 bg-[#0a0d15] border-b border-slate-800/60 flex items-center gap-1.5 flex-wrap text-[11px]">
             <span className="text-slate-500 shrink-0 font-medium">Active Peers:</span>
             {activeTeam.members.map((m) => {
               const on = selectedPeers.has(m.id);
@@ -474,9 +496,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
                         ))}
                       </div>
                     )}
-                    <div className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
-                      {m.content}
-                    </div>
+                    <MarkdownView content={m.content} />
                   </div>
                 )}
               </div>
@@ -514,10 +534,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
                       STREAMING
                     </span>
                   </div>
-                  <div className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
-                    {buf.text}
-                    <span className="inline-block w-2 h-4 bg-amber-400 ml-0.5 animate-pulse align-middle" />
-                  </div>
+                  <MarkdownView content={buf.text} />
                 </div>
               ))}
             </div>
@@ -549,7 +566,7 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
             <button
               type="submit"
               disabled={sending || !prompt.trim()}
-              className="px-5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:opacity-40 text-slate-950 font-semibold text-sm flex items-center gap-1.5 cursor-pointer"
+              className="px-5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-950 font-semibold text-sm flex items-center gap-1.5 cursor-pointer shrink-0"
             >
               <Send className="w-4 h-4" /> Send
             </button>

@@ -21,6 +21,8 @@ export interface ToolExecutionContext {
   runtime: CompiledAgentRuntime;
   teamId?: string;
   sessionId?: string;
+  consultDepth?: number;
+  consultPeer?: (peerId: string, question: string) => Promise<string>;
   mcpLookup?: Map<string, DiscoveredMcpTool>;
   onEvent?: (event: Record<string, unknown>) => void;
 }
@@ -246,6 +248,77 @@ const TOOLS: PandawaTool[] = [
         )
         .all(teamId, limit);
       return JSON.stringify(rows, null, 2);
+    },
+  },
+  {
+    pack: "team",
+    definition: {
+      name: "consult_teammate",
+      description:
+        "Directly consult a connected Pandawa peer teammate mid-task to get their specialist advice, review, code check, or research in real time.",
+      parameters: {
+        type: "object",
+        properties: {
+          teammate_name: {
+            type: "string",
+            description: "Name of the connected teammate to consult (e.g., Arjuna, Sadewa, Nakula, Bima, Yudhistira)",
+          },
+          question: {
+            type: "string",
+            description: "Focused question or snippet for your teammate to weigh in on",
+          },
+        },
+        required: ["teammate_name", "question"],
+      },
+    },
+    execute: async (args, ctx) => {
+      if ((ctx.consultDepth ?? 0) >= 2) {
+        return "Max peer consultation depth reached; synthesize with the information already gathered.";
+      }
+      if (!ctx.consultPeer) {
+        return "Peer consultation callback is unavailable in this execution context.";
+      }
+      const targetName = String(args.teammate_name || "").trim().toLowerCase();
+      const question = String(args.question || "").trim();
+      if (!targetName || !question) return "Both teammate_name and question are required.";
+
+      const peer = ctx.runtime.peers.find(
+        (p) => p.name.toLowerCase() === targetName || p.name.toLowerCase().includes(targetName)
+      );
+      if (!peer) {
+        const names = ctx.runtime.peers.map((p) => p.name).join(", ");
+        return `Teammate "${args.teammate_name}" is not connected to your Team Brain. Connected peers: ${names || "none"}.`;
+      }
+
+      ctx.onEvent?.({
+        type: "peer_consult",
+        fromAgent: ctx.runtime.agent.name,
+        toAgent: peer.name,
+        question: question.slice(0, 200),
+      });
+
+      const answer = await ctx.consultPeer(peer.id, question);
+
+      // Log consultation summary to Team Blackboard for full team visibility
+      try {
+        const db = getDb();
+        db.prepare(
+          `INSERT INTO blackboard_entries (id, team_id, session_id, author_agent_id, author_name, entry_type, title, content)
+           VALUES (?, ?, ?, ?, ?, 'finding', ?, ?)`
+        ).run(
+          generateId("bb"),
+          ctx.teamId || "team_pandawa",
+          ctx.sessionId || "",
+          peer.id,
+          `${ctx.runtime.agent.name} ↔ ${peer.name}`,
+          `Peer Consult: ${question.slice(0, 60)}`,
+          answer.slice(0, 1200)
+        );
+      } catch {
+        // ignore blackboard log errors
+      }
+
+      return `[Response from teammate ${peer.name} (${peer.title})]:\n${answer}`;
     },
   },
 

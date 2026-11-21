@@ -100,12 +100,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="flex items-center gap-1.5">
             <span
               className={`w-2 h-2 rounded-full ${
-                wsConnected ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-slate-600"
+                wsConnected ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-amber-400 animate-pulse"
               }`}
             />
-            {wsConnected ? "Realtime Live" : "Reconnecting..."}
+            {wsConnected ? "Realtime Live" : "Connecting..."}
           </span>
-          <span className="text-slate-600 font-mono">v2.0</span>
+          <span className="text-slate-600 font-mono">v2.5</span>
         </div>
         <button
           onClick={onLogout}

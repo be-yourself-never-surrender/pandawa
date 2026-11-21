@@ -46,7 +46,7 @@ function broadcast(event: Record<string, unknown>): void {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pandawa", version: "2.0.0" });
+  res.json({ ok: true, service: "pandawa", version: "2.5.0" });
 });
 
 app.use("/api", createApiRouter(broadcast));

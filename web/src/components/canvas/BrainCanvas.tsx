@@ -27,6 +27,10 @@ import {
   CheckCircle2,
   X,
   RefreshCw,
+  Download,
+  Upload,
+  LayoutGrid,
+  Copy,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BrainItem, BrainTreeNode, ProviderItem, TopologyEdge, TopologyNode } from "../../types";
@@ -119,12 +123,16 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
       const color = RELATION_COLORS[e.relation] || "#64748b";
       return {
         id: e.id,
+        type: "smoothstep",
         source: e.source,
         target: e.target,
         sourceHandle: e.sourceHandle || undefined,
         targetHandle: e.targetHandle || undefined,
         label: e.label || e.relation,
+        labelBgPadding: [6, 3] as [number, number],
+        labelBgBorderRadius: 6,
         animated: e.animated,
+        zIndex: 15,
         data: { relation: e.relation, permission: e.permission },
         style: {
           stroke: color,
@@ -171,6 +179,43 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
     }
   }
 
+  async function runAutoLayout() {
+    await apiFetch("/api/topology/auto-layout", { method: "POST" });
+    await loadAll();
+    setSavedNotice("Auto-layout applied!");
+    setTimeout(() => setSavedNotice(""), 2200);
+  }
+
+  async function exportBundle() {
+    const bundle = await apiFetch<Record<string, unknown>>("/api/bundles/export?includeMainBrain=true");
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pandawa-brain-kit-${Date.now()}.pandawa.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setSavedNotice("Exported .pandawa.json Brain Kit!");
+    setTimeout(() => setSavedNotice(""), 2500);
+  }
+
+  async function importBundleFile(file: File | null) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const res = await apiFetch<{ teamName: string; importedFiles: number }>("/api/bundles/import", {
+        method: "POST",
+        body: JSON.stringify(json),
+      });
+      await loadAll();
+      setSavedNotice(`Imported "${res.teamName}" (${res.importedFiles} files)!`);
+      setTimeout(() => setSavedNotice(""), 3200);
+    } catch (err) {
+      window.alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const onConnect = useCallback(
     (connection: Connection) => {
       const srcNode = nodes.find((n) => n.id === connection.source);
@@ -183,8 +228,12 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
       const newEdge: Edge = {
         ...connection,
         id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: "smoothstep",
         label,
+        labelBgPadding: [6, 3] as [number, number],
+        labelBgBorderRadius: 6,
         animated: relation !== "peer_collab",
+        zIndex: 15,
         data: { relation, permission: "read_write" },
         style: {
           stroke: color,
@@ -450,10 +499,10 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
 
   return (
     <div className="flex flex-col h-screen bg-[#080a0f]">
-      {/* Top Action Palette (n8n style) */}
-      <header className="h-14 px-4 bg-[#0d111b] border-b border-slate-800/80 flex items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-2 overflow-x-auto">
-          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider mr-1 hidden xl:inline">
+      {/* Top Action Palette (n8n style, wraps cleanly on narrow screens) */}
+      <header className="min-h-14 px-4 py-2 bg-[#0d111b] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider mr-1 hidden 2xl:inline">
             Add Node:
           </span>
           <button
@@ -507,15 +556,45 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
           </select>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
           {savedNotice && (
-            <span className="text-xs text-emerald-400 flex items-center gap-1">
+            <span className="text-xs text-emerald-400 flex items-center gap-1 mr-1">
               <CheckCircle2 className="w-3.5 h-3.5" /> {savedNotice}
             </span>
           )}
           <button
+            onClick={runAutoLayout}
+            title="Auto-arrange canvas cleanly"
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs flex items-center gap-1 cursor-pointer"
+          >
+            <LayoutGrid className="w-3.5 h-3.5" /> Arrange
+          </button>
+          <button
+            onClick={exportBundle}
+            title="Export commercial Brain & Team Kit (.pandawa.json — API keys stripped)"
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-amber-300 text-xs flex items-center gap-1 cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" /> Export Kit
+          </button>
+          <label
+            title="Import .pandawa.json Brain & Team Kit"
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-cyan-300 text-xs flex items-center gap-1 cursor-pointer"
+          >
+            <Upload className="w-3.5 h-3.5" /> Import Kit
+            <input
+              type="file"
+              accept=".json,.pandawa.json"
+              className="hidden"
+              onChange={(e) => {
+                importBundleFile(e.target.files?.[0] || null);
+                e.target.value = "";
+              }}
+            />
+          </label>
+          <button
             onClick={() => loadAll()}
             title="Reload topology"
+            aria-label="Reload topology"
             className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 cursor-pointer"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -597,17 +676,21 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
           <aside className="w-80 shrink-0 bg-[#0d111b] border-l border-slate-800/90 flex flex-col h-full overflow-y-auto p-4 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="text-xs font-bold uppercase tracking-wider text-amber-400">
-                {selectedNode ? `Inspect · ${selectedNode.data.nodeType}` : "Inspect Connection"}
+                {selectedNode
+                  ? `Inspect · ${String(selectedNode.data.nodeType || "node").replace(/_/g, " ")}`
+                  : "Inspect Connection"}
               </div>
               <div className="flex items-center gap-1">
                 <button
                   onClick={deleteSelected}
                   title="Remove from canvas"
+                  aria-label="Remove from canvas"
                   className="p-1.5 rounded-lg text-rose-400 hover:bg-rose-500/15 cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
                 <button
+                  aria-label="Close inspector"
                   onClick={() => {
                     setSelectedNodeId(null);
                     setSelectedEdgeId(null);
@@ -952,12 +1035,25 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                   {compiledPreview.summary.totalFiles} files · {compiledPreview.summary.totalChars.toLocaleString()} chars
                 </p>
               </div>
-              <button
-                onClick={() => setCompiledPreview(null)}
-                className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText(compiledPreview.systemPrompt).catch(() => {});
+                    setSavedNotice("Compiled Brain prompt copied!");
+                    setTimeout(() => setSavedNotice(""), 2000);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs flex items-center gap-1 cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" /> Copy Prompt
+                </button>
+                <button
+                  aria-label="Close compiled brain preview"
+                  onClick={() => setCompiledPreview(null)}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="p-4 border-b border-slate-800/80 flex flex-wrap gap-2 text-[11px]">
               {compiledPreview.summary.brainNames.map((b) => (

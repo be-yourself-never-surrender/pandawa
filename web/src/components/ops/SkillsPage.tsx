@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { BookOpen, Plus, Brain, Trash2, ExternalLink } from "lucide-react";
+import { BookOpen, Plus, Brain, Trash2, ExternalLink, Search } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { BrainItem } from "../../types";
 
@@ -34,11 +34,12 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
   const [memContent, setMemContent] = useState("");
   const [memBrainId, setMemBrainId] = useState("brain_main");
   const [memCategory, setMemCategory] = useState("lesson");
+  const [memSearch, setMemSearch] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (q = "") => {
     const [sRes, mRes, bRes] = await Promise.all([
       apiFetch<{ skills: SkillEntry[] }>("/api/skills"),
-      apiFetch<{ memories: MemoryEntry[] }>("/api/memories"),
+      apiFetch<{ memories: MemoryEntry[] }>(q.trim() ? `/api/memories?q=${encodeURIComponent(q.trim())}` : "/api/memories"),
       apiFetch<{ brains: BrainItem[] }>("/api/brains"),
     ]);
     setSkills(sRes.skills);
@@ -136,7 +137,8 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
             />
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              disabled={!skillTitle.trim()}
+              className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" /> Save Skill
             </button>
@@ -199,11 +201,25 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
             />
             <button
               type="submit"
-              className="px-4 py-2 rounded-lg bg-violet-500 hover:bg-violet-400 text-white font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+              disabled={!memContent.trim()}
+              className="px-4 py-2 rounded-lg bg-violet-500 hover:bg-violet-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-semibold inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" /> Add Memory
             </button>
           </form>
+
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={memSearch}
+              onChange={(e) => {
+                setMemSearch(e.target.value);
+                load(e.target.value).catch(() => {});
+              }}
+              placeholder="FTS5 search episodic memories..."
+              className="w-full bg-[#0e1320] border border-slate-800 focus:border-violet-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none"
+            />
+          </div>
 
           <div className="space-y-2">
             {memories.map((m) => (
@@ -218,9 +234,10 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
                   <div className="text-xs text-slate-200">{m.content}</div>
                 </div>
                 <button
+                  aria-label="Delete memory"
                   onClick={async () => {
                     await apiFetch(`/api/memories/${m.id}`, { method: "DELETE" });
-                    await load();
+                    await load(memSearch);
                   }}
                   className="text-slate-600 hover:text-rose-400 p-1 cursor-pointer"
                 >
@@ -229,8 +246,10 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
               </div>
             ))}
             {memories.length === 0 && (
-              <div className="text-xs text-slate-500 p-3">
-                No episodic memories stored yet. Agents can also store memories automatically during missions!
+              <div className="p-4 rounded-xl bg-[#0e1320] border border-slate-800/80 text-xs text-slate-400 text-center">
+                {memSearch.trim()
+                  ? "No memories match your search query."
+                  : "No episodic memories stored yet. Add one above or let Pandawa agents store lessons automatically during missions."}
               </div>
             )}
           </div>

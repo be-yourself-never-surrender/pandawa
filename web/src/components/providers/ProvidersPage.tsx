@@ -213,20 +213,24 @@ export const ProvidersPage: React.FC = () => {
               className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800/90 flex flex-col justify-between space-y-3"
             >
               <div className="space-y-2">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-bold text-white flex items-center gap-2">
-                      {p.name}
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 uppercase font-mono">
+                <div className="flex items-start justify-between gap-2 min-w-0">
+                  <div className="min-w-0 flex-1 pr-1">
+                    <div className="text-sm font-bold text-white flex items-center gap-1.5 flex-wrap">
+                      <span className="truncate">{p.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 uppercase font-mono shrink-0">
                         {p.kind}
                       </span>
                     </div>
-                    <div className="text-[11px] font-mono text-slate-500 mt-0.5 flex items-center gap-1 truncate">
-                      <Globe className="w-3 h-3 shrink-0" /> {p.baseUrl}
+                    <div
+                      title={p.baseUrl}
+                      className="text-[11px] font-mono text-slate-500 mt-1 flex items-center gap-1 min-w-0"
+                    >
+                      <Globe className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{p.baseUrl}</span>
                     </div>
                   </div>
                   <span
-                    className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 whitespace-nowrap ${
                       p.hasApiKey
                         ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
                         : "bg-slate-800 text-slate-400"
@@ -281,6 +285,7 @@ export const ProvidersPage: React.FC = () => {
                   <Zap className="w-3 h-3" /> Test
                 </button>
                 <button
+                  aria-label={`Delete provider ${p.name}`}
                   onClick={async () => {
                     if (!window.confirm(`Delete provider "${p.name}"?`)) return;
                     await apiFetch(`/api/providers/${p.id}`, { method: "DELETE" });
@@ -333,7 +338,7 @@ export const ProvidersPage: React.FC = () => {
                         const prov = providers.find((p) => p.id === e.target.value);
                         updateAgentModel(a.id, e.target.value, prov?.defaultModel || a.model);
                       }}
-                      className="bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100"
+                      className="w-48 max-w-full bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 truncate"
                     >
                       <option value="">(Canvas Wired)</option>
                       {providers.map((p) => (
@@ -346,12 +351,13 @@ export const ProvidersPage: React.FC = () => {
                   <td className="px-4 py-2.5">
                     <input
                       defaultValue={a.model}
+                      title={a.model}
                       onBlur={(e) => {
                         if (e.target.value !== a.model) {
                           updateAgentModel(a.id, a.provider_id || "", e.target.value);
                         }
                       }}
-                      className="w-64 bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 font-mono text-slate-100"
+                      className="w-full min-w-[200px] max-w-[300px] bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 font-mono text-slate-100"
                     />
                   </td>
                 </tr>

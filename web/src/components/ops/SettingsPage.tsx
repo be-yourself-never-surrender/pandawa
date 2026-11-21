@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Shield, Server, Activity, KeyRound, CheckCircle2 } from "lucide-react";
+import { Shield, Server, Activity, KeyRound, CheckCircle2, Package, Download, Upload, Globe, Copy } from "lucide-react";
 import { apiFetch, setStoredToken } from "../../api/client";
+import type { TeamItem } from "../../types";
 
 interface SystemStatus {
   version: string;
@@ -45,16 +46,56 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
   const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [approvalMode, setApprovalMode] = useState<string>("approve_shell");
   const [approvalNotice, setApprovalNotice] = useState<string>("");
+  const [teams, setTeams] = useState<TeamItem[]>([]);
+  const [exportTeamId, setExportTeamId] = useState<string>("");
+  const [bundleNotice, setBundleNotice] = useState<string>("");
+  const [customDomain, setCustomDomain] = useState<string>("pandawa.yourdomain.com");
+  const [copiedCaddy, setCopiedCaddy] = useState<boolean>(false);
 
   const load = useCallback(async () => {
-    const [st, au] = await Promise.all([
+    const [st, au, tm] = await Promise.all([
       apiFetch<SystemStatus>("/api/system/status"),
       apiFetch<{ logs: AuditItem[] }>("/api/system/audit"),
+      apiFetch<{ teams: TeamItem[] }>("/api/teams"),
     ]);
     setStatus(st);
     if (st.approvalMode) setApprovalMode(st.approvalMode);
     setAudits(au.logs);
-  }, []);
+    setTeams(tm.teams);
+    if (tm.teams.length > 0 && !exportTeamId) setExportTeamId(tm.teams[0].id);
+  }, [exportTeamId]);
+
+  async function handleExportBundle() {
+    const q = exportTeamId ? `?teamId=${encodeURIComponent(exportTeamId)}&includeMainBrain=true` : "?includeMainBrain=true";
+    const bundle = await apiFetch<{ bundleName?: string }>(`/api/bundles/export${q}`);
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(bundle.bundleName || "pandawa-brain-kit").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.pandawa.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setBundleNotice("Exported sellable .pandawa.json kit (all API keys stripped)!");
+    setTimeout(() => setBundleNotice(""), 3200);
+  }
+
+  async function handleImportBundle(file: File | null) {
+    if (!file) return;
+    try {
+      const json = JSON.parse(await file.text());
+      const res = await apiFetch<{ teamName: string; importedFiles: number; importedAgents: number }>("/api/bundles/import", {
+        method: "POST",
+        body: JSON.stringify(json),
+      });
+      setBundleNotice(`Imported "${res.teamName}" (${res.importedAgents} agents, ${res.importedFiles} files)!`);
+      setTimeout(() => setBundleNotice(""), 4000);
+      await load();
+    } catch (err) {
+      setBundleNotice(`Import error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const caddySnippet = `cat << 'EOF' > /etc/caddy/sites.d/pandawa.caddy\n${customDomain.trim() || "pandawa.yourdomain.com"} {\n    reverse_proxy 127.0.0.1:7777\n}\nEOF\ncaddy reload --address unix//var/lib/caddy/admin.sock`;
 
   async function updateApprovalMode(next: string) {
     setApprovalMode(next);
@@ -184,6 +225,83 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
         </div>
         <div className="text-[11px] text-emerald-400/90 flex items-center gap-1.5 pt-1">
           <CheckCircle2 className="w-3.5 h-3.5" /> Provider API keys are encrypted at rest with AES-256-GCM vault protection.
+        </div>
+      </div>
+
+      {/* Commercial Brain Kit Export/Import + Auto-HTTPS Domain Setup */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="rounded-2xl bg-[#0e1320] border border-slate-800 p-5 space-y-3 text-xs">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <Package className="w-4 h-4 text-amber-400" /> Commercial Brain Kit Export &amp; Import
+          </h2>
+          <p className="text-slate-400">
+            Package any Team + Main/Team Brains + <code className="text-amber-300">soul.md</code>/skills + Canvas wiring into a portable{" "}
+            <code className="text-cyan-300">.pandawa.json</code> template ready to sell or share. API keys are never included.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={exportTeamId}
+              onChange={(e) => setExportTeamId(e.target.value)}
+              className="flex-1 min-w-[180px] bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+            >
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.members.length} agents)
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleExportBundle}
+              className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" /> Export Kit
+            </button>
+            <label className="px-3.5 py-2 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-300 font-semibold flex items-center gap-1.5 cursor-pointer">
+              <Upload className="w-3.5 h-3.5" /> Import Kit
+              <input
+                type="file"
+                accept=".json,.pandawa.json"
+                className="hidden"
+                onChange={(e) => {
+                  handleImportBundle(e.target.files?.[0] || null);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          {bundleNotice && <div className="text-emerald-400 font-medium">{bundleNotice}</div>}
+        </div>
+
+        <div className="rounded-2xl bg-[#0e1320] border border-slate-800 p-5 space-y-3 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <Globe className="w-4 h-4 text-cyan-400" /> Custom Domain &amp; Auto-HTTPS (Caddy)
+            </h2>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(caddySnippet).catch(() => {});
+                setCopiedCaddy(true);
+                setTimeout(() => setCopiedCaddy(false), 2000);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 cursor-pointer"
+            >
+              <Copy className="w-3 h-3" /> {copiedCaddy ? "Copied!" : "Copy Command"}
+            </button>
+          </div>
+          <p className="text-slate-400">
+            Point your domain A-record to this VPS IP, enter the domain below, and run the generated Caddy command for automatic Let&apos;s Encrypt HTTPS + WebSocket support:
+          </p>
+          <input
+            value={customDomain}
+            onChange={(e) => setCustomDomain(e.target.value)}
+            placeholder="pandawa.yourdomain.com"
+            className="w-full bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+          />
+          <pre className="p-3 rounded-xl bg-[#070a10] border border-slate-800 font-mono text-[11px] text-emerald-300 overflow-x-auto whitespace-pre-wrap">
+            {caddySnippet}
+          </pre>
         </div>
       </div>
 

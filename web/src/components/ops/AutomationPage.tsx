@@ -159,30 +159,31 @@ export const AutomationPage: React.FC = () => {
         <h2 className="text-sm font-bold text-amber-300 flex items-center gap-2">
           <Clock className="w-4 h-4" /> Cron Scheduler
         </h2>
-        <form onSubmit={addCron} className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+        <form onSubmit={addCron} className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 text-xs">
           <input
             value={cronName}
             onChange={(e) => setCronName(e.target.value)}
             placeholder="Job Name (e.g. Daily Briefing)"
-            className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+            className="lg:col-span-3 bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
           />
           <input
             value={cronExpr}
             onChange={(e) => setCronExpr(e.target.value)}
-            placeholder="Cron (e.g. 0 9 * * *)"
-            className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
+            placeholder="0 9 * * *"
+            className="lg:col-span-2 bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 font-mono text-white"
           />
           <input
             value={cronPrompt}
             onChange={(e) => setCronPrompt(e.target.value)}
             placeholder="Mission prompt for Team Pandawa..."
-            className="bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
+            className="lg:col-span-5 bg-[#080a0f] border border-slate-700 rounded-lg px-3 py-2 text-white"
           />
           <button
             type="submit"
-            className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+            disabled={!cronName.trim() || !cronPrompt.trim()}
+            className="lg:col-span-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-950 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5" /> Add Schedule
+            <Plus className="w-3.5 h-3.5" /> Add
           </button>
         </form>
 
@@ -331,6 +332,11 @@ export const AutomationPage: React.FC = () => {
                 </div>
               </div>
             ))}
+            {channels.length === 0 && (
+              <div className="p-3.5 rounded-xl bg-[#090c14] border border-slate-800/70 text-xs text-slate-500 text-center">
+                No channels configured yet. Add a Telegram Bot, Discord Webhook, or HTTP Webhook above.
+              </div>
+            )}
           </div>
         </section>
 
@@ -437,6 +443,11 @@ export const AutomationPage: React.FC = () => {
                 </div>
               );
             })}
+            {mcps.length === 0 && (
+              <div className="p-3.5 rounded-xl bg-[#090c14] border border-slate-800/70 text-xs text-slate-500 text-center">
+                No MCP servers registered yet. Add any HTTP/SSE MCP endpoint above and click Discover Tools.
+              </div>
+            )}
           </div>
         </section>
       </div>

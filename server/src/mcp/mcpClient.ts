@@ -1,3 +1,5 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import readline from "node:readline";
 import { getDb } from "../db/database.js";
 import type { LLMToolDefinition } from "../providers/llmClient.js";
 
@@ -34,13 +36,131 @@ function parseHeaders(json: string): Record<string, string> {
   }
 }
 
+function parseCommandLine(cmdLine: string): { cmd: string; args: string[] } {
+  const parts: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  for (let i = 0; i < cmdLine.length; i++) {
+    const ch = cmdLine[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (cur) {
+        parts.push(cur);
+        cur = "";
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) parts.push(cur);
+  return { cmd: parts[0] || "", args: parts.slice(1) };
+}
+
+// Persistent STDIO MCP client session manager
+interface StdioSession {
+  proc: ChildProcessWithoutNullStreams;
+  nextId: number;
+  initialized: boolean;
+  pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>;
+}
+
+const stdioSessions = new Map<string, StdioSession>();
+
+function getOrStartStdioSession(server: McpServerRow): StdioSession {
+  const existing = stdioSessions.get(server.id);
+  if (existing && !existing.proc.killed && existing.proc.exitCode === null) {
+    return existing;
+  }
+
+  const { cmd, args } = parseCommandLine(server.url_or_cmd.trim());
+  if (!cmd) throw new Error(`Invalid STDIO command for MCP server "${server.name}".`);
+
+  const extraEnv = parseHeaders(server.headers_json);
+  const proc = spawn(cmd, args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, ...extraEnv },
+  });
+
+  const session: StdioSession = {
+    proc,
+    nextId: 1,
+    initialized: false,
+    pending: new Map(),
+  };
+
+  const rl = readline.createInterface({ input: proc.stdout });
+  rl.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) return;
+    try {
+      const msg = JSON.parse(trimmed) as {
+        id?: number;
+        result?: unknown;
+        error?: { message?: string };
+      };
+      if (typeof msg.id === "number" && session.pending.has(msg.id)) {
+        const p = session.pending.get(msg.id)!;
+        clearTimeout(p.timer);
+        session.pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+        else p.resolve(msg.result);
+      }
+    } catch {
+      // ignore non-JSON stdout noise
+    }
+  });
+
+  proc.on("exit", () => {
+    for (const [, p] of session.pending.entries()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(`STDIO MCP server "${server.name}" exited unexpectedly.`));
+    }
+    session.pending.clear();
+    stdioSessions.delete(server.id);
+  });
+
+  stdioSessions.set(server.id, session);
+  return session;
+}
+
+async function stdioRpc(
+  server: McpServerRow,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<unknown> {
+  const session = getOrStartStdioSession(server);
+  if (!session.initialized && method !== "initialize") {
+    await stdioRpc(server, "initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "pandawa", version: "4.0.0" },
+    });
+    session.initialized = true;
+    session.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n");
+  }
+
+  const id = session.nextId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      session.pending.delete(id);
+      reject(new Error(`STDIO MCP timeout (${server.name} -> ${method})`));
+    }, 25_000);
+    session.pending.set(id, { resolve, reject, timer });
+    session.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+  });
+}
+
 async function mcpJsonRpc(
   server: McpServerRow,
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<unknown> {
   if (server.transport === "stdio") {
-    throw new Error(`STDIO MCP transport (${server.name}) requires an HTTP/SSE bridge endpoint in Pandawa v2.`);
+    return stdioRpc(server, method, params);
   }
   const url = server.url_or_cmd.trim();
   if (!/^https?:\/\//i.test(url)) {
@@ -70,7 +190,6 @@ async function mcpJsonRpc(
     throw new Error(`MCP HTTP ${resp.status} from ${server.name}: ${text.slice(0, 300)}`);
   }
 
-  // Handle Streamable HTTP SSE or plain JSON-RPC
   let payloadText = text.trim();
   if (payloadText.startsWith("event:") || payloadText.includes("\ndata:")) {
     const dataLines = payloadText
@@ -97,15 +216,16 @@ export async function discoverMcpTools(server: McpServerRow, force = false): Pro
     return cached.tools;
   }
 
-  // Try initialize (optional on stateless servers, ignore failure)
-  try {
-    await mcpJsonRpc(server, "initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "pandawa", version: "2.0.0" },
-    });
-  } catch {
-    // Some MCP endpoints accept tools/list directly
+  if (server.transport !== "stdio") {
+    try {
+      await mcpJsonRpc(server, "initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "pandawa", version: "4.0.0" },
+      });
+    } catch {
+      // stateless endpoints may accept tools/list directly
+    }
   }
 
   const res = (await mcpJsonRpc(server, "tools/list", {})) as {
@@ -141,7 +261,6 @@ export async function getAllLiveMcpTools(): Promise<{
 
   await Promise.all(
     servers.map(async (srv) => {
-      if (srv.transport === "stdio") return;
       try {
         const discovered = await discoverMcpTools(srv, false);
         for (const t of discovered) {
@@ -166,7 +285,7 @@ export async function invokeMcpTool(
   args: Record<string, unknown>
 ): Promise<string> {
   const db = getDb();
-  const server = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(tool.serverId) as
+  const server = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(tool.serverId) as unknown as
     | McpServerRow
     | undefined;
   if (!server) return `MCP server ${tool.serverName} not found.`;
@@ -180,7 +299,18 @@ export async function invokeMcpTool(
     return res.content
       .map((c) => (typeof c.text === "string" ? c.text : JSON.stringify(c)))
       .join("\n")
-      .slice(0, 12_000);
+      .slice(0, 16_000);
   }
-  return JSON.stringify(res).slice(0, 12_000);
+  return JSON.stringify(res).slice(0, 16_000);
+}
+
+export function shutdownAllStdioMcp(): void {
+  for (const [, session] of stdioSessions.entries()) {
+    try {
+      session.proc.kill();
+    } catch {
+      // ignore
+    }
+  }
+  stdioSessions.clear();
 }

@@ -13,10 +13,31 @@ import {
   Loader2,
   History,
   Square,
+  CheckSquare,
+  Terminal,
+  RefreshCw,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, BlackboardEntry, MessageItem, SessionItem, TeamItem } from "../../types";
 import { MarkdownView } from "../MarkdownView";
+
+interface TeamTaskItem {
+  id: string;
+  title: string;
+  owner_agent: string;
+  status: "todo" | "in_progress" | "done" | "blocked";
+  notes: string;
+}
+
+interface ManagedProcItem {
+  id: string;
+  name: string;
+  command: string;
+  pid?: number;
+  status: "running" | "exited";
+  exitCode: number | null;
+  logLines: number;
+}
 
 export interface LiveStreamBuffer {
   agentId: string;
@@ -47,7 +68,14 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
   const [sending, setSending] = useState(false);
   const [showHistory, setShowHistory] = useState(() => window.innerWidth >= 1280);
   const [showBlackboard, setShowBlackboard] = useState(() => window.innerWidth >= 1360);
+  const [rightTab, setRightTab] = useState<"blackboard" | "tasks" | "processes">("blackboard");
   const [expandedPeers, setExpandedPeers] = useState<Set<string>>(new Set());
+
+  // Team tasks & managed background processes
+  const [tasks, setTasks] = useState<TeamTaskItem[]>([]);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [processes, setProcesses] = useState<ManagedProcItem[]>([]);
+  const [procLogs, setProcLogs] = useState<{ id: string; logs: string[] } | null>(null);
 
   // Add blackboard directive form
   const [bbTitle, setBbTitle] = useState("");
@@ -82,8 +110,14 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
 
   const loadBlackboard = useCallback(async (tid: string) => {
     if (!tid) return;
-    const res = await apiFetch<{ entries: BlackboardEntry[] }>(`/api/teams/${tid}/blackboard`);
-    setBlackboard(res.entries);
+    const [bbRes, tRes, pRes] = await Promise.all([
+      apiFetch<{ entries: BlackboardEntry[] }>(`/api/teams/${tid}/blackboard`),
+      apiFetch<{ tasks: TeamTaskItem[] }>(`/api/teams/${tid}/tasks`),
+      apiFetch<{ processes: ManagedProcItem[] }>("/api/processes"),
+    ]);
+    setBlackboard(bbRes.entries);
+    setTasks(tRes.tasks);
+    setProcesses(pRes.processes);
   }, []);
 
   useEffect(() => {
@@ -119,6 +153,73 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
     e.preventDefault();
     if (!prompt.trim() || sending) return;
     const text = prompt.trim();
+
+    // Built-in Mission Room Slash Commands (like Hermes CLI shortcuts)
+    if (text.startsWith("/")) {
+      setPrompt("");
+      const [slash, arg] = text.split(/\s+/);
+      if (slash === "/new") {
+        setActiveSessionId("");
+        setMessages([]);
+        return;
+      }
+      if (slash === "/mode" && arg && ["deliberate", "parallel", "sequential", "consensus"].includes(arg)) {
+        await updateTeamMode(arg as TeamItem["collaboration_mode"]);
+        return;
+      }
+      if (slash === "/auto") {
+        await apiFetch("/api/approvals/mode", { method: "PUT", body: JSON.stringify({ mode: "auto" }) });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `sys_${Date.now()}`,
+            session_id: activeSessionId,
+            role: "system",
+            agent_id: "",
+            agent_name: "Pandawa",
+            model_used: "",
+            content: "Approval mode switched to **Auto (Full Freedom)**.",
+            reasoning: "",
+            toolCalls: [],
+            meta: {},
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+      if (slash === "/approve") {
+        await apiFetch("/api/approvals/mode", { method: "PUT", body: JSON.stringify({ mode: "approve_shell" }) });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `sys_${Date.now()}`,
+            session_id: activeSessionId,
+            role: "system",
+            agent_id: "",
+            agent_name: "Pandawa",
+            model_used: "",
+            content: "Approval mode switched to **Approve Shell Only**.",
+            reasoning: "",
+            toolCalls: [],
+            meta: {},
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        return;
+      }
+      if (slash === "/tasks") {
+        setShowBlackboard(true);
+        setRightTab("tasks");
+        return;
+      }
+      if (slash === "/processes") {
+        setShowBlackboard(true);
+        setRightTab("processes");
+        if (activeTeam) await loadBlackboard(activeTeam.id);
+        return;
+      }
+    }
+
     setPrompt("");
     setSending(true);
     onClearStreams();
@@ -579,8 +680,8 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
               }}
               placeholder={
                 targetType === "team"
-                  ? "Give Team Pandawa a mission... (Enter to send, Shift+Enter for newline)"
-                  : "Message this agent directly..."
+                  ? "Give Team Pandawa a mission... Use @main-brain/soul.md to inline files, or /new /mode /auto /tasks /processes"
+                  : "Message this agent directly... (@file.md supported)"
               }
               className="flex-1 bg-[#080a0f] border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 outline-none resize-none"
             />
@@ -605,67 +706,226 @@ export const MissionRoom: React.FC<MissionRoomProps> = ({ liveEvents, streamingB
         </form>
       </div>
 
-      {/* Right Team Blackboard Panel */}
+      {/* Right Team Ops Panel: Blackboard | Tasks | Processes */}
       {targetType === "team" && showBlackboard && (
         <aside className="w-80 shrink-0 bg-[#0d111b] border-l border-slate-800/80 flex flex-col">
-          <div className="px-4 py-3.5 border-b border-slate-800/80">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
-              <ClipboardList className="w-4 h-4" /> Team Blackboard
-            </h3>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Shared peer proposals, critiques & team decisions
-            </p>
+          <div className="px-3 py-2.5 border-b border-slate-800/80 flex items-center gap-1 text-[11px]">
+            <button
+              onClick={() => setRightTab("blackboard")}
+              className={`flex-1 py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+                rightTab === "blackboard" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:bg-slate-800/60"
+              }`}
+            >
+              <ClipboardList className="w-3.5 h-3.5" /> Board ({blackboard.length})
+            </button>
+            <button
+              onClick={() => setRightTab("tasks")}
+              className={`flex-1 py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+                rightTab === "tasks" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:bg-slate-800/60"
+              }`}
+            >
+              <CheckSquare className="w-3.5 h-3.5" /> Tasks ({tasks.length})
+            </button>
+            <button
+              onClick={() => {
+                setRightTab("processes");
+                if (activeTeam) loadBlackboard(activeTeam.id);
+              }}
+              className={`flex-1 py-1.5 rounded-lg font-semibold flex items-center justify-center gap-1 cursor-pointer ${
+                rightTab === "processes" ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:bg-slate-800/60"
+              }`}
+            >
+              <Terminal className="w-3.5 h-3.5" /> Proc ({processes.filter((p) => p.status === "running").length})
+            </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
-            {blackboard.map((b) => (
-              <div key={b.id} className="p-3 rounded-xl bg-[#090c14] border border-slate-800 space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-bold uppercase">
-                    {b.entry_type}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-slate-500">{b.author_name}</span>
+          {rightTab === "blackboard" && (
+            <>
+              <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+                {blackboard.map((b) => (
+                  <div key={b.id} className="p-3 rounded-xl bg-[#090c14] border border-slate-800 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-bold uppercase">
+                        {b.entry_type}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-500">{b.author_name}</span>
+                        <button
+                          aria-label="Delete blackboard entry"
+                          onClick={() => deleteBlackboardEntry(b.id)}
+                          className="text-slate-600 hover:text-rose-400 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-xs font-semibold text-slate-200">{b.title}</div>
+                    <div className="text-[11px] text-slate-400 whitespace-pre-wrap line-clamp-5">{b.content}</div>
+                  </div>
+                ))}
+                {blackboard.length === 0 && (
+                  <div className="text-xs text-slate-500 p-2">
+                    No entries yet. Start a mission or pin a team directive below.
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={addBlackboardEntry} className="p-3 border-t border-slate-800/80 space-y-2">
+                <input
+                  value={bbTitle}
+                  onChange={(e) => setBbTitle(e.target.value)}
+                  placeholder="Pin team directive / note title..."
+                  className="w-full bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
+                />
+                <textarea
+                  rows={2}
+                  value={bbContent}
+                  onChange={(e) => setBbContent(e.target.value)}
+                  placeholder="Shared note visible to all peers..."
+                  className="w-full bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none resize-none"
+                />
+                <button
+                  type="submit"
+                  className="w-full py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium cursor-pointer"
+                >
+                  Post to Blackboard
+                </button>
+              </form>
+            </>
+          )}
+
+          {rightTab === "tasks" && (
+            <>
+              <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                {tasks.map((t) => (
+                  <div key={t.id} className="p-2.5 rounded-xl bg-[#090c14] border border-slate-800 flex items-start justify-between gap-2 text-xs">
                     <button
-                      onClick={() => deleteBlackboardEntry(b.id)}
+                      onClick={async () => {
+                        if (!activeTeam) return;
+                        const nextStatus = t.status === "done" ? "todo" : "done";
+                        await apiFetch(`/api/teams/${activeTeam.id}/tasks/${t.id}`, {
+                          method: "PATCH",
+                          body: JSON.stringify({ status: nextStatus }),
+                        });
+                        await loadBlackboard(activeTeam.id);
+                      }}
+                      className="text-left flex-1 min-w-0 cursor-pointer"
+                    >
+                      <div className={`font-medium ${t.status === "done" ? "line-through text-slate-500" : "text-slate-200"}`}>
+                        {t.status === "done" ? "☑" : "☐"} {t.title}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        Owner: {t.owner_agent} · <span className="uppercase text-cyan-400">{t.status}</span>
+                      </div>
+                    </button>
+                    <button
+                      aria-label="Delete task"
+                      onClick={async () => {
+                        if (!activeTeam) return;
+                        await apiFetch(`/api/teams/${activeTeam.id}/tasks/${t.id}`, { method: "DELETE" });
+                        await loadBlackboard(activeTeam.id);
+                      }}
                       className="text-slate-600 hover:text-rose-400 cursor-pointer"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
-                </div>
-                <div className="text-xs font-semibold text-slate-200">{b.title}</div>
-                <div className="text-[11px] text-slate-400 whitespace-pre-wrap line-clamp-5">{b.content}</div>
+                ))}
+                {tasks.length === 0 && (
+                  <div className="text-xs text-slate-500 p-2">
+                    Shared Team Task Board is empty. Add tasks below or let agents manage them via <code>team_todo_manage</code>.
+                  </div>
+                )}
               </div>
-            ))}
-            {blackboard.length === 0 && (
-              <div className="text-xs text-slate-500 p-2">
-                No entries yet. Start a mission or pin a team directive below.
-              </div>
-            )}
-          </div>
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!newTaskTitle.trim() || !activeTeam) return;
+                  await apiFetch(`/api/teams/${activeTeam.id}/tasks`, {
+                    method: "POST",
+                    body: JSON.stringify({ title: newTaskTitle.trim(), ownerAgent: "Team", status: "todo" }),
+                  });
+                  setNewTaskTitle("");
+                  await loadBlackboard(activeTeam.id);
+                }}
+                className="p-3 border-t border-slate-800/80 flex gap-1.5"
+              >
+                <input
+                  value={newTaskTitle}
+                  onChange={(e) => setNewTaskTitle(e.target.value)}
+                  placeholder="Add shared team task..."
+                  className="flex-1 bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-cyan-500"
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 text-xs font-semibold cursor-pointer"
+                >
+                  Add
+                </button>
+              </form>
+            </>
+          )}
 
-          <form onSubmit={addBlackboardEntry} className="p-3 border-t border-slate-800/80 space-y-2">
-            <input
-              value={bbTitle}
-              onChange={(e) => setBbTitle(e.target.value)}
-              placeholder="Pin team directive / note title..."
-              className="w-full bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
-            />
-            <textarea
-              rows={2}
-              value={bbContent}
-              onChange={(e) => setBbContent(e.target.value)}
-              placeholder="Shared note visible to all peers..."
-              className="w-full bg-[#080a0f] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none resize-none"
-            />
-            <button
-              type="submit"
-              className="w-full py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium cursor-pointer"
-            >
-              Post to Blackboard
-            </button>
-          </form>
+          {rightTab === "processes" && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-slate-400">Managed Background Processes</span>
+                <button
+                  onClick={() => activeTeam && loadBlackboard(activeTeam.id)}
+                  className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+              </div>
+              {processes.map((p) => (
+                <div key={p.id} className="p-2.5 rounded-xl bg-[#090c14] border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-white truncate">{p.name}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold ${
+                        p.status === "running" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-800 text-slate-400"
+                      }`}
+                    >
+                      {p.status}
+                    </span>
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-500 truncate">{p.command}</div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={async () => {
+                        const r = await apiFetch<{ logs: string[] }>(`/api/processes/${p.id}/logs?tail=50`);
+                        setProcLogs({ id: p.id, logs: r.logs });
+                      }}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] cursor-pointer"
+                    >
+                      Logs ({p.logLines})
+                    </button>
+                    {p.status === "running" && (
+                      <button
+                        onClick={async () => {
+                          await apiFetch(`/api/processes/${p.id}/kill`, { method: "POST" });
+                          if (activeTeam) await loadBlackboard(activeTeam.id);
+                        }}
+                        className="px-2 py-1 rounded bg-rose-500/20 text-rose-300 text-[10px] cursor-pointer"
+                      >
+                        Kill
+                      </button>
+                    )}
+                  </div>
+                  {procLogs?.id === p.id && (
+                    <pre className="p-2 rounded bg-[#05070c] text-[10px] font-mono text-emerald-300 max-h-36 overflow-auto whitespace-pre-wrap">
+                      {procLogs.logs.join("\n") || "(no output yet)"}
+                    </pre>
+                  )}
+                </div>
+              ))}
+              {processes.length === 0 && (
+                <div className="text-slate-500 p-2">
+                  No background processes running. Agents can spawn servers/workers with <code>process_start</code>.
+                </div>
+              )}
+            </div>
+          )}
         </aside>
       )}
     </div>

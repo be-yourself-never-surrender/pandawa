@@ -51,6 +51,13 @@ function saveMessage(params: {
     JSON.stringify(params.toolCalls || []),
     JSON.stringify(params.meta || {})
   );
+  try {
+    db.prepare(
+      `INSERT INTO messages_fts (message_id, session_id, agent_name, content) VALUES (?, ?, ?, ?)`
+    ).run(id, params.sessionId, params.agentName || params.role, params.content);
+  } catch {
+    // ignore FTS index errors
+  }
   db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(params.sessionId);
   return id;
 }

@@ -10,6 +10,8 @@ import { verifyToken } from "./auth/authService.js";
 import { createApiRouter } from "./routes/api.js";
 import { startCronScheduler, stopCronScheduler } from "./scheduler/cronEngine.js";
 import { syncTelegramPollers, stopAllTelegramPollers } from "./channels/channelManager.js";
+import { killAllManagedProcesses } from "./tools/processManager.js";
+import { shutdownAllStdioMcp } from "./mcp/mcpClient.js";
 
 ensureDirectories();
 seedInitialData();
@@ -46,7 +48,7 @@ function broadcast(event: Record<string, unknown>): void {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "pandawa", version: "3.0.0" });
+  res.json({ ok: true, service: "pandawa", version: "4.0.0" });
 });
 
 app.use("/api", createApiRouter(broadcast));
@@ -63,12 +65,14 @@ startCronScheduler(broadcast);
 syncTelegramPollers(broadcast);
 
 server.listen(PORT, HOST, () => {
-  console.log(`[Pandawa v2.0] Server running at http://${HOST}:${PORT}`);
+  console.log(`[Pandawa v4.0] Server running at http://${HOST}:${PORT}`);
 });
 
 function shutdown(): void {
   stopCronScheduler();
   stopAllTelegramPollers();
+  killAllManagedProcesses();
+  shutdownAllStdioMcp();
   server.close(() => process.exit(0));
 }
 

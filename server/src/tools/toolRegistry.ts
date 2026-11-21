@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { WORKSPACE_DIR, generateId } from "../config.js";
+import { DATA_DIR, WORKSPACE_DIR, generateId } from "../config.js";
 import { getDb } from "../db/database.js";
 import {
   readBrainFile,
   writeBrainFile,
+  listBrainTree,
   searchBrainFiles,
   normalizeRelPath,
 } from "../brains/brainFs.js";
@@ -14,8 +16,16 @@ import type { LLMToolDefinition } from "../providers/llmClient.js";
 import type { CompiledAgentRuntime } from "../engine/contextCompiler.js";
 import { toolRequiresApproval, requestApproval } from "../engine/approvalManager.js";
 import { invokeMcpTool, type DiscoveredMcpTool } from "../mcp/mcpClient.js";
+import {
+  startManagedProcess,
+  listManagedProcesses,
+  getManagedProcessLogs,
+  killManagedProcess,
+} from "./processManager.js";
+import { dispatchChannelNotification } from "../channels/channelManager.js";
 
 const execAsync = promisify(exec);
+const CHECKPOINTS_DIR = path.join(DATA_DIR, "checkpoints");
 
 export interface ToolExecutionContext {
   runtime: CompiledAgentRuntime;
@@ -36,7 +46,7 @@ interface PandawaTool {
 
 function resolveWorkspacePath(rel: string): string {
   const cleaned = rel.replace(/\\/g, "/").replace(/^\/+/, "");
-  if (cleaned.includes("..")) throw new Error("Path traversal not allowed inside workspace_read/write.");
+  if (cleaned.includes("..")) throw new Error("Path traversal not allowed inside workspace tools.");
   const full = path.resolve(WORKSPACE_DIR, cleaned);
   const root = path.resolve(WORKSPACE_DIR);
   if (full !== root && !full.startsWith(root + path.sep)) {
@@ -45,8 +55,26 @@ function resolveWorkspacePath(rel: string): string {
   return full;
 }
 
+function copyDirRecursive(src: string, dst: string): number {
+  fs.mkdirSync(dst, { recursive: true });
+  let count = 0;
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === ".git") continue;
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    if (entry.isDirectory()) count += copyDirRecursive(s, d);
+    else {
+      fs.copyFileSync(s, d);
+      count++;
+    }
+  }
+  return count;
+}
+
 const TOOLS: PandawaTool[] = [
-  // === BRAIN & SELF-LEARNING PACK ===
+  // =============================================
+  // PACK 1: BRAIN, MEMORY & CLOSED LEARNING LOOP
+  // =============================================
   {
     pack: "brain",
     definition: {
@@ -54,9 +82,7 @@ const TOOLS: PandawaTool[] = [
       description: "Full-text search across Pandawa Brain files (soul.md, rules, skills, team docs) and episodic memories.",
       parameters: {
         type: "object",
-        properties: {
-          query: { type: "string", description: "Keywords to search across Brain files and memories" },
-        },
+        properties: { query: { type: "string", description: "Keywords to search across Brain files and memories" } },
         required: ["query"],
       },
     },
@@ -82,20 +108,29 @@ const TOOLS: PandawaTool[] = [
   {
     pack: "brain",
     definition: {
-      name: "brain_read",
-      description: "Read the full contents of a Brain file by relative path (e.g., main-brain/soul.md or teams/pandawa-core/memory.md).",
+      name: "brain_list",
+      description: "List the directory structure of all Pandawa Brain folders and files.",
       parameters: {
         type: "object",
-        properties: {
-          path: { type: "string", description: "Relative path inside Brains directory" },
-        },
-        required: ["path"],
+        properties: { subdir: { type: "string", description: "Optional subfolder (e.g. main-brain or teams)" } },
       },
     },
     execute: async (args) => {
-      const file = readBrainFile(String(args.path || ""));
-      return file.content;
+      return JSON.stringify(listBrainTree(String(args.subdir || "")), null, 2).slice(0, 12_000);
     },
+  },
+  {
+    pack: "brain",
+    definition: {
+      name: "brain_read",
+      description: "Read the full contents of a Brain file by relative path (e.g. main-brain/soul.md).",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+    execute: async (args) => readBrainFile(String(args.path || "")).content,
   },
   {
     pack: "brain",
@@ -105,8 +140,8 @@ const TOOLS: PandawaTool[] = [
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative path inside Brains directory" },
-          content: { type: "string", description: "Full Markdown or text content to write" },
+          path: { type: "string" },
+          content: { type: "string" },
         },
         required: ["path", "content"],
       },
@@ -118,7 +153,7 @@ const TOOLS: PandawaTool[] = [
         ctx.runtime.writablePrefixes.length === 0 ||
         ctx.runtime.writablePrefixes.some((pref) => p === pref || p.startsWith(`${pref}/`));
       if (!allowed) {
-        return `Permission denied: "${p}" is outside this agent's writable Brain mounts (${ctx.runtime.writablePrefixes.join(", ")}).`;
+        return `Permission denied: "${p}" is outside writable Brain mounts (${ctx.runtime.writablePrefixes.join(", ")}).`;
       }
       const res = writeBrainFile(p, content);
       ctx.onEvent?.({ type: "brain_updated", path: p, agent: ctx.runtime.agent.name });
@@ -129,7 +164,7 @@ const TOOLS: PandawaTool[] = [
     pack: "brain",
     definition: {
       name: "remember_fact",
-      description: "Store a durable episodic memory in Main Brain or Team Brain so the team remembers it in future sessions.",
+      description: "Store a durable episodic memory in Main Brain or Team Brain so the team remembers it across sessions.",
       parameters: {
         type: "object",
         properties: {
@@ -166,7 +201,7 @@ const TOOLS: PandawaTool[] = [
     pack: "brain",
     definition: {
       name: "learn_skill",
-      description: "Distill a repeatable workflow or procedure into a reusable SKILL.md inside the Team or Main Brain.",
+      description: "Self-improvement loop: save or refine a repeatable workflow into a reusable SKILL.md inside Team or Main Brain.",
       parameters: {
         type: "object",
         properties: {
@@ -193,8 +228,51 @@ const TOOLS: PandawaTool[] = [
       return `Skill saved to ${relPath}.`;
     },
   },
+  {
+    pack: "brain",
+    definition: {
+      name: "session_search",
+      description: "Search across ALL past Pandawa conversations and team mission transcripts via SQLite FTS5 for cross-session recall.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Keywords to search across past chat sessions" },
+          limit: { type: "number", description: "Max matching excerpts (default 8)" },
+        },
+        required: ["query"],
+      },
+    },
+    execute: async (args) => {
+      const q = String(args.query || "").trim();
+      if (!q) return "Empty query.";
+      const limit = Math.min(20, Math.max(1, Number(args.limit || 8)));
+      const db = getDb();
+      const safe = q.replace(/["'*^():-]/g, " ").trim().split(/\s+/).filter(Boolean).map((t) => `"${t}"*`).join(" OR ");
+      if (!safe) return "No valid search tokens.";
+      try {
+        const rows = db
+          .prepare(
+            `SELECT session_id, agent_name, snippet(messages_fts, 3, '[[', ']]', '...', 28) as excerpt
+             FROM messages_fts WHERE messages_fts MATCH ? LIMIT ?`
+          )
+          .all(safe, limit);
+        return JSON.stringify({ query: q, matches: rows }, null, 2);
+      } catch {
+        // Fallback LIKE scan on messages
+        const rows = db
+          .prepare(
+            `SELECT session_id, agent_name, substr(content, 1, 240) as excerpt
+             FROM messages WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?`
+          )
+          .all(`%${q}%`, limit);
+        return JSON.stringify({ query: q, matches: rows }, null, 2);
+      }
+    },
+  },
 
-  // === AGENTIC TEAM BLACKBOARD PACK ===
+  // =============================================
+  // PACK 2: AGENTIC TEAM (BLACKBOARD, PEER CONSULT & TASKS)
+  // =============================================
   {
     pack: "team",
     definition: {
@@ -255,19 +333,12 @@ const TOOLS: PandawaTool[] = [
     pack: "team",
     definition: {
       name: "consult_teammate",
-      description:
-        "Directly consult a connected Pandawa peer teammate mid-task to get their specialist advice, review, code check, or research in real time.",
+      description: "Directly consult a connected Pandawa peer teammate mid-task for specialist advice, code review, or research.",
       parameters: {
         type: "object",
         properties: {
-          teammate_name: {
-            type: "string",
-            description: "Name of the connected teammate to consult (e.g., Arjuna, Sadewa, Nakula, Bima, Yudhistira)",
-          },
-          question: {
-            type: "string",
-            description: "Focused question or snippet for your teammate to weigh in on",
-          },
+          teammate_name: { type: "string" },
+          question: { type: "string" },
         },
         required: ["teammate_name", "question"],
       },
@@ -276,9 +347,7 @@ const TOOLS: PandawaTool[] = [
       if ((ctx.consultDepth ?? 0) >= 2) {
         return "Max peer consultation depth reached; synthesize with the information already gathered.";
       }
-      if (!ctx.consultPeer) {
-        return "Peer consultation callback is unavailable in this execution context.";
-      }
+      if (!ctx.consultPeer) return "Peer consultation callback is unavailable.";
       const targetName = String(args.teammate_name || "").trim().toLowerCase();
       const question = String(args.question || "").trim();
       if (!targetName || !question) return "Both teammate_name and question are required.";
@@ -299,8 +368,6 @@ const TOOLS: PandawaTool[] = [
       });
 
       const answer = await ctx.consultPeer(peer.id, question);
-
-      // Log consultation summary to Team Blackboard for full team visibility
       try {
         const db = getDb();
         db.prepare(
@@ -316,23 +383,87 @@ const TOOLS: PandawaTool[] = [
           answer.slice(0, 1200)
         );
       } catch {
-        // ignore blackboard log errors
+        // ignore
       }
-
       return `[Response from teammate ${peer.name} (${peer.title})]:\n${answer}`;
     },
   },
+  {
+    pack: "team",
+    definition: {
+      name: "team_todo_manage",
+      description: "Manage the shared Team Task Board (add, update, complete, or list tasks coordinated across teammates).",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["list", "add", "update", "delete"] },
+          task_id: { type: "string" },
+          title: { type: "string" },
+          owner_agent: { type: "string" },
+          status: { type: "string", enum: ["todo", "in_progress", "done", "blocked"] },
+          notes: { type: "string" },
+        },
+        required: ["action"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const db = getDb();
+      const teamId = ctx.teamId || "team_pandawa";
+      const action = String(args.action || "list");
 
-  // === WORKSPACE FILE PACK ===
+      if (action === "list") {
+        const rows = db
+          .prepare("SELECT * FROM team_tasks WHERE team_id = ? ORDER BY updated_at DESC LIMIT 30")
+          .all(teamId);
+        return JSON.stringify(rows, null, 2);
+      }
+      if (action === "add") {
+        const id = generateId("tsk");
+        const title = String(args.title || "Untitled Task");
+        const owner = String(args.owner_agent || ctx.runtime.agent.name);
+        const status = String(args.status || "todo");
+        const notes = String(args.notes || "");
+        db.prepare(
+          `INSERT INTO team_tasks (id, team_id, session_id, title, owner_agent, status, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(id, teamId, ctx.sessionId || "", title, owner, status, notes);
+        ctx.onEvent?.({ type: "team_task_updated", teamId, action: "add", id, title });
+        return `Added task ${id}: "${title}" (owner: ${owner}, status: ${status}).`;
+      }
+      if (action === "update" && args.task_id) {
+        const cur = db.prepare("SELECT * FROM team_tasks WHERE id = ?").get(String(args.task_id)) as
+          | Record<string, unknown>
+          | undefined;
+        if (!cur) return `Task ${args.task_id} not found.`;
+        db.prepare(
+          `UPDATE team_tasks SET title=?, owner_agent=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`
+        ).run(
+          args.title !== undefined ? String(args.title) : String(cur.title),
+          args.owner_agent !== undefined ? String(args.owner_agent) : String(cur.owner_agent),
+          args.status !== undefined ? String(args.status) : String(cur.status),
+          args.notes !== undefined ? String(args.notes) : String(cur.notes),
+          String(args.task_id)
+        );
+        ctx.onEvent?.({ type: "team_task_updated", teamId, action: "update", id: String(args.task_id) });
+        return `Updated task ${args.task_id}.`;
+      }
+      if (action === "delete" && args.task_id) {
+        db.prepare("DELETE FROM team_tasks WHERE id = ?").run(String(args.task_id));
+        return `Deleted task ${args.task_id}.`;
+      }
+      return "Invalid team_todo_manage parameters.";
+    },
+  },
+
+  // =============================================
+  // PACK 3: WORKSPACE ENGINEERING, PATCH, GREP & CHECKPOINTS
+  // =============================================
   {
     pack: "workspace",
     definition: {
       name: "workspace_list",
-      description: "List files and directories inside the Pandawa agent workspace.",
-      parameters: {
-        type: "object",
-        properties: { subdir: { type: "string" } },
-      },
+      description: "List files and directories inside the Pandawa workspace.",
+      parameters: { type: "object", properties: { subdir: { type: "string" } } },
     },
     execute: async (args) => {
       const full = resolveWorkspacePath(String(args.subdir || ""));
@@ -348,24 +479,39 @@ const TOOLS: PandawaTool[] = [
     pack: "workspace",
     definition: {
       name: "workspace_read",
-      description: "Read a file inside the Pandawa agent workspace.",
+      description: "Read a file inside the Pandawa workspace (optional line range).",
       parameters: {
         type: "object",
-        properties: { path: { type: "string" } },
+        properties: {
+          path: { type: "string" },
+          start_line: { type: "number" },
+          end_line: { type: "number" },
+        },
         required: ["path"],
       },
     },
     execute: async (args) => {
       const full = resolveWorkspacePath(String(args.path || ""));
       if (!fs.existsSync(full)) return "File not found.";
-      return fs.readFileSync(full, "utf8").slice(0, 24_000);
+      const raw = fs.readFileSync(full, "utf8");
+      if (args.start_line || args.end_line) {
+        const lines = raw.split(/\r?\n/);
+        const s = Math.max(1, Number(args.start_line || 1));
+        const e = Math.min(lines.length, Number(args.end_line || lines.length));
+        return lines
+          .slice(s - 1, e)
+          .map((l, idx) => `${s + idx}: ${l}`)
+          .join("\n")
+          .slice(0, 24_000);
+      }
+      return raw.slice(0, 24_000);
     },
   },
   {
     pack: "workspace",
     definition: {
       name: "workspace_write",
-      description: "Write or update a file inside the Pandawa agent workspace.",
+      description: "Create or overwrite a file inside the Pandawa workspace.",
       parameters: {
         type: "object",
         properties: { path: { type: "string" }, content: { type: "string" } },
@@ -379,18 +525,144 @@ const TOOLS: PandawaTool[] = [
       return `Wrote workspace file ${args.path}.`;
     },
   },
+  {
+    pack: "workspace",
+    definition: {
+      name: "workspace_patch",
+      description: "Surgical search-and-replace edit on an existing file inside the workspace without rewriting the whole file.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          target: { type: "string", description: "Exact string block to find" },
+          replacement: { type: "string", description: "Replacement text" },
+          replace_all: { type: "boolean", description: "Replace all occurrences (default false)" },
+        },
+        required: ["path", "target", "replacement"],
+      },
+    },
+    execute: async (args) => {
+      const full = resolveWorkspacePath(String(args.path || ""));
+      if (!fs.existsSync(full)) return `File not found: ${args.path}`;
+      const orig = fs.readFileSync(full, "utf8");
+      const target = String(args.target || "");
+      const replacement = String(args.replacement ?? "");
+      if (!target || !orig.includes(target)) {
+        return `Target text not found in ${args.path}. Read the file first to verify exact whitespace.`;
+      }
+      const next = args.replace_all ? orig.split(target).join(replacement) : orig.replace(target, replacement);
+      fs.writeFileSync(full, next, "utf8");
+      return `Patched ${args.path} successfully.`;
+    },
+  },
+  {
+    pack: "workspace",
+    definition: {
+      name: "workspace_grep",
+      description: "Recursively search files in the Pandawa workspace by keyword or regular expression.",
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Text or regex pattern to search" },
+          subdir: { type: "string", description: "Optional subfolder inside workspace" },
+        },
+        required: ["pattern"],
+      },
+    },
+    execute: async (args) => {
+      const base = resolveWorkspacePath(String(args.subdir || ""));
+      if (!fs.existsSync(base)) return "Directory does not exist.";
+      const regex = new RegExp(String(args.pattern || ""), "i");
+      const hits: Array<{ file: string; line: number; text: string }> = [];
 
-  // === SHELL PACK (Full freedom — governed ONLY by optional User Approval Gate, no hardcoded guardrails) ===
+      function walk(dir: string) {
+        if (hits.length >= 60) return;
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (hits.length >= 60) return;
+          if (entry.name === "node_modules" || entry.name === ".git") continue;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else {
+            try {
+              const stat = fs.statSync(full);
+              if (stat.size > 512_000) continue;
+              const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
+              lines.forEach((l, i) => {
+                if (hits.length < 60 && regex.test(l)) {
+                  hits.push({
+                    file: path.relative(WORKSPACE_DIR, full).replace(/\\/g, "/"),
+                    line: i + 1,
+                    text: l.trim().slice(0, 180),
+                  });
+                }
+              });
+            } catch {
+              // ignore binary
+            }
+          }
+        }
+      }
+      walk(base);
+      return JSON.stringify({ pattern: args.pattern, count: hits.length, hits }, null, 2);
+    },
+  },
+  {
+    pack: "workspace",
+    definition: {
+      name: "checkpoint_create",
+      description: "Snapshot the current Pandawa workspace into a named checkpoint so changes can be rolled back anytime.",
+      parameters: {
+        type: "object",
+        properties: { label: { type: "string", description: "Short checkpoint label" } },
+      },
+    },
+    execute: async (args) => {
+      const id = `cp_${Date.now()}_${String(args.label || "snap").toLowerCase().replace(/[^a-z0-9-_]/g, "-")}`;
+      const dst = path.join(CHECKPOINTS_DIR, id);
+      const files = copyDirRecursive(WORKSPACE_DIR, dst);
+      return `Created workspace checkpoint "${id}" (${files} files snapshotted).`;
+    },
+  },
+  {
+    pack: "workspace",
+    definition: {
+      name: "checkpoint_rollback",
+      description: "List available checkpoints or roll the workspace back to a previous checkpoint ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          checkpoint_id: { type: "string", description: "Checkpoint ID to restore (omit to list checkpoints)" },
+        },
+      },
+    },
+    execute: async (args) => {
+      fs.mkdirSync(CHECKPOINTS_DIR, { recursive: true });
+      const cid = String(args.checkpoint_id || "").trim();
+      if (!cid) {
+        const list = fs.readdirSync(CHECKPOINTS_DIR).sort().reverse();
+        return JSON.stringify({ checkpoints: list }, null, 2);
+      }
+      if (cid.includes("..") || cid.includes("/") || cid.includes("\\")) return "Invalid checkpoint ID.";
+      const src = path.join(CHECKPOINTS_DIR, cid);
+      if (!fs.existsSync(src)) return `Checkpoint not found: ${cid}`;
+      const restored = copyDirRecursive(src, WORKSPACE_DIR);
+      return `Restored workspace from checkpoint "${cid}" (${restored} files).`;
+    },
+  },
+
+  // =============================================
+  // PACK 4: SHELL, CODE EXECUTION & BACKGROUND PROCESSES
+  // =============================================
   {
     pack: "shell",
     definition: {
       name: "shell_exec",
-      description: "Execute any shell command inside the workspace (or custom cwd). Governed by user's Approval setting.",
+      description: "Execute any shell command (full freedom — governed solely by user's Approval setting).",
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Shell command to run" },
-          cwd: { type: "string", description: "Optional working directory (defaults to workspace)" },
+          command: { type: "string" },
+          cwd: { type: "string" },
         },
         required: ["command"],
       },
@@ -403,28 +675,142 @@ const TOOLS: PandawaTool[] = [
         const { stdout, stderr } = await execAsync(command, {
           cwd,
           timeout: 60_000,
-          maxBuffer: 2 * 1024 * 1024,
+          maxBuffer: 4 * 1024 * 1024,
         });
-        return `STDOUT:\n${stdout.slice(0, 12_000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();
+        return `STDOUT:\n${stdout.slice(0, 14_000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();
       } catch (err: unknown) {
         const e = err as { message?: string; stdout?: string; stderr?: string };
-        return `Command exited with error: ${e.message || String(err)}\nSTDOUT: ${(e.stdout || "").slice(0, 4000)}\nSTDERR: ${(e.stderr || "").slice(0, 4000)}`;
+        return `Exit error: ${e.message || String(err)}\nSTDOUT: ${(e.stdout || "").slice(0, 4000)}\nSTDERR: ${(e.stderr || "").slice(0, 4000)}`;
       }
     },
   },
+  {
+    pack: "shell",
+    definition: {
+      name: "code_execute",
+      description: "Run a Python, Node.js, or Bash script directly in a temporary file inside the workspace and return stdout/stderr.",
+      parameters: {
+        type: "object",
+        properties: {
+          language: { type: "string", enum: ["python", "node", "bash"] },
+          code: { type: "string", description: "Source code to execute" },
+        },
+        required: ["language", "code"],
+      },
+    },
+    execute: async (args) => {
+      const lang = String(args.language || "python");
+      const code = String(args.code || "");
+      const ext = lang === "node" ? ".mjs" : lang === "bash" ? ".sh" : ".py";
+      const tmpFile = path.join(os.tmpdir(), `pandawa_exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`);
+      fs.writeFileSync(tmpFile, code, "utf8");
+      const cmd =
+        lang === "node"
+          ? `node "${tmpFile}"`
+          : lang === "bash"
+          ? `bash "${tmpFile}"`
+          : `python3 "${tmpFile}" || python "${tmpFile}"`;
+      try {
+        const { stdout, stderr } = await execAsync(cmd, {
+          cwd: WORKSPACE_DIR,
+          timeout: 45_000,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+        return `STDOUT:\n${stdout.slice(0, 14_000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();
+      } catch (err: unknown) {
+        const e = err as { message?: string; stdout?: string; stderr?: string };
+        return `Execution failed: ${e.message || String(err)}\nSTDOUT: ${(e.stdout || "").slice(0, 4000)}\nSTDERR: ${(e.stderr || "").slice(0, 4000)}`;
+      } finally {
+        try {
+          fs.unlinkSync(tmpFile);
+        } catch {
+          // ignore
+        }
+      }
+    },
+  },
+  {
+    pack: "shell",
+    definition: {
+      name: "process_start",
+      description: "Start a long-running background process (dev server, scraper, watcher, tunnel) managed by Pandawa.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          command: { type: "string" },
+          cwd: { type: "string" },
+        },
+        required: ["command"],
+      },
+    },
+    execute: async (args) => {
+      const info = startManagedProcess({
+        name: args.name ? String(args.name) : undefined,
+        command: String(args.command || ""),
+        cwd: args.cwd ? String(args.cwd) : undefined,
+      });
+      return JSON.stringify(info, null, 2);
+    },
+  },
+  {
+    pack: "shell",
+    definition: {
+      name: "process_list",
+      description: "List all Pandawa-managed background processes and their live status.",
+      parameters: { type: "object", properties: {} },
+    },
+    execute: async () => JSON.stringify({ processes: listManagedProcesses() }, null, 2),
+  },
+  {
+    pack: "shell",
+    definition: {
+      name: "process_logs",
+      description: "Read recent stdout/stderr log output of a Pandawa-managed background process.",
+      parameters: {
+        type: "object",
+        properties: {
+          process_id: { type: "string" },
+          tail: { type: "number" },
+        },
+        required: ["process_id"],
+      },
+    },
+    execute: async (args) => {
+      const out = getManagedProcessLogs(String(args.process_id || ""), Number(args.tail || 80));
+      return out ? JSON.stringify(out, null, 2) : "Process not found.";
+    },
+  },
+  {
+    pack: "shell",
+    definition: {
+      name: "process_kill",
+      description: "Terminate a Pandawa-managed background process by its ID.",
+      parameters: {
+        type: "object",
+        properties: { process_id: { type: "string" } },
+        required: ["process_id"],
+      },
+    },
+    execute: async (args) => {
+      const ok = killManagedProcess(String(args.process_id || ""));
+      return ok ? `Terminated process ${args.process_id}.` : `Process not found: ${args.process_id}`;
+    },
+  },
 
-  // === WEB & HTTP PACK ===
+  // =============================================
+  // PACK 5: WEB SEARCH, FETCH & FULL HTTP CLIENT
+  // =============================================
   {
     pack: "web",
     definition: {
       name: "web_search",
-      description:
-        "Search the live web for up-to-date facts, documentation, news, or references without needing an exact URL first. Returns top result titles, URLs, and snippets.",
+      description: "Search the live web for facts, docs, news, or references without needing an exact URL first.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Search query keywords" },
-          max_results: { type: "number", description: "Number of results to return (default 6, max 10)" },
+          query: { type: "string" },
+          max_results: { type: "number" },
         },
         required: ["query"],
       },
@@ -434,7 +820,6 @@ const TOOLS: PandawaTool[] = [
       if (!query) return "Search query cannot be empty.";
       const maxResults = Math.min(10, Math.max(1, Number(args.max_results || 6)));
 
-      // Optional Tavily API if configured in env
       const tavilyKey = process.env.TAVILY_API_KEY?.trim();
       if (tavilyKey) {
         const resp = await fetch("https://api.tavily.com/search", {
@@ -445,15 +830,12 @@ const TOOLS: PandawaTool[] = [
         });
         if (resp.ok) {
           const data = (await resp.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> };
-          const items = (data.results || []).slice(0, maxResults);
-          return JSON.stringify({ engine: "tavily", query, results: items }, null, 2);
+          return JSON.stringify({ engine: "tavily", query, results: (data.results || []).slice(0, maxResults) }, null, 2);
         }
       }
 
-      // Zero-key web search via DuckDuckGo HTML endpoint
       const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
       const resp = await fetch(url, {
-        method: "GET",
         headers: {
           "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
           "Accept-Language": "en-US,en;q=0.9",
@@ -461,23 +843,12 @@ const TOOLS: PandawaTool[] = [
         signal: ctx.signal || AbortSignal.timeout(15_000),
       });
       const html = await resp.text();
-
-      const decodeHtml = (s: string) =>
-        s
-          .replace(/<[^>]+>/g, " ")
-          .replace(/&amp;/g, "&")
-          .replace(/&quot;/g, '"')
-          .replace(/&#x27;|&#39;/g, "'")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/\s+/g, " ")
-          .trim();
-
-      const results: Array<{ title: string; url: string; snippet: string }> = [];
-      const linkRegex = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-      const snippetRegex = /<(?:a|div)[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
+      const decode = (s: string) =>
+        s.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
 
       const links: Array<{ href: string; title: string }> = [];
+      const linkRegex = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+      const snippetRegex = /<(?:a|div)[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/(?:a|div)>/gi;
       let m: RegExpExecArray | null;
       while ((m = linkRegex.exec(html)) !== null && links.length < maxResults) {
         let href = m[1];
@@ -489,64 +860,234 @@ const TOOLS: PandawaTool[] = [
             // keep raw
           }
         }
-        links.push({ href, title: decodeHtml(m[2]) });
+        links.push({ href, title: decode(m[2]) });
       }
-
       const snippets: string[] = [];
       while ((m = snippetRegex.exec(html)) !== null && snippets.length < maxResults) {
-        snippets.push(decodeHtml(m[1]));
+        snippets.push(decode(m[1]));
       }
-
-      for (let i = 0; i < links.length; i++) {
-        results.push({
-          title: links[i].title,
-          url: links[i].href,
-          snippet: snippets[i] || "",
-        });
-      }
-
-      if (results.length === 0) {
-        return `No search results parsed for "${query}". You can try rephrasing or calling web_fetch on a direct URL.`;
-      }
-      return JSON.stringify({ engine: "duckduckgo", query, results }, null, 2);
+      const results = links.map((l, i) => ({ title: l.title, url: l.href, snippet: snippets[i] || "" }));
+      return results.length
+        ? JSON.stringify({ engine: "duckduckgo", query, results }, null, 2)
+        : `No search results parsed for "${query}".`;
     },
   },
   {
     pack: "web",
     definition: {
       name: "web_fetch",
-      description: "Fetch an HTTP/HTTPS URL and return its readable text or JSON response (up to 16KB).",
+      description: "Fetch an HTTP/HTTPS URL and return readable text or JSON (up to 16KB).",
       parameters: {
         type: "object",
         properties: {
           url: { type: "string" },
           method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE"] },
-          body: { type: "string", description: "Optional JSON body for POST/PUT" },
+          body: { type: "string" },
+        },
+        required: ["url"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const url = String(args.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) return "Invalid URL: must start with http:// or https://";
+      const resp = await fetch(url, {
+        method: String(args.method || "GET"),
+        signal: ctx.signal || AbortSignal.timeout(20_000),
+        headers: {
+          "User-Agent": "Pandawa-Agentic-Team/4.0",
+          ...(args.body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: args.body ? String(args.body) : undefined,
+      });
+      const raw = await resp.text();
+      const cleaned = raw.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      return `HTTP ${resp.status}\n${cleaned.slice(0, 16_000)}`;
+    },
+  },
+  {
+    pack: "web",
+    definition: {
+      name: "http_request",
+      description: "Full REST / GraphQL HTTP client supporting custom headers, authorization tokens, methods, and raw JSON/text responses.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] },
+          headers: { type: "object", description: "Key-value HTTP request headers" },
+          body: { type: "string", description: "Request body string (JSON or text)" },
+        },
+        required: ["url"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const url = String(args.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
+      const headers = (args.headers && typeof args.headers === "object" ? args.headers : {}) as Record<string, string>;
+      const resp = await fetch(url, {
+        method: String(args.method || "GET"),
+        headers,
+        body: args.body !== undefined ? String(args.body) : undefined,
+        signal: ctx.signal || AbortSignal.timeout(25_000),
+      });
+      const text = await resp.text();
+      return JSON.stringify(
+        {
+          status: resp.status,
+          ok: resp.ok,
+          contentType: resp.headers.get("content-type"),
+          body: text.slice(0, 16_000),
+        },
+        null,
+        2
+      );
+    },
+  },
+
+  // =============================================
+  // PACK 6: BROWSER INSPECTION & SCREENSHOTS
+  // =============================================
+  {
+    pack: "browser",
+    definition: {
+      name: "browser_extract",
+      description: "Load a web page and extract structured metadata: title, meta description, headings, links, and clean main text.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" } },
+        required: ["url"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const url = String(args.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
+      const resp = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 PandawaBrowser/4.0" },
+        signal: ctx.signal || AbortSignal.timeout(20_000),
+      });
+      const html = await resp.text();
+      const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").replace(/\s+/g, " ").trim();
+      const desc = (html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1] || "").trim();
+      const headings: string[] = [];
+      const hRe = /<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/gi;
+      let hm: RegExpExecArray | null;
+      while ((hm = hRe.exec(html)) !== null && headings.length < 20) {
+        const t = hm[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+        if (t) headings.push(t);
+      }
+      const links: Array<{ text: string; href: string }> = [];
+      const aRe = /<a[^>]+href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+      let am: RegExpExecArray | null;
+      while ((am = aRe.exec(html)) !== null && links.length < 25) {
+        const text = am[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+        if (text) links.push({ text: text.slice(0, 80), href: am[1] });
+      }
+      const bodyText = html
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 10_000);
+      return JSON.stringify({ url, status: resp.status, title, description: desc, headings, links, text: bodyText }, null, 2);
+    },
+  },
+  {
+    pack: "browser",
+    definition: {
+      name: "browser_screenshot",
+      description: "Capture a headless Chromium screenshot of a URL into the Pandawa workspace (requires chromium/google-chrome on host).",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          output_path: { type: "string", description: "Relative PNG path inside workspace (default screenshot.png)" },
         },
         required: ["url"],
       },
     },
     execute: async (args) => {
       const url = String(args.url || "").trim();
-      if (!/^https?:\/\//i.test(url)) return "Invalid URL: must start with http:// or https://";
-      const method = String(args.method || "GET");
-      const resp = await fetch(url, {
-        method,
-        signal: AbortSignal.timeout(20_000),
-        headers: {
-          "User-Agent": "Pandawa-Agentic-Team/2.0",
-          ...(args.body ? { "Content-Type": "application/json" } : {}),
+      if (!/^https?:\/\//i.test(url)) return "Invalid URL.";
+      const outRel = String(args.output_path || `screenshots/shot_${Date.now()}.png`);
+      const outFull = resolveWorkspacePath(outRel);
+      fs.mkdirSync(path.dirname(outFull), { recursive: true });
+      const cmd = `(which chromium || which chromium-browser || which google-chrome) && $(which chromium || which chromium-browser || which google-chrome) --headless --no-sandbox --disable-gpu --window-size=1440,900 --screenshot="${outFull}" "${url}"`;
+      try {
+        await execAsync(cmd, { timeout: 30_000 });
+        return `Saved screenshot to workspace: ${outRel}`;
+      } catch (err) {
+        return `Headless Chromium not installed or failed: ${err instanceof Error ? err.message : String(err)}. Tip: install chromium on VPS or attach a Playwright MCP server.`;
+      }
+    },
+  },
+
+  // =============================================
+  // PACK 7: SELF-AUTOMATION (CRON & CHANNEL DISPATCH)
+  // =============================================
+  {
+    pack: "automation",
+    definition: {
+      name: "cron_create",
+      description: "Schedule a recurring autonomous mission for Team Pandawa using a 5-field cron expression.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          schedule: { type: "string", description: "5-field cron (e.g. '0 9 * * *' for daily 9 AM)" },
+          prompt: { type: "string", description: "Mission instructions to execute on schedule" },
         },
-        body: args.body ? String(args.body) : undefined,
-      });
-      const raw = await resp.text();
-      const cleaned = raw
-        .replace(/<script[\s\S]*?<\/script>/gi, " ")
-        .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      return `HTTP ${resp.status}\n${cleaned.slice(0, 16_000)}`;
+        required: ["name", "schedule", "prompt"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const db = getDb();
+      const id = generateId("cron");
+      db.prepare(
+        `INSERT INTO cron_jobs (id, name, schedule, target_type, target_id, prompt, enabled)
+         VALUES (?, ?, ?, 'team', ?, ?, 1)`
+      ).run(id, String(args.name), String(args.schedule), ctx.teamId || "team_pandawa", String(args.prompt));
+      return `Scheduled cron job ${id} ("${args.name}" @ ${args.schedule}).`;
+    },
+  },
+  {
+    pack: "automation",
+    definition: {
+      name: "cron_list",
+      description: "List all active scheduled Cron missions configured in Pandawa.",
+      parameters: { type: "object", properties: {} },
+    },
+    execute: async () => {
+      const db = getDb();
+      return JSON.stringify(db.prepare("SELECT id, name, schedule, prompt, enabled, last_status FROM cron_jobs").all(), null, 2);
+    },
+  },
+  {
+    pack: "automation",
+    definition: {
+      name: "channel_notify",
+      description: "Send a proactive alert, briefing, or report to a configured Telegram, Discord, or Webhook channel.",
+      parameters: {
+        type: "object",
+        properties: {
+          channel_name_or_id: { type: "string", description: "Channel ID or partial name (omit to send to first enabled channel)" },
+          title: { type: "string" },
+          message: { type: "string" },
+        },
+        required: ["title", "message"],
+      },
+    },
+    execute: async (args) => {
+      const db = getDb();
+      const channels = db.prepare("SELECT id, name FROM channels WHERE enabled = 1").all() as Array<{ id: string; name: string }>;
+      if (channels.length === 0) return "No enabled channels configured yet.";
+      const q = String(args.channel_name_or_id || "").trim().toLowerCase();
+      const target = q
+        ? channels.find((c) => c.id.toLowerCase() === q || c.name.toLowerCase().includes(q))
+        : channels[0];
+      if (!target) return `Channel "${args.channel_name_or_id}" not found.`;
+      const res = await dispatchChannelNotification(target.id, String(args.title), String(args.message));
+      return JSON.stringify({ channel: target.name, ...res });
     },
   },
 ];
@@ -562,7 +1103,6 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: ToolExecutionContext
 ): Promise<string> {
-  // User-controlled Approval Gate (no hidden guardrails — user chooses Auto or Approve)
   if (toolRequiresApproval(name)) {
     const decision = await requestApproval({
       agentId: ctx.runtime.agent.id,
@@ -577,7 +1117,6 @@ export async function executeTool(
     }
   }
 
-  // Live MCP tool dispatch
   if (ctx.mcpLookup && ctx.mcpLookup.has(name)) {
     try {
       return await invokeMcpTool(ctx.mcpLookup.get(name)!, args);

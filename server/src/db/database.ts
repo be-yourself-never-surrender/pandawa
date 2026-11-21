@@ -221,6 +221,25 @@ function initSchema(db: DatabaseSync): void {
       duration_ms INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS team_tasks (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      session_id TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      owner_agent TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'in_progress', 'done', 'blocked')),
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      message_id UNINDEXED,
+      session_id UNINDEXED,
+      agent_name,
+      content
+    );
   `);
 }
 

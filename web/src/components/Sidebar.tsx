@@ -105,7 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
             {wsConnected ? "Realtime Live" : "Connecting..."}
           </span>
-          <span className="text-slate-600 font-mono">v3.0</span>
+          <span className="text-slate-600 font-mono">v4.0</span>
         </div>
         <button
           onClick={onLogout}

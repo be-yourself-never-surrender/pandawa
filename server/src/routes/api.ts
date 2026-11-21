@@ -45,6 +45,11 @@ import {
   clearMissionController,
   abortMission,
 } from "../engine/missionController.js";
+import {
+  listManagedProcesses,
+  getManagedProcessLogs,
+  killManagedProcess,
+} from "../tools/processManager.js";
 
 function maskProvider(p: ProviderRecord) {
   const key = decryptSecret(p.api_key || "");
@@ -889,6 +894,86 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   });
 
   // ========================
+  // SHARED TEAM TASK BOARD & MANAGED BACKGROUND PROCESSES
+  // ========================
+  router.get("/teams/:id/tasks", (req: Request, res: Response) => {
+    const db = getDb();
+    const tasks = db
+      .prepare("SELECT * FROM team_tasks WHERE team_id = ? ORDER BY updated_at DESC LIMIT 50")
+      .all(String(req.params.id));
+    res.json({ tasks });
+  });
+
+  router.post("/teams/:id/tasks", (req: Request, res: Response) => {
+    const db = getDb();
+    const id = generateId("tsk");
+    db.prepare(
+      `INSERT INTO team_tasks (id, team_id, session_id, title, owner_agent, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      String(req.params.id),
+      String(req.body?.sessionId || ""),
+      String(req.body?.title || "New Task"),
+      String(req.body?.ownerAgent || "Team"),
+      String(req.body?.status || "todo"),
+      String(req.body?.notes || "")
+    );
+    broadcast({ type: "team_task_updated", teamId: String(req.params.id), id });
+    res.json({ id });
+  });
+
+  router.patch("/teams/:id/tasks/:taskId", (req: Request, res: Response) => {
+    const db = getDb();
+    const cur = db
+      .prepare("SELECT * FROM team_tasks WHERE id = ? AND team_id = ?")
+      .get(String(req.params.taskId), String(req.params.id)) as Record<string, unknown> | undefined;
+    if (!cur) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+    db.prepare(
+      `UPDATE team_tasks SET title=?, owner_agent=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`
+    ).run(
+      req.body?.title !== undefined ? String(req.body.title) : String(cur.title),
+      req.body?.ownerAgent !== undefined ? String(req.body.ownerAgent) : String(cur.owner_agent),
+      req.body?.status !== undefined ? String(req.body.status) : String(cur.status),
+      req.body?.notes !== undefined ? String(req.body.notes) : String(cur.notes),
+      String(req.params.taskId)
+    );
+    broadcast({ type: "team_task_updated", teamId: String(req.params.id), id: String(req.params.taskId) });
+    res.json({ ok: true });
+  });
+
+  router.delete("/teams/:id/tasks/:taskId", (req: Request, res: Response) => {
+    const db = getDb();
+    db.prepare("DELETE FROM team_tasks WHERE id = ? AND team_id = ?").run(
+      String(req.params.taskId),
+      String(req.params.id)
+    );
+    res.json({ ok: true });
+  });
+
+  router.get("/processes", (_req: Request, res: Response) => {
+    res.json({ processes: listManagedProcesses() });
+  });
+
+  router.get("/processes/:id/logs", (req: Request, res: Response) => {
+    const tail = Number(req.query.tail || 100);
+    const out = getManagedProcessLogs(String(req.params.id), tail);
+    if (!out) {
+      res.status(404).json({ error: "Process not found" });
+      return;
+    }
+    res.json(out);
+  });
+
+  router.post("/processes/:id/kill", (req: Request, res: Response) => {
+    const ok = killManagedProcess(String(req.params.id));
+    res.json({ ok });
+  });
+
+  // ========================
   // SESSIONS & MISSION CHAT
   // ========================
   router.get("/sessions", (_req: Request, res: Response) => {
@@ -979,17 +1064,48 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
           content: r.content,
         }));
 
-      // Save user message
+      // Expand inline @brain/file.md references cleanly (like Hermes @ context injection)
+      let enrichedPrompt = prompt;
+      const atMatches = Array.from(prompt.matchAll(/@([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)/g));
+      if (atMatches.length > 0) {
+        const inlineDocs: string[] = [];
+        const seen = new Set<string>();
+        for (const m of atMatches) {
+          const rel = m[1];
+          if (seen.has(rel)) continue;
+          seen.add(rel);
+          try {
+            const f = readBrainFile(rel);
+            inlineDocs.push(`### Referenced File: @${rel}\n\`\`\`\n${f.content.slice(0, 6000)}\n\`\`\``);
+          } catch {
+            // ignore non-existent @mentions
+          }
+        }
+        if (inlineDocs.length > 0) {
+          enrichedPrompt = `${prompt}\n\n---\n${inlineDocs.join("\n\n")}`;
+        }
+      }
+
+      // Save user message & index in messages_fts for session_search recall
       const userMsgId = generateId("msg");
       db.prepare(
         `INSERT INTO messages (id, session_id, role, agent_name, content) VALUES (?, ?, 'user', 'You', ?)`
       ).run(userMsgId, sessionId, prompt);
+      try {
+        db.prepare(`INSERT INTO messages_fts (message_id, session_id, agent_name, content) VALUES (?, ?, 'You', ?)`).run(
+          userMsgId,
+          sessionId,
+          prompt
+        );
+      } catch {
+        // ignore FTS error
+      }
 
       if (targetType === "agent") {
         const result = await runAgentTurn({
           agentId: targetId,
           sessionId,
-          prompt,
+          prompt: enrichedPrompt,
           history,
           signal: controller.signal,
           onEvent: (ev) => broadcast({ ...ev, sessionId }),
@@ -1017,6 +1133,16 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
             dryRun: result.dryRun,
           })
         );
+        try {
+          db.prepare(`INSERT INTO messages_fts (message_id, session_id, agent_name, content) VALUES (?, ?, ?, ?)`).run(
+            msgId,
+            sessionId,
+            result.agentName,
+            result.content
+          );
+        } catch {
+          // ignore
+        }
         db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(sessionId);
 
         res.json({ ok: true, sessionId, mode: "agent", result });
@@ -1028,7 +1154,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       const teamResult = await runTeamMission({
         teamId: targetId,
         sessionId,
-        userPrompt: prompt,
+        userPrompt: enrichedPrompt,
         history,
         activeAgentIds,
         signal: controller.signal,
@@ -1707,7 +1833,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .get();
 
     res.json({
-      version: "3.0.0",
+      version: "4.0.0",
       approvalMode: getApprovalMode(),
       pendingApprovals: listPendingApprovals().length,
       uptimeSeconds: Math.floor(process.uptime()),

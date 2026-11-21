@@ -980,7 +980,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
                   <div>
                     <label className="text-slate-400 block mb-2">Included Tool Packs</label>
                     <div className="space-y-1.5">
-                      {["brain", "team", "workspace", "shell", "web"].map((pk) => {
+                      {["brain", "team", "workspace", "shell", "web", "browser", "automation"].map((pk) => {
                         const current = Array.isArray(selectedNode.data.packs)
                           ? (selectedNode.data.packs as string[])
                           : [];

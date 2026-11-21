@@ -6,6 +6,7 @@ import type { AgentItem, ProviderItem } from "../../types";
 export const ProvidersPage: React.FC = () => {
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
   const [editing, setEditing] = useState<ProviderItem | null>(null);
   const [newApiKey, setNewApiKey] = useState("");
   const [modelsText, setModelsText] = useState("");
@@ -42,12 +43,16 @@ export const ProvidersPage: React.FC = () => {
   }
 
   const load = useCallback(async () => {
-    const [pRes, aRes] = await Promise.all([
-      apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
-      apiFetch<{ agents: AgentItem[] }>("/api/agents"),
-    ]);
-    setProviders(pRes.providers);
-    setAgents(aRes.agents);
+    try {
+      const [pRes, aRes] = await Promise.all([
+        apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
+        apiFetch<{ agents: AgentItem[] }>("/api/agents"),
+      ]);
+      setProviders(pRes.providers);
+      setAgents(aRes.agents);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -248,6 +253,13 @@ export const ProvidersPage: React.FC = () => {
 
       {/* Providers Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {loading && providers.length === 0 && [0, 1, 2].map((i) => (
+          <div key={i} className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800/90 animate-pulse space-y-3">
+            <div className="h-4 w-36 rounded bg-slate-800" />
+            <div className="h-7 w-full rounded-lg bg-slate-800/70" />
+            <div className="h-8 w-full rounded-lg bg-slate-800/60" />
+          </div>
+        ))}
         {providers.map((p) => {
           const ts = testState[p.id];
           return (
@@ -258,7 +270,7 @@ export const ProvidersPage: React.FC = () => {
               <div className="space-y-2">
                 <div className="flex items-start justify-between gap-2 min-w-0">
                   <div className="min-w-0 flex-1 pr-1">
-                    <div className="text-sm font-bold text-white flex items-center gap-1.5 flex-wrap">
+                    <div className="text-sm font-bold text-white flex items-center gap-1.5 min-w-0">
                       <span className="truncate">{p.name}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 uppercase font-mono shrink-0">
                         {p.kind}
@@ -399,7 +411,7 @@ export const ProvidersPage: React.FC = () => {
                         const prov = providers.find((p) => p.id === e.target.value);
                         updateAgentModel(a.id, e.target.value, prov?.defaultModel || a.model);
                       }}
-                      className="w-48 max-w-full bg-[#080a0f] border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 truncate"
+                      className="w-52 max-w-full bg-[#080a0f] border border-slate-700 rounded-lg pl-2.5 pr-7 py-1.5 text-slate-100 truncate"
                     >
                       <option value="">(Canvas Wired)</option>
                       {providers.map((p) => (

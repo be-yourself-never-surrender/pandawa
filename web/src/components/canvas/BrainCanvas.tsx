@@ -803,7 +803,11 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({ onOpenBrainFile, activ
           </ReactFlow>
 
           {/* Bottom Legend */}
-          <div className="pointer-events-none absolute bottom-3 left-16 flex flex-wrap gap-2 bg-[#0d111b]/90 border border-slate-800/80 rounded-xl px-3 py-1.5 text-[11px] text-slate-400">
+          <div
+            className={`pointer-events-none absolute bottom-3 left-16 flex-wrap gap-2 bg-[#0d111b]/90 border border-slate-800/80 rounded-xl px-3 py-1.5 text-[11px] text-slate-400 ${
+              selectedNode || selectedEdge ? "hidden xl:flex" : "hidden sm:flex"
+            }`}
+          >
             <span className="flex items-center gap-1"><span className="w-2.5 h-0.5 bg-violet-500 inline-block" /> Brain Link</span>
             <span className="flex items-center gap-1"><span className="w-2.5 h-0.5 bg-emerald-500 inline-block" /> AI Model</span>
             <span className="flex items-center gap-1"><span className="w-2.5 h-0.5 bg-amber-500 inline-block" /> Knowledge Mount</span>

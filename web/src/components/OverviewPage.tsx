@@ -82,18 +82,23 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
   const [providers, setProviders] = useState<ProviderItem[]>([]);
   const [toolCount, setToolCount] = useState<number>(32);
   const [spawning, setSpawning] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
 
   const load = useCallback(async () => {
-    const [st, tm, pv, tl] = await Promise.all([
-      apiFetch<SystemSummary>("/api/system/status"),
-      apiFetch<{ teams: TeamItem[] }>("/api/teams"),
-      apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
-      apiFetch<{ packs: Array<{ tools: unknown[] }> }>("/api/tools"),
-    ]);
-    setStatus(st);
-    setTeams(tm.teams);
-    setProviders(pv.providers);
-    setToolCount(tl.packs.reduce((acc, p) => acc + p.tools.length, 0));
+    try {
+      const [st, tm, pv, tl] = await Promise.all([
+        apiFetch<SystemSummary>("/api/system/status"),
+        apiFetch<{ teams: TeamItem[] }>("/api/teams"),
+        apiFetch<{ providers: ProviderItem[] }>("/api/providers"),
+        apiFetch<{ packs: Array<{ tools: unknown[] }> }>("/api/tools"),
+      ]);
+      setStatus(st);
+      setTeams(tm.teams);
+      setProviders(pv.providers);
+      setToolCount(tl.packs.reduce((acc, p) => acc + p.tools.length, 0));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -196,16 +201,16 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             }`}
           >
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-white flex items-center gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-white flex items-center gap-1.5 min-w-0">
                   {hasCloudProvider ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                   ) : (
-                    <Circle className="w-4 h-4 text-amber-400" />
+                    <Circle className="w-4 h-4 text-amber-400 shrink-0" />
                   )}
-                  1. Connect AI Provider(s)
+                  <span className="truncate">1. Connect AI Provider(s)</span>
                 </span>
-                <Cpu className="w-4 h-4 text-emerald-400" />
+                <Cpu className="w-4 h-4 text-emerald-400 shrink-0" />
               </div>
               <p className="text-slate-400 leading-relaxed">
                 Paste 1 or more API keys (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, or Custom Base URL) right inside Multi-AI Hub.
@@ -221,12 +226,12 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             className="p-4 rounded-xl bg-[#090c14] border border-slate-800 hover:border-violet-500/50 text-left transition cursor-pointer flex flex-col justify-between gap-3"
           >
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-violet-400" />
-                  2. Shape Your Brains &amp; soul.md
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-white flex items-center gap-1.5 min-w-0">
+                  <CheckCircle2 className="w-4 h-4 text-violet-400 shrink-0" />
+                  <span className="truncate">2. Shape Brains &amp; soul.md</span>
                 </span>
-                <FolderTree className="w-4 h-4 text-violet-400" />
+                <FolderTree className="w-4 h-4 text-violet-400 shrink-0" />
               </div>
               <p className="text-slate-400 leading-relaxed">
                 Edit <code>main-brain/soul.md</code>, upload SOP docs, or drag wires on Brain Canvas to control what each AI model knows.
@@ -242,16 +247,16 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             className="p-4 rounded-xl bg-[#090c14] border border-slate-800 hover:border-cyan-500/50 text-left transition cursor-pointer flex flex-col justify-between gap-3"
           >
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-white flex items-center gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-white flex items-center gap-1.5 min-w-0">
                   {hasRunMission ? (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                   ) : (
-                    <Circle className="w-4 h-4 text-cyan-400" />
+                    <Circle className="w-4 h-4 text-cyan-400 shrink-0" />
                   )}
-                  3. Run a Team Mission
+                  <span className="truncate">3. Run a Team Mission</span>
                 </span>
-                <MessageSquare className="w-4 h-4 text-cyan-400" />
+                <MessageSquare className="w-4 h-4 text-cyan-400 shrink-0" />
               </div>
               <p className="text-slate-400 leading-relaxed">
                 Watch peer specialists deliberate in parallel, consult each other live, execute tools, and converge on unified consensus.
@@ -265,7 +270,16 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
       </div>
 
       {/* KPI Metrics Row */}
-      {status && (
+      {loading && !status ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800 animate-pulse space-y-2">
+              <div className="h-3 w-24 rounded bg-slate-800" />
+              <div className="h-7 w-32 rounded bg-slate-800/80" />
+            </div>
+          ))}
+        </div>
+      ) : status && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-2xl bg-[#0e1320] border border-slate-800">
             <div className="text-[11px] uppercase text-slate-400 flex items-center gap-1.5">
@@ -313,9 +327,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {[
-              { id: "software-squad", label: "+ Software Squad" },
-              { id: "growth-squad", label: "+ Growth Squad" },
-              { id: "research-squad", label: "+ Research Squad" },
+              { id: "software-squad", label: "Software Squad" },
+              { id: "growth-squad", label: "Growth Squad" },
+              { id: "research-squad", label: "Research Squad" },
             ].map((kit) => (
               <button
                 key={kit.id}
@@ -330,6 +344,16 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {loading && teams.length === 0 && (
+            <div className="p-5 rounded-2xl bg-[#0e1320] border border-slate-800 animate-pulse space-y-3">
+              <div className="h-4 w-40 rounded bg-slate-800" />
+              <div className="h-3 w-64 rounded bg-slate-800/70" />
+              <div className="flex gap-2 pt-2">
+                <div className="h-8 flex-1 rounded-xl bg-slate-800/80" />
+                <div className="h-8 flex-1 rounded-xl bg-slate-800/80" />
+              </div>
+            </div>
+          )}
           {teams.map((t) => (
             <div
               key={t.id}

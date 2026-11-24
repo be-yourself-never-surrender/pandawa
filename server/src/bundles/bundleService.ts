@@ -1,6 +1,6 @@
 import { generateId } from "../config.js";
 import { getDb, logAudit } from "../db/database.js";
-import { collectContextFromPath, createBrainFolder, writeBrainFile } from "../brains/brainFs.js";
+import { collectAllFilesFromPath, createBrainFolder, writeBrainFile } from "../brains/brainFs.js";
 import { getTeamMembers } from "../engine/contextCompiler.js";
 
 export interface PandawaBundle {
@@ -9,12 +9,16 @@ export interface PandawaBundle {
   bundleName: string;
   description: string;
   author: string;
+  warnings?: string[];
   team: {
     slug: string;
     name: string;
     description: string;
     collaborationMode: string;
     maxRounds: number;
+    leadAgentSlug?: string;
+    reviewerAgentSlug?: string;
+    senderAgentSlug?: string;
   };
   brains: Array<{
     key: string;
@@ -38,6 +42,7 @@ export interface PandawaBundle {
     purpose: string;
     temperature: number;
     maxTokens: number;
+    maxIterations?: number;
     systemPrompt: string;
     toolPacks: string[];
   }>;
@@ -84,6 +89,9 @@ export function exportTeamBundle(params: {
         team_brain_id: string | null;
         collaboration_mode: string;
         max_rounds: number;
+        lead_agent_id?: string;
+        reviewer_agent_id?: string;
+        sender_agent_id?: string;
       }
     | undefined;
 
@@ -92,6 +100,7 @@ export function exportTeamBundle(params: {
   }
 
   const members = getTeamMembers(team.id);
+  const memberById = new Map(members.map((m) => [m.id, m]));
   const brainsToExport: Array<{
     id: string;
     slug: string;
@@ -114,18 +123,21 @@ export function exportTeamBundle(params: {
     if (tb) brainsToExport.push(tb);
   }
 
-  // Collect all files belonging to exported brains and member personal folders
+  // Losslessly collect ALL readable files belonging to exported brains & member personal folders
   const filesMap = new Map<string, string>();
+  const warnings: string[] = [];
   for (const b of brainsToExport) {
-    const col = collectContextFromPath(b.folder_path, 120_000);
+    const col = collectAllFilesFromPath(b.folder_path);
     for (const f of col.files) filesMap.set(f.path, f.content);
+    warnings.push(...col.warnings);
   }
   for (const ag of members) {
-    const col = collectContextFromPath(`agents/${ag.slug}`, 40_000);
+    const col = collectAllFilesFromPath(`agents/${ag.slug}`);
     for (const f of col.files) filesMap.set(f.path, f.content);
+    warnings.push(...col.warnings);
   }
 
-  // Collect relevant topology nodes & edges (NEVER exporting raw API keys!)
+  // Collect strictly scoped topology subgraph reachable from this team (NEVER exporting raw API keys or unrelated teams!)
   const allNodes = db.prepare("SELECT * FROM canvas_nodes").all() as Array<{
     id: string;
     type: string;
@@ -147,28 +159,43 @@ export function exportTeamBundle(params: {
 
   const brainIdSet = new Set(brainsToExport.map((b) => b.id));
   const agentIdSet = new Set(members.map((m) => m.id));
+  const nodeById = new Map(allNodes.map((n) => [n.id, n]));
 
-  const includedNodeIds = new Set<string>();
-  const exportedNodes: PandawaBundle["topology"]["nodes"] = [];
-
+  const coreNodeIds = new Set<string>();
   for (const n of allNodes) {
     const data = JSON.parse(n.data_json || "{}") as Record<string, unknown>;
-    const keep =
+    const isCore =
       (n.type === "main_brain" && brainIdSet.has(n.ref_id)) ||
-      (n.type === "team_brain" && brainIdSet.has(n.ref_id)) ||
-      (n.type === "agent" && agentIdSet.has(String(data.agentId || n.ref_id))) ||
-      n.type === "knowledge" ||
-      n.type === "toolpack";
+      (n.type === "team_brain" && (brainIdSet.has(n.ref_id) || data.teamId === team.id)) ||
+      (n.type === "agent" && agentIdSet.has(String(data.agentId || n.ref_id)));
+    if (isCore) coreNodeIds.add(n.id);
+  }
 
-    if (!keep) continue;
+  // Include knowledge/toolpack nodes directly connected to coreNodes of THIS team only
+  const includedNodeIds = new Set<string>(coreNodeIds);
+  for (const e of allEdges) {
+    let attachId: string | null = null;
+    if (coreNodeIds.has(e.source)) attachId = e.target;
+    else if (coreNodeIds.has(e.target)) attachId = e.source;
+    if (!attachId) continue;
+    const neighbor = nodeById.get(attachId);
+    if (neighbor && (neighbor.type === "knowledge" || neighbor.type === "toolpack")) {
+      includedNodeIds.add(neighbor.id);
+    }
+  }
+
+  const exportedNodes: PandawaBundle["topology"]["nodes"] = [];
+  for (const n of allNodes) {
+    if (!includedNodeIds.has(n.id)) continue;
+    const data = JSON.parse(n.data_json || "{}") as Record<string, unknown>;
     if (n.type === "knowledge") {
       const kPath = String(data.path || n.ref_id);
       if (kPath) {
-        const col = collectContextFromPath(kPath, 40_000);
+        const col = collectAllFilesFromPath(kPath);
         for (const f of col.files) filesMap.set(f.path, f.content);
+        warnings.push(...col.warnings);
       }
     }
-    includedNodeIds.add(n.id);
     exportedNodes.push({
       key: n.id,
       type: n.type,
@@ -196,12 +223,22 @@ export function exportTeamBundle(params: {
     bundleName: `${team.name} — Brain Kit`,
     description: team.description,
     author: params.author || "Pandawa Studio",
+    ...(warnings.length > 0 ? { warnings } : {}),
     team: {
       slug: team.slug,
       name: team.name,
       description: team.description,
       collaborationMode: team.collaboration_mode,
       maxRounds: team.max_rounds,
+      ...(team.lead_agent_id && memberById.has(team.lead_agent_id)
+        ? { leadAgentSlug: memberById.get(team.lead_agent_id)!.slug }
+        : {}),
+      ...(team.reviewer_agent_id && memberById.has(team.reviewer_agent_id)
+        ? { reviewerAgentSlug: memberById.get(team.reviewer_agent_id)!.slug }
+        : {}),
+      ...(team.sender_agent_id && memberById.has(team.sender_agent_id)
+        ? { senderAgentSlug: memberById.get(team.sender_agent_id)!.slug }
+        : {}),
     },
     brains: brainsToExport.map((b) => ({
       key: b.id,
@@ -225,6 +262,7 @@ export function exportTeamBundle(params: {
       purpose: m.purpose,
       temperature: m.temperature,
       maxTokens: m.max_tokens,
+      maxIterations: m.max_iterations || 35,
       systemPrompt: m.system_prompt,
       toolPacks: JSON.parse(m.tool_packs_json || '["brain","team"]'),
     })),
@@ -282,12 +320,58 @@ export function importTeamBundle(bundle: PandawaBundle): {
     if (b.layer === "team" && !teamBrainNewId) teamBrainNewId = newId;
   }
 
-  // 3. Create Team
+  // 3. Create Agents first so role IDs (lead/reviewer/sender) resolve cleanly on Team
+  const newSlugToAgentId = new Map<string, string>();
+  const oldSlugToNewSlug = new Map<string, string>();
+  for (const a of bundle.agents || []) {
+    const newId = generateId("agent");
+    const newSlug = `${a.slug}-${suffix}`;
+    const maxIter = Math.min(100, Math.max(1, Number(a.maxIterations || 35)));
+    db.prepare(
+      `INSERT INTO agents (id, slug, name, title, role_description, avatar, color, model, purpose, temperature, max_tokens, max_iterations, system_prompt, tool_packs_json, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    ).run(
+      newId,
+      newSlug,
+      a.name,
+      a.title,
+      a.roleDescription || "",
+      a.avatar || "A",
+      a.color || "#06b6d4",
+      a.model || "",
+      a.purpose || "general",
+      a.temperature ?? 0.5,
+      a.maxTokens ?? 4096,
+      maxIter,
+      a.systemPrompt || "",
+      JSON.stringify(a.toolPacks || ["brain", "team"])
+    );
+    oldToNewAgentId.set(a.key, newId);
+    newSlugToAgentId.set(a.slug, newId);
+    oldSlugToNewSlug.set(a.slug, newSlug);
+  }
+
+  // Mirror exported personal agent files (`agents/<oldSlug>/...`) into `agents/<newSlug>/...` so agent personal mounts work immediately
+  for (const f of bundle.files || []) {
+    const cleanOrig = f.path.replace(/\\/g, "/").replace(/^\/+/, "");
+    const m = cleanOrig.match(/^agents\/([^/]+)\/(.+)$/);
+    if (m && oldSlugToNewSlug.has(m[1])) {
+      writeBrainFile(`agents/${oldSlugToNewSlug.get(m[1])}/${m[2]}`, f.content);
+    }
+  }
+
+  // 4. Create Team with restored explicit role bindings
   const newTeamId = generateId("team");
   const teamName = `${bundle.team?.name || bundle.bundleName || "Imported Team"} (${suffix})`;
+  const leadAgentId = bundle.team?.leadAgentSlug ? newSlugToAgentId.get(bundle.team.leadAgentSlug) || "" : "";
+  const reviewerAgentId = bundle.team?.reviewerAgentSlug
+    ? newSlugToAgentId.get(bundle.team.reviewerAgentSlug) || ""
+    : "";
+  const senderAgentId = bundle.team?.senderAgentSlug ? newSlugToAgentId.get(bundle.team.senderAgentSlug) || "" : "";
+
   db.prepare(
-    `INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, enabled)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
+    `INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, lead_agent_id, reviewer_agent_id, sender_agent_id, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
   ).run(
     newTeamId,
     `${(bundle.team?.slug || "imported").replace(/[^a-z0-9-]/gi, "-")}-${suffix}`,
@@ -295,33 +379,11 @@ export function importTeamBundle(bundle: PandawaBundle): {
     bundle.team?.description || bundle.description || "",
     teamBrainNewId,
     bundle.team?.collaborationMode || "deliberate",
-    bundle.team?.maxRounds || 2
+    bundle.team?.maxRounds || 2,
+    leadAgentId,
+    reviewerAgentId,
+    senderAgentId
   );
-
-  // 4. Create Agents
-  for (const a of bundle.agents || []) {
-    const newId = generateId("agent");
-    const newSlug = `${a.slug}-${suffix}`;
-    db.prepare(
-      `INSERT INTO agents (id, slug, name, title, role_description, avatar, color, model, purpose, temperature, max_tokens, system_prompt, tool_packs_json, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-    ).run(
-      newId,
-      newSlug,
-      a.name,
-      a.title,
-      a.roleDescription || "",
-      a.avatar || "⚡",
-      a.color || "#06b6d4",
-      a.model || "",
-      a.purpose || "general",
-      a.temperature ?? 0.5,
-      a.maxTokens ?? 4096,
-      a.systemPrompt || "",
-      JSON.stringify(a.toolPacks || ["brain", "team"])
-    );
-    oldToNewAgentId.set(a.key, newId);
-  }
 
   // 5. Place Nodes & Edges onto Canvas offset to the right so they never overlap existing graph
   const maxXRow = db.prepare("SELECT COALESCE(MAX(position_x), 0) as mx FROM canvas_nodes").get() as { mx: number };

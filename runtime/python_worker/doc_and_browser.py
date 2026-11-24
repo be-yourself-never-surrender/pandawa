@@ -4,6 +4,7 @@ Pandawa v6 — Hybrid Python Living Worker (Documents + Real Playwright Browser)
 Runs on-demand so idle VPS memory stays minimal while giving Pandawa agents
 full Python ecosystem power (PDF/DOCX/XLSX parsing + interactive Playwright browser).
 """
+import ipaddress
 import json
 import os
 import socket
@@ -14,9 +15,12 @@ import urllib.parse
 import zipfile
 
 TEXT_EXTS = {
-    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".tsv",
-    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".sh", ".sql",
-    ".xml", ".html", ".css", ".env", ".ini", ".cfg", ".log",
+    "", ".md", ".mdx", ".rst", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".csv", ".tsv",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".sh", ".ps1", ".bat", ".cmd", ".sql",
+    ".xml", ".html", ".css", ".less", ".sass", ".svg", ".env", ".example", ".ini", ".cfg", ".conf",
+    ".properties", ".lock", ".sandbox", ".log", ".gitignore", ".dockerignore", ".editorconfig", ".npmrc",
+    ".rs", ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".graphql", ".prisma", ".tf",
+    ".hcl", ".nix", ".lua", ".r", ".scala", ".kt", ".swift", ".dart", ".vue", ".svelte", ".astro",
 }
 RICH_DOC_EXTS = {".pdf", ".docx", ".xlsx", ".xlsm"}
 SKIP_SEGMENTS = {".git", "node_modules", "__macosx", ".obsidian", ".venv", "__pycache__", ".ds_store"}
@@ -78,8 +82,9 @@ def action_doc_read(payload: dict) -> dict:
         if ext in (".xlsx", ".xlsm"):
             import openpyxl
             wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            sheet_names = list(wb.sheetnames)
             sheets = []
-            for name in wb.sheetnames[:6]:
+            for name in sheet_names[:6]:
                 ws = wb[name]
                 rows = []
                 for r_idx, row in enumerate(ws.iter_rows(values_only=True)):
@@ -94,7 +99,7 @@ def action_doc_read(payload: dict) -> dict:
             return {
                 "ok": True,
                 "format": "xlsx",
-                "sheets": wb.sheetnames,
+                "sheets": sheet_names,
                 "text": "\n\n".join(sheets)[:max_chars],
             }
 
@@ -112,19 +117,33 @@ BLOCKED_META_HOSTS = {"metadata.google.internal", "metadata.goog", "metadata.azu
 BLOCKED_META_IPS = {"169.254.169.254", "169.254.170.2", "100.100.100.200", "fd00:ec2::254"}
 
 
-def is_metadata_url(url: str) -> str | None:
+def is_metadata_url(url: str, block_private: bool = False) -> str | None:
     try:
         parsed = urllib.parse.urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme and scheme not in ("http", "https", "data", "blob", "about"):
+            return f"Blocked scheme: {scheme}"
+        if scheme in ("data", "blob", "about"):
+            return None
         host = (parsed.hostname or "").lower()
         if not host:
             return "Empty hostname"
         if host in BLOCKED_META_HOSTS or host in BLOCKED_META_IPS:
             return f"Blocked cloud metadata host: {host}"
+        if block_private and host == "localhost":
+            return "Blocked private/loopback host: localhost"
         try:
             for info in socket.getaddrinfo(host, None):
                 ip = info[4][0].lower().replace("::ffff:", "")
                 if ip in BLOCKED_META_IPS:
                     return f"Blocked cloud metadata IP: {ip}"
+                if block_private:
+                    try:
+                        addr = ipaddress.ip_address(ip)
+                        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                            return f"Blocked private/loopback IP: {ip}"
+                    except ValueError:
+                        pass
         except Exception:
             pass
     except Exception:
@@ -134,9 +153,10 @@ def is_metadata_url(url: str) -> str | None:
 
 def action_browser_run(payload: dict) -> dict:
     url = str(payload.get("url", "")).strip()
+    block_private = bool(payload.get("blockPrivate", False))
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL must start with http:// or https://"}
-    meta_err = is_metadata_url(url)
+    meta_err = is_metadata_url(url, block_private=block_private)
     if meta_err:
         return {"ok": False, "error": meta_err}
 
@@ -167,6 +187,17 @@ def action_browser_run(payload: dict) -> dict:
             context = browser.new_context(viewport={"width": viewport_w, "height": viewport_h})
             page = context.new_page()
             page.set_default_timeout(20000)
+
+            def ssrf_route_handler(route):
+                req_url = route.request.url
+                err = is_metadata_url(req_url, block_private=block_private)
+                if err:
+                    console_errors.append(f"Blocked SSRF navigation/request: {err}")
+                    route.abort("blockedbyclient")
+                    return
+                route.continue_()
+
+            page.route("**/*", ssrf_route_handler)
 
             page.on(
                 "console",
@@ -260,8 +291,8 @@ def action_import_zip(payload: dict) -> dict:
     zip_path = str(payload.get("zipPath", "")).strip()
     target_dir = str(payload.get("targetDir", "")).strip()
     rel_prefix = str(payload.get("relPrefix", "")).strip().strip("/")
-    max_files = int(payload.get("maxFiles", 500))
-    max_total_bytes = int(payload.get("maxTotalBytes", 60 * 1024 * 1024))
+    max_files = int(payload.get("maxFiles", 5000))
+    max_total_bytes = int(payload.get("maxTotalBytes", 150 * 1024 * 1024))
 
     if not zip_path or not os.path.exists(zip_path):
         return {"ok": False, "error": f"ZIP file not found: {zip_path}"}
@@ -273,7 +304,14 @@ def action_import_zip(payload: dict) -> dict:
     saved_paths = []
     converted_docs = 0
     skipped = 0
+    skipped_details = []
     total_bytes = 0
+
+    def record_skip(item_path: str, reason: str) -> None:
+        nonlocal skipped
+        skipped += 1
+        if len(skipped_details) < 100:
+            skipped_details.append({"path": item_path, "reason": reason})
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -281,34 +319,30 @@ def action_import_zip(payload: dict) -> dict:
             for info in infos:
                 if info.is_dir():
                     continue
+                raw_name = info.filename.replace("\\", "/").lstrip("/")
                 if len(saved_paths) >= max_files:
-                    skipped += 1
+                    record_skip(raw_name, f"Exceeded max_files limit ({max_files})")
                     continue
 
-                raw_name = info.filename.replace("\\", "/").lstrip("/")
                 parts = [p for p in raw_name.split("/") if p and p != "."]
                 if not parts or any(p == ".." or ":" in p for p in parts):
-                    skipped += 1
+                    record_skip(raw_name, "Invalid or unsafe path segments")
                     continue
                 if any(p.lower() in SKIP_SEGMENTS or p.startswith("._") for p in parts):
-                    skipped += 1
+                    record_skip(raw_name, "Ignored system/cache path")
                     continue
 
                 clean_rel = "/".join(parts)
                 ext = os.path.splitext(clean_rel)[1].lower()
 
-                if ext not in TEXT_EXTS and ext not in RICH_DOC_EXTS:
-                    skipped += 1
-                    continue
-
                 if info.file_size > 15 * 1024 * 1024 or total_bytes + info.file_size > max_total_bytes:
-                    skipped += 1
+                    record_skip(clean_rel, "Exceeds file size or total archive byte budget")
                     continue
 
                 data = zf.read(info)
-                total_bytes += len(data)
 
                 if ext in RICH_DOC_EXTS:
+                    total_bytes += len(data)
                     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tf:
                         tf.write(data)
                         tmp_doc = tf.name
@@ -320,12 +354,12 @@ def action_import_zip(payload: dict) -> dict:
                         except OSError:
                             pass
                     if not parsed.get("ok"):
-                        skipped += 1
+                        record_skip(clean_rel, parsed.get("error") or f"Failed parsing {ext}")
                         continue
                     stem_rel = os.path.splitext(clean_rel)[0] + ".md"
                     out_full = os.path.realpath(os.path.join(target_real, stem_rel))
                     if not (out_full == target_real or out_full.startswith(target_real + os.sep)):
-                        skipped += 1
+                        record_skip(clean_rel, "Resolved path escapes target directory")
                         continue
                     os.makedirs(os.path.dirname(out_full), exist_ok=True)
                     md_body = f"# {os.path.basename(clean_rel)}\n\n> Converted automatically from `{clean_rel}` ({parsed.get('format', ext)})\n\n{parsed.get('text', '')}\n"
@@ -333,23 +367,39 @@ def action_import_zip(payload: dict) -> dict:
                         outf.write(md_body)
                     saved_paths.append(f"{rel_prefix}/{stem_rel}" if rel_prefix else stem_rel)
                     converted_docs += 1
-                else:
-                    out_full = os.path.realpath(os.path.join(target_real, clean_rel))
-                    if not (out_full == target_real or out_full.startswith(target_real + os.sep)):
-                        skipped += 1
+                    continue
+
+                # Determine text content: allowlisted TEXT_EXTS OR clean UTF-8 non-binary files
+                is_known_text = ext in TEXT_EXTS
+                if not is_known_text:
+                    if len(data) > 2 * 1024 * 1024 or b"\x00" in data:
+                        record_skip(clean_rel, f"Binary or unsupported extension ({ext or 'none'})")
                         continue
-                    os.makedirs(os.path.dirname(out_full), exist_ok=True)
+                    try:
+                        text = data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        record_skip(clean_rel, f"Non-UTF-8 file ({ext or 'none'})")
+                        continue
+                else:
                     text = data.decode("utf-8", errors="replace")
-                    with open(out_full, "w", encoding="utf-8") as outf:
-                        outf.write(text)
-                    saved_paths.append(f"{rel_prefix}/{clean_rel}" if rel_prefix else clean_rel)
+
+                total_bytes += len(data)
+                out_full = os.path.realpath(os.path.join(target_real, clean_rel))
+                if not (out_full == target_real or out_full.startswith(target_real + os.sep)):
+                    record_skip(clean_rel, "Resolved path escapes target directory")
+                    continue
+                os.makedirs(os.path.dirname(out_full), exist_ok=True)
+                with open(out_full, "w", encoding="utf-8") as outf:
+                    outf.write(text)
+                saved_paths.append(f"{rel_prefix}/{clean_rel}" if rel_prefix else clean_rel)
 
         return {
             "ok": True,
             "count": len(saved_paths),
             "convertedDocs": converted_docs,
             "skipped": skipped,
-            "paths": saved_paths[:200],
+            "skippedDetails": skipped_details,
+            "paths": saved_paths,
         }
     except zipfile.BadZipFile:
         return {"ok": False, "error": "Invalid or corrupted ZIP archive."}
@@ -360,7 +410,14 @@ def action_import_zip(payload: dict) -> dict:
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
     raw = sys.stdin.read().strip() if not sys.stdin.isatty() else ""
-    payload = json.loads(raw) if raw else {}
+    try:
+        payload = json.loads(raw) if raw else {}
+        if not isinstance(payload, dict):
+            print(json.dumps({"ok": False, "error": "JSON payload must be an object"}))
+            return
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"ok": False, "error": f"Invalid JSON input: {exc}"}))
+        return
 
     if action == "status":
         out = action_status()

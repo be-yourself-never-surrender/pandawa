@@ -13,9 +13,30 @@ export interface BrainTreeNode {
 }
 
 const TEXT_EXTENSIONS = new Set([
-  ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv",
-  ".ts", ".tsx", ".js", ".jsx", ".py", ".sh", ".sql", ".xml", ".html", ".css", ".env", ""
+  ".md", ".mdx", ".rst", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".csv", ".tsv",
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".sh", ".ps1", ".bat", ".cmd", ".sql",
+  ".xml", ".html", ".css", ".less", ".sass", ".svg", ".env", ".example", ".ini", ".cfg", ".conf",
+  ".properties", ".lock", ".sandbox", ".log", ".gitignore", ".dockerignore", ".editorconfig", ".npmrc",
+  ".rs", ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".graphql", ".prisma", ".tf",
+  ".hcl", ".nix", ".lua", ".r", ".scala", ".kt", ".swift", ".dart", ".vue", ".svelte", ".astro", "",
 ]);
+
+function isReadableUtf8TextFile(fullPath: string, maxBytes = 2 * 1024 * 1024): boolean {
+  const ext = path.extname(fullPath).toLowerCase();
+  const stat = fs.statSync(fullPath);
+  if (stat.size > maxBytes) return false;
+  const buf = fs.readFileSync(fullPath);
+  if (buf.includes(0)) return false;
+  if (TEXT_EXTENSIONS.has(ext)) return true;
+  // Also allow unknown extension if valid UTF-8 text
+  const decoded = new TextDecoder("utf-8", { fatal: true });
+  try {
+    decoded.decode(buf);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function normalizeRelPath(relPath: string): string {
   const cleaned = relPath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
@@ -209,6 +230,62 @@ export function collectContextFromPath(relPath: string, maxChars = 16000): { fil
 
   walkCollect(full, norm);
   return { files: collected, truncated };
+}
+
+export function collectAllFilesFromPath(
+  relPath: string,
+  opts?: { maxFileBytes?: number }
+): { files: Array<{ path: string; content: string }>; warnings: string[] } {
+  const maxFileBytes = opts?.maxFileBytes ?? 2 * 1024 * 1024;
+  const norm = normalizeRelPath(relPath);
+  const full = resolveBrainPath(norm);
+  if (!fs.existsSync(full)) {
+    return { files: [], warnings: [] };
+  }
+
+  const files: Array<{ path: string; content: string }> = [];
+  const warnings: string[] = [];
+
+  function addFullFile(fileFull: string, fileRel: string): void {
+    try {
+      const stat = fs.statSync(fileFull);
+      if (stat.size > maxFileBytes) {
+        warnings.push(`Skipped oversized file ${fileRel} (${stat.size} bytes)`);
+        return;
+      }
+      if (!isReadableUtf8TextFile(fileFull, maxFileBytes)) {
+        warnings.push(`Skipped binary/non-UTF-8 file ${fileRel}`);
+        return;
+      }
+      files.push({ path: fileRel, content: fs.readFileSync(fileFull, "utf8") });
+    } catch (err) {
+      warnings.push(`Could not read ${fileRel}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const stat = fs.statSync(full);
+  if (stat.isFile()) {
+    addFullFile(full, norm);
+    return { files, warnings };
+  }
+
+  function walkAll(dirFull: string, relPrefix: string): void {
+    const entries = fs.readdirSync(dirFull, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+      const eFull = path.join(dirFull, entry.name);
+      const eRel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walkAll(eFull, eRel);
+      } else {
+        addFullFile(eFull, eRel);
+      }
+    }
+  }
+
+  walkAll(full, norm);
+  return { files, warnings };
 }
 
 export function indexBrainFile(relPath: string, content: string): void {

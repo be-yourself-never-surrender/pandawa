@@ -226,8 +226,8 @@ Starter 2-agent workspace. Customize roles, add more agents on Brain Canvas, or 
 
   // 5. Seed Starter Core Team
   db.prepare(`
-    INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, enabled)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, lead_agent_id, reviewer_agent_id, sender_agent_id, enabled)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     "team_pandawa",
     "pandawa-core",
@@ -236,6 +236,9 @@ Starter 2-agent workspace. Customize roles, add more agents on Brain Canvas, or 
     "brain_team_core",
     "execute",
     2,
+    "agent_yudhistira",
+    "",
+    "agent_yudhistira",
     1
   );
 

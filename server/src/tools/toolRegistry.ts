@@ -1,9 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { DATA_DIR, WORKSPACE_DIR, generateId } from "../config.js";
+import {
+  generateId,
+  resolveTeamWorkspaceDir,
+  resolveTeamCheckpointsDir,
+  resolveScopedCwd,
+  sanitizeWorkspaceSegment,
+} from "../config.js";
 import { getDb } from "../db/database.js";
 import {
   readBrainFile,
@@ -37,24 +44,54 @@ import { getHeartbeatConfig, updateHeartbeatConfig } from "../engine/heartbeatDa
 import { dispatchChannelNotification } from "../channels/channelManager.js";
 
 const execAsync = promisify(exec);
-const CHECKPOINTS_DIR = path.join(DATA_DIR, "checkpoints");
 
-// Enforced per-session workspace file lock (prevents parallel multi-agent lost updates)
+// Enforced cross-session workspace & brain file lock (prevents concurrent lost updates)
 const FILE_LOCK_TTL_MS = 90_000;
-const workspaceFileLocks = new Map<string, { owner: string; updatedAt: number }>();
+const workspaceFileLocks = new Map<string, { sessionId: string; owner: string; updatedAt: number }>();
+
+function normalizeLockPath(relPath: string): string {
+  const cleaned = relPath.replace(/\\/g, "/");
+  const norm = path.posix.normalize(cleaned).replace(/^(\.\.\/)+/, "").replace(/^\/+/, "").replace(/\/+$/, "");
+  return norm || ".";
+}
+
+function makeScreenshotRelPath(prefix: string): string {
+  return `screenshots/${prefix}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}.png`;
+}
+
+export function markTeamMessageRead(id: string, currentReadByJson: string, readerName: string): string {
+  let readers: string[] = [];
+  try {
+    const parsed = JSON.parse(currentReadByJson || "[]");
+    if (Array.isArray(parsed)) readers = parsed.map(String);
+  } catch {
+    readers = [];
+  }
+  const cleanReader = readerName.trim();
+  if (!cleanReader || readers.some((r) => r.toLowerCase() === cleanReader.toLowerCase())) {
+    return JSON.stringify(readers);
+  }
+  readers.push(cleanReader);
+  const nextJson = JSON.stringify(readers);
+  try {
+    getDb().prepare("UPDATE team_messages SET read_by_json = ? WHERE id = ?").run(nextJson, id);
+  } catch {
+    // ignore
+  }
+  return nextJson;
+}
 
 export function clearSessionFileLocks(sessionId: string): void {
-  const prefix = `${sessionId}::`;
-  for (const key of workspaceFileLocks.keys()) {
-    if (key.startsWith(prefix)) workspaceFileLocks.delete(key);
+  if (!sessionId) return;
+  for (const [key, val] of workspaceFileLocks.entries()) {
+    if (val.sessionId === sessionId) workspaceFileLocks.delete(key);
   }
 }
 
 export function releaseAgentFileLocks(sessionId: string | undefined, agentName: string): void {
-  if (!sessionId) return;
-  const prefix = `${sessionId}::`;
+  const sid = sessionId || "__nosession__";
   for (const [key, val] of workspaceFileLocks.entries()) {
-    if (key.startsWith(prefix) && val.owner === agentName) {
+    if (val.sessionId === sid && val.owner === agentName) {
       workspaceFileLocks.delete(key);
     }
   }
@@ -63,16 +100,23 @@ export function releaseAgentFileLocks(sessionId: string | undefined, agentName: 
 export function acquireFileLock(
   sessionId: string | undefined,
   relPath: string,
-  agentName: string
+  agentName: string,
+  scope: "workspace" | "brain" = "workspace",
+  teamId?: string
 ): { acquired: boolean; holder?: string } {
-  if (!sessionId) return { acquired: true };
-  const key = `${sessionId}::${relPath.replace(/\\/g, "/").replace(/^\/+/, "")}`;
+  const sid = sessionId || "__nosession__";
+  const key =
+    scope === "workspace"
+      ? `workspace::${teamId ? sanitizeWorkspaceSegment(teamId) : "__global__"}::${normalizeLockPath(relPath)}`
+      : `brain::${normalizeLockPath(relPath)}`;
   const now = Date.now();
   const existing = workspaceFileLocks.get(key);
-  if (existing && existing.owner !== agentName && now - existing.updatedAt < FILE_LOCK_TTL_MS) {
-    return { acquired: false, holder: existing.owner };
+  if (existing && now - existing.updatedAt < FILE_LOCK_TTL_MS && (existing.sessionId !== sid || existing.owner !== agentName)) {
+    const holder =
+      existing.sessionId === sid ? existing.owner : `${existing.owner} (session ${existing.sessionId})`;
+    return { acquired: false, holder };
   }
-  workspaceFileLocks.set(key, { owner: agentName, updatedAt: now });
+  workspaceFileLocks.set(key, { sessionId: sid, owner: agentName, updatedAt: now });
   return { acquired: true };
 }
 
@@ -87,6 +131,8 @@ export interface ToolExecutionContext {
   runtime: CompiledAgentRuntime;
   teamId?: string;
   sessionId?: string;
+  channelId?: string;
+  chatId?: string;
   consultDepth?: number;
   consultPeer?: (peerId: string, question: string) => Promise<string>;
   onImageCaptured?: (img: LLMImageAttachment) => void;
@@ -95,17 +141,85 @@ export interface ToolExecutionContext {
   onEvent?: (event: Record<string, unknown>) => void;
 }
 
+function resolveWorkspaceTeamId(ctx: ToolExecutionContext): string | undefined {
+  if (ctx.teamId && ctx.teamId.trim()) return ctx.teamId.trim();
+  const tbId = ctx.runtime.teamBrains[0]?.id;
+  if (tbId) {
+    const db = getDb();
+    const linked = db
+      .prepare("SELECT id FROM teams WHERE team_brain_id = ? ORDER BY created_at ASC LIMIT 1")
+      .get(tbId) as { id?: string } | undefined;
+    if (linked?.id) return linked.id;
+  }
+  return undefined;
+}
+
+function resolveToolTeamId(ctx: ToolExecutionContext): string | null {
+  if (ctx.teamId && ctx.teamId.trim()) return ctx.teamId.trim();
+  const db = getDb();
+  const tbId = ctx.runtime.teamBrains[0]?.id;
+  if (tbId) {
+    const linked = db
+      .prepare("SELECT id FROM teams WHERE team_brain_id = ? ORDER BY created_at ASC LIMIT 1")
+      .get(tbId) as { id?: string } | undefined;
+    if (linked?.id) return linked.id;
+  }
+  const firstEnabled = db
+    .prepare("SELECT id FROM teams WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  if (firstEnabled?.id) return firstEnabled.id;
+  const anyTeam = db.prepare("SELECT id FROM teams ORDER BY created_at ASC LIMIT 1").get() as { id?: string } | undefined;
+  return anyTeam?.id || null;
+}
+
+function resolveToolBrain(
+  scope: "main" | "team",
+  ctx: ToolExecutionContext
+): { id: string; folderPath: string } | null {
+  const db = getDb();
+  if (scope === "main") {
+    if (ctx.runtime.mainBrains[0]) {
+      return { id: ctx.runtime.mainBrains[0].id, folderPath: ctx.runtime.mainBrains[0].folder_path };
+    }
+    const row = db
+      .prepare("SELECT id, folder_path FROM brains WHERE layer = 'main' ORDER BY created_at ASC LIMIT 1")
+      .get() as { id?: string; folder_path?: string } | undefined;
+    if (row?.id && row.folder_path) return { id: row.id, folderPath: row.folder_path };
+  } else {
+    if (ctx.runtime.teamBrains[0]) {
+      return { id: ctx.runtime.teamBrains[0].id, folderPath: ctx.runtime.teamBrains[0].folder_path };
+    }
+    const tid = resolveToolTeamId(ctx);
+    if (tid) {
+      const row = db
+        .prepare(
+          "SELECT b.id, b.folder_path FROM teams t JOIN brains b ON t.team_brain_id = b.id WHERE t.id = ? LIMIT 1"
+        )
+        .get(tid) as { id?: string; folder_path?: string } | undefined;
+      if (row?.id && row.folder_path) return { id: row.id, folderPath: row.folder_path };
+    }
+    if (ctx.runtime.mainBrains[0]) {
+      return { id: ctx.runtime.mainBrains[0].id, folderPath: ctx.runtime.mainBrains[0].folder_path };
+    }
+  }
+  const anyBrain = db
+    .prepare("SELECT id, folder_path FROM brains ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string; folder_path?: string } | undefined;
+  if (anyBrain?.id && anyBrain.folder_path) return { id: anyBrain.id, folderPath: anyBrain.folder_path };
+  return null;
+}
+
 interface PandawaTool {
   pack: string;
   definition: LLMToolDefinition;
   execute: (args: Record<string, unknown>, ctx: ToolExecutionContext) => Promise<string>;
 }
 
-function resolveWorkspacePath(rel: string): string {
+function resolveWorkspacePath(rel: string, teamId?: string | null): string {
   const cleaned = rel.replace(/\\/g, "/").replace(/^\/+/, "");
   if (cleaned.includes("..")) throw new Error("Path traversal not allowed inside workspace tools.");
-  const full = path.resolve(WORKSPACE_DIR, cleaned);
-  const root = path.resolve(WORKSPACE_DIR);
+  const root = path.resolve(resolveTeamWorkspaceDir(teamId));
+  const full = path.resolve(root, cleaned);
   if (full !== root && !full.startsWith(root + path.sep)) {
     throw new Error("Path escapes workspace.");
   }
@@ -212,6 +326,10 @@ const TOOLS: PandawaTool[] = [
       if (!allowed) {
         return `Permission denied: "${p}" is outside writable Brain mounts (${ctx.runtime.writablePrefixes.join(", ")}).`;
       }
+      const lock = acquireFileLock(ctx.sessionId, p, ctx.runtime.agent.name, "brain");
+      if (!lock.acquired) {
+        return `LOCK_CONFLICT: Brain file "${p}" is currently actively locked by "${lock.holder}". Wait or coordinate via team_message before overwriting.`;
+      }
       const res = writeBrainFile(p, content);
       ctx.onEvent?.({ type: "brain_updated", path: p, agent: ctx.runtime.agent.name });
       return `Saved ${res.path} (${res.size} bytes).`;
@@ -235,11 +353,12 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const db = getDb();
-      const scope = String(args.scope || "team");
-      const targetBrain =
-        scope === "main"
-          ? ctx.runtime.mainBrains[0]?.id || "brain_main"
-          : ctx.runtime.teamBrains[0]?.id || ctx.runtime.mainBrains[0]?.id || "brain_main";
+      const scope = args.scope === "main" ? "main" : "team";
+      const target = resolveToolBrain(scope, ctx);
+      if (!target) {
+        return "Error: No Brain exists in database to store episodic memory.";
+      }
+      const targetBrain = target.id;
       const id = generateId("mem");
       const category = String(args.category || "lesson");
       const content = String(args.content || "").trim();
@@ -273,12 +392,12 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const slug = String(args.slug || "new-skill").toLowerCase().replace(/[^a-z0-9-_]/g, "-");
-      const scope = String(args.scope || "team");
-      const baseFolder =
-        scope === "main"
-          ? ctx.runtime.mainBrains[0]?.folder_path || "main-brain"
-          : ctx.runtime.teamBrains[0]?.folder_path || "main-brain";
-      const relPath = `${baseFolder}/skills/${slug}/SKILL.md`;
+      const scope = args.scope === "main" ? "main" : "team";
+      const target = resolveToolBrain(scope, ctx);
+      if (!target) {
+        return "Error: No Brain exists in database to save skill.";
+      }
+      const relPath = `${target.folderPath}/skills/${slug}/SKILL.md`;
       const md = `---\nname: ${args.title}\ndescription: ${args.description}\nauthor: ${ctx.runtime.agent.name}\n---\n\n# ${args.title}\n\n${args.instructions}\n`;
       writeBrainFile(relPath, md);
       ctx.onEvent?.({ type: "skill_learned", path: relPath, title: args.title, agent: ctx.runtime.agent.name });
@@ -377,7 +496,8 @@ const TOOLS: PandawaTool[] = [
     execute: async (args, ctx) => {
       const db = getDb();
       const id = generateId("bb");
-      const teamId = ctx.teamId || "team_pandawa";
+      const teamId = resolveToolTeamId(ctx);
+      if (!teamId) return "Error: No team exists in database for Team Blackboard.";
       const entryType = String(args.entry_type || "finding");
       const title = String(args.title || "Note");
       const content = String(args.content || "");
@@ -404,14 +524,24 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const db = getDb();
-      const teamId = ctx.teamId || "team_pandawa";
+      const teamId = resolveToolTeamId(ctx);
+      if (!teamId) return JSON.stringify([]);
       const limit = Math.min(30, Math.max(1, Number(args.limit || 10)));
-      const rows = db
-        .prepare(
-          `SELECT id, author_name, entry_type, title, content, created_at
-           FROM blackboard_entries WHERE team_id = ? ORDER BY created_at DESC LIMIT ?`
-        )
-        .all(teamId, limit);
+      const rows = ctx.sessionId
+        ? db
+            .prepare(
+              `SELECT id, author_name, entry_type, title, content, created_at
+               FROM blackboard_entries
+               WHERE team_id = ? AND (session_id = ? OR session_id = '')
+               ORDER BY created_at DESC LIMIT ?`
+            )
+            .all(teamId, ctx.sessionId, limit)
+        : db
+            .prepare(
+              `SELECT id, author_name, entry_type, title, content, created_at
+               FROM blackboard_entries WHERE team_id = ? ORDER BY created_at DESC LIMIT ?`
+            )
+            .all(teamId, limit);
       return JSON.stringify(rows, null, 2);
     },
   },
@@ -438,9 +568,10 @@ const TOOLS: PandawaTool[] = [
       const question = String(args.question || "").trim();
       if (!targetName || !question) return "Both teammate_name and question are required.";
 
-      const peer = ctx.runtime.peers.find(
-        (p) => p.name.toLowerCase() === targetName || p.name.toLowerCase().includes(targetName)
-      );
+      const peer =
+        ctx.runtime.peers.find((p) => p.name.toLowerCase() === targetName) ||
+        ctx.runtime.peers.find((p) => p.name.toLowerCase().includes(targetName)) ||
+        ctx.runtime.peers.find((p) => p.title.toLowerCase().includes(targetName));
       if (!peer) {
         const names = ctx.runtime.peers.map((p) => p.name).join(", ");
         return `Teammate "${args.teammate_name}" is not connected to your Team Brain. Connected peers: ${names || "none"}.`;
@@ -454,22 +585,58 @@ const TOOLS: PandawaTool[] = [
       });
 
       const answer = await ctx.consultPeer(peer.id, question);
-      try {
-        const db = getDb();
-        db.prepare(
-          `INSERT INTO blackboard_entries (id, team_id, session_id, author_agent_id, author_name, entry_type, title, content)
-           VALUES (?, ?, ?, ?, ?, 'finding', ?, ?)`
-        ).run(
-          generateId("bb"),
-          ctx.teamId || "team_pandawa",
-          ctx.sessionId || "",
-          peer.id,
-          `${ctx.runtime.agent.name} ↔ ${peer.name}`,
-          `Peer Consult: ${question.slice(0, 60)}`,
-          answer.slice(0, 1200)
-        );
-      } catch {
-        // ignore
+      const consultTeamId = resolveToolTeamId(ctx);
+      if (consultTeamId) {
+        try {
+          const db = getDb();
+          db.prepare(
+            `INSERT INTO blackboard_entries (id, team_id, session_id, author_agent_id, author_name, entry_type, title, content)
+             VALUES (?, ?, ?, ?, ?, 'finding', ?, ?)`
+          ).run(
+            generateId("bb"),
+            consultTeamId,
+            ctx.sessionId || "",
+            peer.id,
+            `${ctx.runtime.agent.name} ↔ ${peer.name}`,
+            `Peer Consult: ${question.slice(0, 60)}`,
+            answer.slice(0, 1200)
+          );
+
+          const participantsJson = JSON.stringify([ctx.runtime.agent.name, peer.name]);
+          const qId = generateId("tmsg");
+          const qText = question.slice(0, 1000);
+          db.prepare(
+            `INSERT INTO team_messages (id, team_id, session_id, from_agent, to_agent, kind, content, read_by_json)
+             VALUES (?, ?, ?, ?, ?, 'question', ?, ?)`
+          ).run(qId, consultTeamId, ctx.sessionId || "", ctx.runtime.agent.name, peer.name, qText, participantsJson);
+          ctx.onEvent?.({
+            type: "team_message",
+            id: qId,
+            teamId: consultTeamId,
+            fromAgent: ctx.runtime.agent.name,
+            toAgent: peer.name,
+            kind: "question",
+            content: qText,
+          });
+
+          const aId = generateId("tmsg");
+          const aText = answer.slice(0, 1200);
+          db.prepare(
+            `INSERT INTO team_messages (id, team_id, session_id, from_agent, to_agent, kind, content, read_by_json)
+             VALUES (?, ?, ?, ?, ?, 'result', ?, ?)`
+          ).run(aId, consultTeamId, ctx.sessionId || "", peer.name, ctx.runtime.agent.name, aText, participantsJson);
+          ctx.onEvent?.({
+            type: "team_message",
+            id: aId,
+            teamId: consultTeamId,
+            fromAgent: peer.name,
+            toAgent: ctx.runtime.agent.name,
+            kind: "result",
+            content: aText,
+          });
+        } catch {
+          // ignore
+        }
       }
       return `[Response from teammate ${peer.name} (${peer.title})]:\n${answer}`;
     },
@@ -494,13 +661,20 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const db = getDb();
-      const teamId = ctx.teamId || "team_pandawa";
+      const teamId = resolveToolTeamId(ctx);
+      if (!teamId) return "Error: No team exists in database for Team Task Board.";
       const action = String(args.action || "list");
 
       if (action === "list") {
-        const rows = db
-          .prepare("SELECT * FROM team_tasks WHERE team_id = ? ORDER BY updated_at DESC LIMIT 30")
-          .all(teamId);
+        const rows = ctx.sessionId
+          ? db
+              .prepare(
+                `SELECT * FROM team_tasks
+                 WHERE team_id = ? AND (session_id = ? OR session_id = '')
+                 ORDER BY updated_at DESC LIMIT 30`
+              )
+              .all(teamId, ctx.sessionId)
+          : db.prepare("SELECT * FROM team_tasks WHERE team_id = ? ORDER BY updated_at DESC LIMIT 30").all(teamId);
         return JSON.stringify(rows, null, 2);
       }
       if (action === "add") {
@@ -517,24 +691,25 @@ const TOOLS: PandawaTool[] = [
         return `Added task ${id}: "${title}" (owner: ${owner}, status: ${status}).`;
       }
       if (action === "update" && args.task_id) {
-        const cur = db.prepare("SELECT * FROM team_tasks WHERE id = ?").get(String(args.task_id)) as
-          | Record<string, unknown>
-          | undefined;
+        const cur = db
+          .prepare("SELECT * FROM team_tasks WHERE id = ? AND team_id = ?")
+          .get(String(args.task_id), teamId) as Record<string, unknown> | undefined;
         if (!cur) return `Task ${args.task_id} not found.`;
         db.prepare(
-          `UPDATE team_tasks SET title=?, owner_agent=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`
+          `UPDATE team_tasks SET title=?, owner_agent=?, status=?, notes=?, updated_at=datetime('now') WHERE id=? AND team_id=?`
         ).run(
           args.title !== undefined ? String(args.title) : String(cur.title),
           args.owner_agent !== undefined ? String(args.owner_agent) : String(cur.owner_agent),
           args.status !== undefined ? String(args.status) : String(cur.status),
           args.notes !== undefined ? String(args.notes) : String(cur.notes),
-          String(args.task_id)
+          String(args.task_id),
+          teamId
         );
         ctx.onEvent?.({ type: "team_task_updated", teamId, action: "update", id: String(args.task_id) });
         return `Updated task ${args.task_id}.`;
       }
       if (action === "delete" && args.task_id) {
-        db.prepare("DELETE FROM team_tasks WHERE id = ?").run(String(args.task_id));
+        db.prepare("DELETE FROM team_tasks WHERE id = ? AND team_id = ?").run(String(args.task_id), teamId);
         return `Deleted task ${args.task_id}.`;
       }
       return "Invalid team_todo_manage parameters.";
@@ -549,7 +724,7 @@ const TOOLS: PandawaTool[] = [
       parameters: {
         type: "object",
         properties: {
-          to_agent: { type: "string", description: "Target teammate name (e.g. 'Arjuna', 'Sadewa') or 'all'" },
+          to_agent: { type: "string", description: "Target teammate name (or 'all' to broadcast)" },
           message: { type: "string", description: "Concise message for your teammate(s)" },
           kind: { type: "string", enum: ["update", "handoff", "question", "alert", "result"] },
         },
@@ -559,7 +734,8 @@ const TOOLS: PandawaTool[] = [
     execute: async (args, ctx) => {
       const db = getDb();
       const id = generateId("tmsg");
-      const teamId = ctx.teamId || "team_pandawa";
+      const teamId = resolveToolTeamId(ctx);
+      if (!teamId) return "Error: No team exists in database for team messages.";
       const toAgent = String(args.to_agent || "all").trim();
       const kind = String(args.kind || "update");
       const content = String(args.message || "").trim();
@@ -594,23 +770,41 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const db = getDb();
-      const teamId = ctx.teamId || "team_pandawa";
+      const teamId = resolveToolTeamId(ctx);
+      if (!teamId) return JSON.stringify({ agent: ctx.runtime.agent.name, messages: [] });
       const limit = Math.min(40, Math.max(1, Number(args.limit || 15)));
-      const rows = ctx.sessionId
-        ? db
-            .prepare(
-              `SELECT id, from_agent, to_agent, kind, content, created_at
-               FROM team_messages
-               WHERE team_id = ? AND (session_id = ? OR session_id = '')
-               ORDER BY created_at DESC LIMIT ?`
-            )
-            .all(teamId, ctx.sessionId, limit)
-        : db
-            .prepare(
-              `SELECT id, from_agent, to_agent, kind, content, created_at
-               FROM team_messages WHERE team_id = ? ORDER BY created_at DESC LIMIT ?`
-            )
-            .all(teamId, limit);
+      const rows = (
+        ctx.sessionId
+          ? db
+              .prepare(
+                `SELECT id, from_agent, to_agent, kind, content, read_by_json, created_at
+                 FROM team_messages
+                 WHERE team_id = ? AND (session_id = ? OR session_id = '')
+                 ORDER BY created_at DESC LIMIT ?`
+              )
+              .all(teamId, ctx.sessionId, limit)
+          : db
+              .prepare(
+                `SELECT id, from_agent, to_agent, kind, content, read_by_json, created_at
+                 FROM team_messages WHERE team_id = ? ORDER BY created_at DESC LIMIT ?`
+              )
+              .all(teamId, limit)
+      ) as Array<{
+        id: string;
+        from_agent: string;
+        to_agent: string;
+        kind: string;
+        content: string;
+        read_by_json: string;
+        created_at: string;
+      }>;
+
+      const myName = ctx.runtime.agent.name.toLowerCase();
+      for (const r of rows) {
+        if (r.from_agent.toLowerCase() !== myName) {
+          r.read_by_json = markTeamMessageRead(r.id, r.read_by_json, ctx.runtime.agent.name);
+        }
+      }
       return JSON.stringify({ agent: ctx.runtime.agent.name, messages: rows.reverse() }, null, 2);
     },
   },
@@ -625,8 +819,8 @@ const TOOLS: PandawaTool[] = [
       description: "List files and directories inside the Pandawa workspace.",
       parameters: { type: "object", properties: { subdir: { type: "string" } } },
     },
-    execute: async (args) => {
-      const full = resolveWorkspacePath(String(args.subdir || ""));
+    execute: async (args, ctx) => {
+      const full = resolveWorkspacePath(String(args.subdir || ""), resolveWorkspaceTeamId(ctx));
       if (!fs.existsSync(full)) return "Directory does not exist.";
       const entries = fs.readdirSync(full, { withFileTypes: true }).map((e) => ({
         name: e.name,
@@ -650,8 +844,8 @@ const TOOLS: PandawaTool[] = [
         required: ["path"],
       },
     },
-    execute: async (args) => {
-      const full = resolveWorkspacePath(String(args.path || ""));
+    execute: async (args, ctx) => {
+      const full = resolveWorkspacePath(String(args.path || ""), resolveWorkspaceTeamId(ctx));
       if (!fs.existsSync(full)) return "File not found.";
       const raw = fs.readFileSync(full, "utf8");
       if (args.start_line || args.end_line) {
@@ -680,8 +874,9 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const rel = String(args.path || "");
-      const full = resolveWorkspacePath(rel);
-      const lock = acquireFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const full = resolveWorkspacePath(rel, wsTeamId);
+      const lock = acquireFileLock(ctx.sessionId, rel, ctx.runtime.agent.name, "workspace", wsTeamId);
       if (!lock.acquired) {
         return `LOCK_CONFLICT: File "${rel}" is currently actively locked by teammate "${lock.holder}". Do NOT overwrite their work—coordinate via team_message or wait for them to finish, then workspace_read before patching.`;
       }
@@ -707,9 +902,10 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const rel = String(args.path || "");
-      const full = resolveWorkspacePath(rel);
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const full = resolveWorkspacePath(rel, wsTeamId);
       if (!fs.existsSync(full)) return `File not found: ${args.path}`;
-      const lock = acquireFileLock(ctx.sessionId, rel, ctx.runtime.agent.name);
+      const lock = acquireFileLock(ctx.sessionId, rel, ctx.runtime.agent.name, "workspace", wsTeamId);
       if (!lock.acquired) {
         return `LOCK_CONFLICT: File "${rel}" is currently actively locked by teammate "${lock.holder}". Coordinate via team_message and retry after their turn completes.`;
       }
@@ -738,8 +934,10 @@ const TOOLS: PandawaTool[] = [
         required: ["pattern"],
       },
     },
-    execute: async (args) => {
-      const base = resolveWorkspacePath(String(args.subdir || ""));
+    execute: async (args, ctx) => {
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const wsRoot = resolveTeamWorkspaceDir(wsTeamId);
+      const base = resolveWorkspacePath(String(args.subdir || ""), wsTeamId);
       if (!fs.existsSync(base)) return "Directory does not exist.";
       const regex = new RegExp(String(args.pattern || ""), "i");
       const hits: Array<{ file: string; line: number; text: string }> = [];
@@ -759,7 +957,7 @@ const TOOLS: PandawaTool[] = [
               lines.forEach((l, i) => {
                 if (hits.length < 60 && regex.test(l)) {
                   hits.push({
-                    file: path.relative(WORKSPACE_DIR, full).replace(/\\/g, "/"),
+                    file: path.relative(wsRoot, full).replace(/\\/g, "/"),
                     line: i + 1,
                     text: l.trim().slice(0, 180),
                   });
@@ -785,10 +983,13 @@ const TOOLS: PandawaTool[] = [
         properties: { label: { type: "string", description: "Short checkpoint label" } },
       },
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const wsRoot = resolveTeamWorkspaceDir(wsTeamId);
+      const cpDir = resolveTeamCheckpointsDir(wsTeamId);
       const id = `cp_${Date.now()}_${String(args.label || "snap").toLowerCase().replace(/[^a-z0-9-_]/g, "-")}`;
-      const dst = path.join(CHECKPOINTS_DIR, id);
-      const files = copyDirRecursive(WORKSPACE_DIR, dst);
+      const dst = path.join(cpDir, id);
+      const files = copyDirRecursive(wsRoot, dst);
       return `Created workspace checkpoint "${id}" (${files} files snapshotted).`;
     },
   },
@@ -804,17 +1005,20 @@ const TOOLS: PandawaTool[] = [
         },
       },
     },
-    execute: async (args) => {
-      fs.mkdirSync(CHECKPOINTS_DIR, { recursive: true });
+    execute: async (args, ctx) => {
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const wsRoot = resolveTeamWorkspaceDir(wsTeamId);
+      const cpDir = resolveTeamCheckpointsDir(wsTeamId);
+      fs.mkdirSync(cpDir, { recursive: true });
       const cid = String(args.checkpoint_id || "").trim();
       if (!cid) {
-        const list = fs.readdirSync(CHECKPOINTS_DIR).sort().reverse();
+        const list = fs.readdirSync(cpDir).sort().reverse();
         return JSON.stringify({ checkpoints: list }, null, 2);
       }
       if (cid.includes("..") || cid.includes("/") || cid.includes("\\")) return "Invalid checkpoint ID.";
-      const src = path.join(CHECKPOINTS_DIR, cid);
+      const src = path.join(cpDir, cid);
       if (!fs.existsSync(src)) return `Checkpoint not found: ${cid}`;
-      const restored = copyDirRecursive(src, WORKSPACE_DIR);
+      const restored = copyDirRecursive(src, wsRoot);
       return `Restored workspace from checkpoint "${cid}" (${restored} files).`;
     },
   },
@@ -833,8 +1037,8 @@ const TOOLS: PandawaTool[] = [
         required: ["path"],
       },
     },
-    execute: async (args) => {
-      const full = resolveWorkspacePath(String(args.path || ""));
+    execute: async (args, ctx) => {
+      const full = resolveWorkspacePath(String(args.path || ""), resolveWorkspaceTeamId(ctx));
       const res = await runPythonWorker("doc_read", {
         path: full,
         maxChars: Number(args.max_chars || 24000),
@@ -858,7 +1062,7 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const rel = String(args.path || "");
-      const full = resolveWorkspacePath(rel);
+      const full = resolveWorkspacePath(rel, resolveWorkspaceTeamId(ctx));
       if (!fs.existsSync(full)) return `Image file not found: ${rel}`;
       const stat = fs.statSync(full);
       if (stat.size > 6 * 1024 * 1024) return `Image too large (${Math.round(stat.size / 1024)} KB, max 6 MB).`;
@@ -888,10 +1092,11 @@ const TOOLS: PandawaTool[] = [
         required: ["command"],
       },
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       const command = String(args.command || "").trim();
       if (!command) return "Empty command.";
-      const cwd = args.cwd ? String(args.cwd) : WORKSPACE_DIR;
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const cwd = resolveScopedCwd(args.cwd ? String(args.cwd) : undefined, wsTeamId);
       try {
         const { stdout, stderr } = await execAsync(command, {
           cwd,
@@ -919,7 +1124,7 @@ const TOOLS: PandawaTool[] = [
         required: ["language", "code"],
       },
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       const lang = String(args.language || "python");
       const code = String(args.code || "");
       const ext = lang === "node" ? ".mjs" : lang === "bash" ? ".sh" : ".py";
@@ -931,9 +1136,10 @@ const TOOLS: PandawaTool[] = [
           : lang === "bash"
           ? `bash "${tmpFile}"`
           : `python3 "${tmpFile}" || python "${tmpFile}"`;
+      const wsDir = resolveTeamWorkspaceDir(resolveWorkspaceTeamId(ctx));
       try {
         const { stdout, stderr } = await execAsync(cmd, {
-          cwd: WORKSPACE_DIR,
+          cwd: wsDir,
           timeout: 45_000,
           maxBuffer: 4 * 1024 * 1024,
         });
@@ -965,11 +1171,13 @@ const TOOLS: PandawaTool[] = [
         required: ["command"],
       },
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
       const info = startManagedProcess({
         name: args.name ? String(args.name) : undefined,
         command: String(args.command || ""),
         cwd: args.cwd ? String(args.cwd) : undefined,
+        teamId: wsTeamId,
       });
       return JSON.stringify(info, null, 2);
     },
@@ -981,7 +1189,8 @@ const TOOLS: PandawaTool[] = [
       description: "List all Pandawa-managed background processes and their live status.",
       parameters: { type: "object", properties: {} },
     },
-    execute: async () => JSON.stringify({ processes: listManagedProcesses() }, null, 2),
+    execute: async (_args, ctx) =>
+      JSON.stringify({ processes: listManagedProcesses(resolveWorkspaceTeamId(ctx)) }, null, 2),
   },
   {
     pack: "shell",
@@ -997,8 +1206,12 @@ const TOOLS: PandawaTool[] = [
         required: ["process_id"],
       },
     },
-    execute: async (args) => {
-      const out = getManagedProcessLogs(String(args.process_id || ""), Number(args.tail || 80));
+    execute: async (args, ctx) => {
+      const out = getManagedProcessLogs(
+        String(args.process_id || ""),
+        Number(args.tail || 80),
+        resolveWorkspaceTeamId(ctx)
+      );
       return out ? JSON.stringify(out, null, 2) : "Process not found.";
     },
   },
@@ -1013,8 +1226,8 @@ const TOOLS: PandawaTool[] = [
         required: ["process_id"],
       },
     },
-    execute: async (args) => {
-      const ok = killManagedProcess(String(args.process_id || ""));
+    execute: async (args, ctx) => {
+      const ok = killManagedProcess(String(args.process_id || ""), resolveWorkspaceTeamId(ctx));
       return ok ? `Terminated process ${args.process_id}.` : `Process not found: ${args.process_id}`;
     },
   },
@@ -1188,8 +1401,8 @@ const TOOLS: PandawaTool[] = [
       const url = String(args.url || "").trim();
       await assertSafeOutboundUrl(url);
       const wantShot = Boolean(args.screenshot);
-      const shotRel = wantShot ? `screenshots/open_${Date.now()}.png` : "";
-      const shotFull = wantShot ? resolveWorkspacePath(shotRel) : "";
+      const shotRel = wantShot ? makeScreenshotRelPath("open") : "";
+      const shotFull = wantShot ? resolveWorkspacePath(shotRel, resolveWorkspaceTeamId(ctx)) : "";
       const res = await runPythonWorker<Record<string, unknown>>("browser_run", {
         url,
         waitMs: Number(args.wait_ms || 1200),
@@ -1228,8 +1441,8 @@ const TOOLS: PandawaTool[] = [
       await assertSafeOutboundUrl(url);
       const actions = Array.isArray(args.actions) ? args.actions : [];
       const wantShot = args.screenshot !== false;
-      const shotRel = wantShot ? `screenshots/act_${Date.now()}.png` : "";
-      const shotFull = wantShot ? resolveWorkspacePath(shotRel) : "";
+      const shotRel = wantShot ? makeScreenshotRelPath("act") : "";
+      const shotFull = wantShot ? resolveWorkspacePath(shotRel, resolveWorkspaceTeamId(ctx)) : "";
       const res = await runPythonWorker<Record<string, unknown>>("browser_run", {
         url,
         actions,
@@ -1307,8 +1520,8 @@ const TOOLS: PandawaTool[] = [
     execute: async (args, ctx) => {
       const url = String(args.url || "").trim();
       await assertSafeOutboundUrl(url);
-      const outRel = String(args.output_path || `screenshots/shot_${Date.now()}.png`);
-      const outFull = resolveWorkspacePath(outRel);
+      const outRel = String(args.output_path || makeScreenshotRelPath("shot"));
+      const outFull = resolveWorkspacePath(outRel, resolveWorkspaceTeamId(ctx));
       fs.mkdirSync(path.dirname(outFull), { recursive: true });
 
       // Prefer Playwright worker first
@@ -1358,7 +1571,7 @@ const TOOLS: PandawaTool[] = [
     pack: "automation",
     definition: {
       name: "cron_create",
-      description: "Schedule a recurring autonomous mission for Team Pandawa using a 5-field cron expression.",
+      description: "Schedule a recurring autonomous mission for the active AI team using a 5-field cron expression.",
       parameters: {
         type: "object",
         properties: {
@@ -1371,12 +1584,16 @@ const TOOLS: PandawaTool[] = [
     },
     execute: async (args, ctx) => {
       const db = getDb();
+      const teamId = resolveToolTeamId(ctx);
+      if (!teamId) {
+        return "Error: No active team configured to attach cron job.";
+      }
       const id = generateId("cron");
       db.prepare(
         `INSERT INTO cron_jobs (id, name, schedule, target_type, target_id, prompt, enabled)
          VALUES (?, ?, ?, 'team', ?, ?, 1)`
-      ).run(id, String(args.name), String(args.schedule), ctx.teamId || "team_pandawa", String(args.prompt));
-      return `Scheduled cron job ${id} ("${args.name}" @ ${args.schedule}).`;
+      ).run(id, String(args.name), String(args.schedule), teamId, String(args.prompt));
+      return `Scheduled cron job ${id} ("${args.name}" @ ${args.schedule} -> ${teamId}).`;
     },
   },
   {
@@ -1424,7 +1641,7 @@ const TOOLS: PandawaTool[] = [
     definition: {
       name: "heartbeat_configure",
       description:
-        "Inspect or update Pandawa's 24/7 Proactive Autonomous Heartbeat Daemon (enable/disable, change interval minutes, or update main-brain/HEARTBEAT.md watch checklist).",
+        "Inspect or update Pandawa's 24/7 Proactive Autonomous Heartbeat Daemon (enable/disable, change interval minutes, or update the HEARTBEAT.md watch checklist).",
       parameters: {
         type: "object",
         properties: {
@@ -1468,11 +1685,14 @@ const TOOLS: PandawaTool[] = [
       },
     },
     execute: async (args, ctx) => {
+      const teamId = resolveWorkspaceTeamId(ctx) || ctx.teamId;
       const res = await openTerminal({
         name: String(args.name || "main"),
         cwd: args.cwd ? String(args.cwd) : undefined,
         env: (args.env && typeof args.env === "object" ? args.env : undefined) as Record<string, string> | undefined,
         ownerAgent: ctx.runtime.agent.name,
+        teamId,
+        sessionId: ctx.sessionId,
       });
       return JSON.stringify(res, null, 2);
     },
@@ -1495,12 +1715,15 @@ const TOOLS: PandawaTool[] = [
       },
     },
     execute: async (args, ctx) => {
+      const teamId = resolveWorkspaceTeamId(ctx) || ctx.teamId;
       const res = await execInTerminal({
         name: String(args.session || "main"),
         command: String(args.command || ""),
         timeoutSec: args.timeout_sec ? Number(args.timeout_sec) : 45,
         cwd: args.cwd ? String(args.cwd) : undefined,
         actor: ctx.runtime.agent.name,
+        teamId,
+        sessionId: ctx.sessionId,
       });
       return JSON.stringify(res, null, 2);
     },
@@ -1523,12 +1746,15 @@ const TOOLS: PandawaTool[] = [
       },
     },
     execute: async (args, ctx) => {
+      const teamId = resolveWorkspaceTeamId(ctx) || ctx.teamId;
       const res = await sendKeysToTerminal({
         name: String(args.session || "main"),
         text: args.text !== undefined ? String(args.text) : undefined,
         key: args.key !== undefined ? String(args.key) : undefined,
         enter: args.enter !== undefined ? Boolean(args.enter) : true,
         actor: ctx.runtime.agent.name,
+        teamId,
+        sessionId: ctx.sessionId,
       });
       return JSON.stringify(res, null, 2);
     },
@@ -1548,8 +1774,12 @@ const TOOLS: PandawaTool[] = [
         required: ["session"],
       },
     },
-    execute: async (args) => {
-      const res = await readTerminal(String(args.session || "main"), Number(args.lines || 150));
+    execute: async (args, ctx) => {
+      const teamId = resolveWorkspaceTeamId(ctx) || ctx.teamId;
+      const res = await readTerminal(String(args.session || "main"), Number(args.lines || 150), {
+        teamId,
+        sessionId: ctx.sessionId,
+      });
       return JSON.stringify(res, null, 2);
     },
   },
@@ -1560,7 +1790,12 @@ const TOOLS: PandawaTool[] = [
       description: "List all active persistent shared terminal sessions, their owners, cwds, and tmux attach commands.",
       parameters: { type: "object", properties: {} },
     },
-    execute: async () => JSON.stringify(await listTerminals(), null, 2),
+    execute: async (_args, ctx) =>
+      JSON.stringify(
+        await listTerminals({ teamId: resolveWorkspaceTeamId(ctx) || ctx.teamId, sessionId: ctx.sessionId }),
+        null,
+        2
+      ),
   },
   {
     pack: "terminal",
@@ -1573,7 +1808,15 @@ const TOOLS: PandawaTool[] = [
         required: ["session"],
       },
     },
-    execute: async (args) => JSON.stringify(await closeTerminal(String(args.session || "")), null, 2),
+    execute: async (args, ctx) =>
+      JSON.stringify(
+        await closeTerminal(String(args.session || ""), {
+          teamId: resolveWorkspaceTeamId(ctx) || ctx.teamId,
+          sessionId: ctx.sessionId,
+        }),
+        null,
+        2
+      ),
   },
 ];
 
@@ -1590,12 +1833,15 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: ToolExecutionContext
 ): Promise<string> {
-  if (toolRequiresApproval(name)) {
+  if (toolRequiresApproval(name, ctx.sessionId)) {
     const decision = await requestApproval({
       agentId: ctx.runtime.agent.id,
       agentName: ctx.runtime.agent.name,
       toolName: name,
       args,
+      sessionId: ctx.sessionId,
+      channelId: ctx.channelId,
+      chatId: ctx.chatId,
       signal: ctx.signal,
       onEvent: ctx.onEvent,
     });

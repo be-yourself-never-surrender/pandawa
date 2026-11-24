@@ -8,7 +8,12 @@ import {
   type ProviderRecord,
 } from "../providers/llmClient.js";
 import { compileAgentRuntime, type CompiledAgentRuntime } from "./contextCompiler.js";
-import { getToolsForPacks, executeTool, releaseAgentFileLocks } from "../tools/toolRegistry.js";
+import {
+  getToolsForPacks,
+  executeTool,
+  releaseAgentFileLocks,
+  markTeamMessageRead,
+} from "../tools/toolRegistry.js";
 import { getAllLiveMcpTools } from "../mcp/mcpClient.js";
 
 export interface AgentRunResult {
@@ -33,8 +38,9 @@ function isProviderReady(p: ProviderRecord | null): p is ProviderRecord {
     p.base_url.includes("127.0.0.1") ||
     p.base_url.includes("localhost") ||
     p.base_url.includes(":11434");
-  const key = decryptSecret(p.api_key || "");
-  return key.trim().length > 0 || isLocal;
+  if (isLocal) return true;
+  const k = decryptSecret(p.api_key || "").trim();
+  return k.length > 0 && k.toLowerCase() !== "ollama";
 }
 
 function resolveRunnableProvider(runtime: CompiledAgentRuntime): {
@@ -49,17 +55,33 @@ function resolveRunnableProvider(runtime: CompiledAgentRuntime): {
       usedFallback: false,
     };
   }
-  const db = getDb();
-  const candidates = db
-    .prepare("SELECT * FROM providers WHERE enabled = 1 AND length(trim(api_key)) > 0 ORDER BY updated_at DESC")
-    .all() as unknown as ProviderRecord[];
-  const ready = candidates.find((c) => {
-    const k = decryptSecret(c.api_key || "");
-    return k.trim().length > 0 && k !== "ollama";
-  });
-  if (ready) {
-    return { provider: ready, model: ready.default_model, usedFallback: true };
+
+  // Try explicitly wired fallback provider nodes on Canvas first
+  const wiredReady = runtime.fallbackProviders.find((f) => isProviderReady(f.provider));
+  if (wiredReady) {
+    return {
+      provider: wiredReady.provider,
+      model: wiredReady.model || wiredReady.provider.default_model,
+      usedFallback: true,
+    };
   }
+
+  // Only auto-pick a system provider if the agent has NO provider assigned at all
+  if (!runtime.agent.provider_id && !runtime.provider) {
+    const db = getDb();
+    const candidates = db
+      .prepare("SELECT * FROM providers WHERE enabled = 1 ORDER BY updated_at DESC")
+      .all() as unknown as ProviderRecord[];
+    const ready = candidates.find(
+      (c) =>
+        isProviderReady(c) &&
+        decryptSecret(c.api_key || "").trim().toLowerCase() !== "ollama"
+    );
+    if (ready) {
+      return { provider: ready, model: runtime.model || ready.default_model, usedFallback: true };
+    }
+  }
+
   return { provider: null, model: runtime.model || "unconfigured", usedFallback: false };
 }
 
@@ -89,8 +111,12 @@ async function compactMessagesWithLLM(params: {
   const head = messages.slice(0, 2);
   // Find a safe tail cut boundary that never starts on an orphaned 'tool' message
   let tailStart = Math.max(2, messages.length - 8);
-  while (tailStart < messages.length && messages[tailStart].role === "tool") {
-    tailStart++;
+  while (tailStart > 2 && messages[tailStart].role === "tool") {
+    tailStart--;
+  }
+  // Ensure tailStart doesn't detach a tool response from its preceding assistant tool_calls
+  if (tailStart < messages.length && messages[tailStart].role === "tool") {
+    tailStart = messages.length;
   }
   const middle = messages.slice(2, tailStart);
   const tail = messages.slice(tailStart);
@@ -171,12 +197,13 @@ function fetchUnreadTeamMessages(params: {
   sessionId?: string;
   agentName: string;
   seenIds: Set<string>;
+  markRead?: boolean;
 }): Array<{ id: string; from_agent: string; to_agent: string; kind: string; content: string }> {
   if (!params.teamId || !params.sessionId) return [];
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT id, from_agent, to_agent, kind, content
+      `SELECT id, from_agent, to_agent, kind, content, read_by_json
        FROM team_messages
        WHERE team_id = ? AND session_id = ?
        ORDER BY created_at ASC`
@@ -187,17 +214,29 @@ function fetchUnreadTeamMessages(params: {
     to_agent: string;
     kind: string;
     content: string;
+    read_by_json: string;
   }>;
 
   const myName = params.agentName.toLowerCase();
-  const fresh: typeof rows = [];
+  const fresh: Array<{ id: string; from_agent: string; to_agent: string; kind: string; content: string }> = [];
   for (const r of rows) {
     if (params.seenIds.has(r.id)) continue;
     params.seenIds.add(r.id);
     if (r.from_agent.toLowerCase() === myName) continue;
+    let readers: string[] = [];
+    try {
+      const parsed = JSON.parse(r.read_by_json || "[]");
+      if (Array.isArray(parsed)) readers = parsed.map((x) => String(x).toLowerCase());
+    } catch {
+      readers = [];
+    }
+    if (readers.includes(myName)) continue;
     const to = r.to_agent.toLowerCase();
     if (to === "all" || to === myName || myName.includes(to) || to.includes(myName)) {
-      fresh.push(r);
+      fresh.push({ id: r.id, from_agent: r.from_agent, to_agent: r.to_agent, kind: r.kind, content: r.content });
+      if (params.markRead !== false) {
+        markTeamMessageRead(r.id, r.read_by_json, params.agentName);
+      }
     }
   }
   return fresh;
@@ -232,8 +271,9 @@ export async function runAgentTurn(params: {
 
   if (!provider) {
     const errMsg =
-      `No configured AI provider for ${runtime.agent.name} (assigned model: "${runtime.model || "unset"}"). ` +
-      `Open Multi-AI Hub to add an API key (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama, or Custom Base URL) before running a live mission.`;
+      `No configured AI provider for ${runtime.agent.name} ` +
+      `(assigned provider: "${runtime.provider?.name || "none"}", model: "${runtime.model || "unset"}"). ` +
+      `Open Multi-AI Hub to add an API key or assign a ready provider before running a live mission.`;
 
     params.onEvent?.({
       type: "agent_error",
@@ -262,6 +302,7 @@ export async function runAgentTurn(params: {
     sessionId: params.sessionId,
     agentName: runtime.agent.name,
     seenIds: seenTeamMsgIds,
+    markRead: false,
   });
 
   let messages: LLMMessage[] = [
@@ -296,6 +337,7 @@ export async function runAgentTurn(params: {
   let finalContent = "";
   let combinedReasoning = "";
   let stepsUsed = 0;
+  let lateInboxWakeups = 0;
 
   try {
     for (let step = 0; step < maxIter; step++) {
@@ -345,43 +387,62 @@ export async function runAgentTurn(params: {
         });
       } catch (primaryErr) {
         if (params.signal?.aborted) throw primaryErr;
-        const backups = getBackupProviders(provider.id);
-        if (backups.length === 0) throw primaryErr;
+        const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+        const failureList: string[] = [`[Primary: ${provider.name} (${model})] ${primaryMsg}`];
 
-        const backup = backups[0];
-        const backupModel = backup.default_model;
-        params.onEvent?.({
-          type: "provider_fallback",
-          agentId: runtime.agent.id,
-          agentName: runtime.agent.name,
-          fromProvider: provider.name,
-          toProvider: backup.name,
-          toModel: backupModel,
-          reason: primaryErr instanceof Error ? primaryErr.message.slice(0, 140) : String(primaryErr),
-        });
-        provider = backup;
-        model = backupModel;
-        usedFallback = true;
+        const backups = runtime.fallbackProviders.filter(
+          (f) => f.provider.id !== provider!.id && isProviderReady(f.provider)
+        );
+        if (backups.length === 0) {
+          throw new Error(failureList[0]);
+        }
 
-        res = await callLLM({
-          provider,
-          model,
-          messages,
-          tools,
-          temperature: runtime.agent.temperature,
-          maxTokens: runtime.agent.max_tokens,
-          signal: params.signal,
-          onToken: (delta) => {
-            params.onEvent?.({
-              type: "agent_token",
-              agentId: runtime.agent.id,
-              agentName: runtime.agent.name,
-              avatar: runtime.agent.avatar,
-              model,
-              delta,
+        let succeeded = false;
+        for (const fb of backups) {
+          params.onEvent?.({
+            type: "provider_fallback",
+            agentId: runtime.agent.id,
+            agentName: runtime.agent.name,
+            fromProvider: provider.name,
+            toProvider: fb.provider.name,
+            toModel: fb.model || fb.provider.default_model,
+            reason: primaryMsg.slice(0, 140),
+          });
+          const nextModel = fb.model || fb.provider.default_model;
+          try {
+            res = await callLLM({
+              provider: fb.provider,
+              model: nextModel,
+              messages,
+              tools,
+              temperature: runtime.agent.temperature,
+              maxTokens: runtime.agent.max_tokens,
+              signal: params.signal,
+              onToken: (delta) => {
+                params.onEvent?.({
+                  type: "agent_token",
+                  agentId: runtime.agent.id,
+                  agentName: runtime.agent.name,
+                  avatar: runtime.agent.avatar,
+                  model: nextModel,
+                  delta,
+                });
+              },
             });
-          },
-        });
+            provider = fb.provider;
+            model = nextModel;
+            usedFallback = true;
+            succeeded = true;
+            break;
+          } catch (fbErr) {
+            if (params.signal?.aborted) throw fbErr;
+            const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+            failureList.push(`[Fallback: ${fb.provider.name} (${nextModel})] ${fbMsg}`);
+          }
+        }
+        if (!succeeded || !res) {
+          throw new Error(failureList.join("; "));
+        }
       }
 
       totalPromptTokens += res.promptTokens;
@@ -391,6 +452,27 @@ export async function runAgentTurn(params: {
       }
 
       if (res.toolCalls.length === 0) {
+        if ((params.consultDepth ?? 0) === 0 && lateInboxWakeups < 2 && step < maxIter - 1) {
+          const lateMsgs = fetchUnreadTeamMessages({
+            teamId: params.teamId,
+            sessionId: params.sessionId,
+            agentName: runtime.agent.name,
+            seenIds: seenTeamMsgIds,
+            markRead: true,
+          });
+          if (lateMsgs.length > 0) {
+            lateInboxWakeups++;
+            messages.push({ role: "assistant", content: res.content || "(Drafting response)" });
+            messages.push({
+              role: "user",
+              content:
+                `[LIVE TEAMMATE MESSAGE(S) RECEIVED BEFORE FINALIZING]\n` +
+                lateMsgs.map((m) => `- **[${m.kind}] ${m.from_agent} → ${m.to_agent}:** ${m.content}`).join("\n") +
+                `\n\nIncorporate or act on this teammate update before giving your final response.`,
+            });
+            continue;
+          }
+        }
         finalContent = res.content;
         break;
       }
@@ -484,9 +566,40 @@ export async function runAgentTurn(params: {
       }
 
       if (step === maxIter - 1) {
-        finalContent = res.content || `Completed ${stepsUsed} autonomous tool execution steps.`;
+        try {
+          const wrapRes = await callLLM({
+            provider,
+            model,
+            messages: [
+              ...messages,
+              {
+                role: "user",
+                content:
+                  "Max tool step limit reached. Summarize what you executed and observed concisely without calling additional tools.",
+              },
+            ],
+            tools: [],
+            temperature: runtime.agent.temperature,
+            maxTokens: runtime.agent.max_tokens,
+            signal: params.signal,
+          });
+          totalPromptTokens += wrapRes.promptTokens;
+          totalCompletionTokens += wrapRes.completionTokens;
+          finalContent = wrapRes.content || res.content || `Completed ${stepsUsed} autonomous tool execution steps.`;
+        } catch {
+          finalContent = res.content || `Completed ${stepsUsed} autonomous tool execution steps.`;
+        }
       }
     }
+  } catch (runErr) {
+    const errMsg = runErr instanceof Error ? runErr.message : String(runErr);
+    params.onEvent?.({
+      type: "agent_error",
+      agentId: runtime.agent.id,
+      agentName: runtime.agent.name,
+      error: errMsg,
+    });
+    throw runErr;
   } finally {
     releaseAgentFileLocks(params.sessionId, runtime.agent.name);
     params.onEvent?.({

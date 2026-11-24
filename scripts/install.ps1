@@ -40,6 +40,6 @@ try {
 Write-Host ""
 Write-Host "  Pandawa installed successfully!" -ForegroundColor Green
 Write-Host "  Run Web Studio : cd $InstallDir; `$env:PANDAWA_PORT=$Port; npm start"
-Write-Host "  Open Browser   : http://localhost:$Port (default password: 11111111)"
+Write-Host "  Open Browser   : http://localhost:$Port (check data\.initial_password on first boot)"
 Write-Host "  Run CLI        : node $InstallDir\dist\server\cli.js chat"
 Write-Host ""

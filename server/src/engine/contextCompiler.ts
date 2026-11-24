@@ -1,3 +1,4 @@
+import { resolveTeamWorkspaceDir } from "../config.js";
 import { getDb } from "../db/database.js";
 import { collectContextFromPath, collectProgressiveBrainContext } from "../brains/brainFs.js";
 import type { ProviderRecord } from "../providers/llmClient.js";
@@ -53,6 +54,7 @@ export interface CompiledAgentRuntime {
   agent: AgentRecord;
   provider: ProviderRecord | null;
   model: string;
+  fallbackProviders: Array<{ provider: ProviderRecord; model: string }>;
   mainBrains: Array<BrainRecord & { permission: string }>;
   teamBrains: Array<BrainRecord & { permission: string }>;
   mountedKnowledge: Array<{ path: string; permission: string; files: Array<{ path: string; content: string }> }>;
@@ -119,12 +121,37 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
   const toolPacksSet = new Set<string>(parseJson<string[]>(agent.tool_packs_json, ["brain", "team"]));
   const peerAgentIds = new Set<string>();
 
-  let canvasProviderId: string | null = null;
-  let canvasModelOverride = "";
+  const wiredProviders: Array<{ providerId: string; model: string; purpose: string }> = [];
+
+  const targetTeamRow = teamId
+    ? (db
+        .prepare("SELECT team_brain_id, lead_agent_id, reviewer_agent_id, sender_agent_id FROM teams WHERE id = ?")
+        .get(teamId) as
+        | {
+            team_brain_id?: string | null;
+            lead_agent_id?: string | null;
+            reviewer_agent_id?: string | null;
+            sender_agent_id?: string | null;
+          }
+        | undefined)
+    : undefined;
+
+  if (teamId) {
+    toolPacksSet.add("team");
+  }
+
+  const matchesTargetTeamBrain = (node: CanvasNodeRow, data: Record<string, unknown>): boolean => {
+    if (!teamId) return true;
+    return (
+      (Boolean(targetTeamRow?.team_brain_id) && node.ref_id === targetTeamRow!.team_brain_id) ||
+      data.teamId === teamId
+    );
+  };
 
   // 1. Direct neighbors of Agent on Canvas
   const directNeighbors = getNeighbors(agentNodeIds);
-  const connectedBrainNodeIds = new Set<string>();
+  const connectedMainBrainNodeIds = new Set<string>();
+  const connectedTeamBrainNodeIds = new Set<string>();
 
   for (const { node, edge } of directNeighbors) {
     const data = parseJson<Record<string, unknown>>(node.data_json, {});
@@ -132,18 +159,22 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
       const b = brainById.get(node.ref_id);
       if (b) {
         mainBrainsMap.set(b.id, { ...b, permission: edge.permission || b.sync_policy });
-        connectedBrainNodeIds.add(node.id);
+        connectedMainBrainNodeIds.add(node.id);
       }
     } else if (node.type === "team_brain") {
-      const b = brainById.get(node.ref_id);
-      if (b) {
-        teamBrainsMap.set(b.id, { ...b, permission: edge.permission || b.sync_policy });
-        connectedBrainNodeIds.add(node.id);
+      if (matchesTargetTeamBrain(node, data)) {
+        const b = brainById.get(node.ref_id);
+        if (b) {
+          teamBrainsMap.set(b.id, { ...b, permission: edge.permission || b.sync_policy });
+          connectedTeamBrainNodeIds.add(node.id);
+        }
       }
     } else if (node.type === "provider") {
-      canvasProviderId = (data.providerId as string) || node.ref_id || null;
-      if (typeof data.model === "string" && data.model.trim()) {
-        canvasModelOverride = data.model.trim();
+      const pid = (typeof data.providerId === "string" && data.providerId.trim()) || node.ref_id || "";
+      const mdl = typeof data.model === "string" ? data.model.trim() : "";
+      const purp = typeof data.purpose === "string" ? data.purpose.trim().toLowerCase() : "";
+      if (pid) {
+        wiredProviders.push({ providerId: pid, model: mdl, purpose: purp });
       }
     } else if (node.type === "knowledge") {
       const p = (data.path as string) || node.ref_id;
@@ -157,31 +188,34 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
     }
   }
 
-  // If running under a specific teamId, guarantee that team's brain is mounted
+  // If running under a specific teamId, guarantee that team's brain is mounted and traversed
   if (teamId) {
-    const teamRow = db.prepare("SELECT team_brain_id FROM teams WHERE id = ?").get(teamId) as
-      | { team_brain_id?: string }
-      | undefined;
-    if (teamRow?.team_brain_id && brainById.has(teamRow.team_brain_id)) {
-      const tb = brainById.get(teamRow.team_brain_id)!;
+    if (targetTeamRow?.team_brain_id && brainById.has(targetTeamRow.team_brain_id)) {
+      const tb = brainById.get(targetTeamRow.team_brain_id)!;
       if (!teamBrainsMap.has(tb.id)) {
         teamBrainsMap.set(tb.id, { ...tb, permission: tb.sync_policy || "read_write" });
       }
-      for (const n of nodes) {
-        if (n.type === "team_brain" && n.ref_id === tb.id) connectedBrainNodeIds.add(n.id);
+    }
+    for (const n of nodes) {
+      if (n.type === "team_brain") {
+        const nd = parseJson<Record<string, unknown>>(n.data_json, {});
+        if (matchesTargetTeamBrain(n, nd)) {
+          connectedTeamBrainNodeIds.add(n.id);
+        }
       }
     }
   }
 
-  // 2. Traverse Brain -> Brain links (e.g., Main Brain -> Team Brain) AND Brain -> Knowledge / Sibling Agents
-  const brainNeighbors = getNeighbors(connectedBrainNodeIds);
-  for (const { node, edge } of brainNeighbors) {
+  // 2. Traverse Team Brain -> Main Brain / Knowledge / Sibling Agents ONLY (never main_brain -> agent!)
+  const teamBrainPeerIds = new Set<string>();
+  const teamBrainNeighbors = getNeighbors(connectedTeamBrainNodeIds);
+  for (const { node, edge } of teamBrainNeighbors) {
     const data = parseJson<Record<string, unknown>>(node.data_json, {});
     if (node.type === "main_brain") {
       const b = brainById.get(node.ref_id);
       if (b && !mainBrainsMap.has(b.id)) {
         mainBrainsMap.set(b.id, { ...b, permission: edge.permission || b.sync_policy });
-        connectedBrainNodeIds.add(node.id);
+        connectedMainBrainNodeIds.add(node.id);
       }
     } else if (node.type === "knowledge") {
       const p = (data.path as string) || node.ref_id;
@@ -190,14 +224,32 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
       }
     } else if (node.type === "agent") {
       const peerId = (data.agentId as string) || node.ref_id;
-      if (peerId && peerId !== agent.id) peerAgentIds.add(peerId);
+      if (peerId && peerId !== agent.id) {
+        teamBrainPeerIds.add(peerId);
+        peerAgentIds.add(peerId);
+      }
     }
   }
 
-  // Also grab knowledge directly wired to newly discovered Main Brains
-  const mainBrainNodeIds = new Set(
-    nodes.filter((n) => n.type === "main_brain" && mainBrainsMap.has(n.ref_id)).map((n) => n.id)
-  );
+  // Strictly scope peer teammates when executing under a specific teamId (prevent cross-team consult bleed)
+  if (teamId) {
+    const scopedPeers = new Set<string>(teamBrainPeerIds);
+    for (const rid of [
+      targetTeamRow?.lead_agent_id,
+      targetTeamRow?.reviewer_agent_id,
+      targetTeamRow?.sender_agent_id,
+    ]) {
+      if (rid && rid !== agent.id) scopedPeers.add(rid);
+    }
+    peerAgentIds.clear();
+    for (const pid of scopedPeers) peerAgentIds.add(pid);
+  }
+
+  // 3. Traverse Main Brain -> Knowledge ONLY (never leak other teams' agents via main_brain)
+  const mainBrainNodeIds = new Set([
+    ...connectedMainBrainNodeIds,
+    ...nodes.filter((n) => n.type === "main_brain" && mainBrainsMap.has(n.ref_id)).map((n) => n.id),
+  ]);
   for (const { node, edge } of getNeighbors(mainBrainNodeIds)) {
     if (node.type === "knowledge") {
       const data = parseJson<Record<string, unknown>>(node.data_json, {});
@@ -208,13 +260,54 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
     }
   }
 
-  // Resolve Provider & Model
-  const chosenProviderId = agent.provider_id || canvasProviderId;
-  let provider: ProviderRecord | null = chosenProviderId ? providerById.get(chosenProviderId) || null : null;
-  if (!provider && canvasProviderId) {
-    provider = providerById.get(canvasProviderId) || null;
+  // Resolve Provider & Model strictly paired per provider record (never mix across providers)
+  const validWiredProviders = wiredProviders.filter((wp) => providerById.has(wp.providerId));
+  const pickBestWiredProvider = (list: typeof wiredProviders) => {
+    if (list.length === 0) return undefined;
+    const enabledList = list.filter((w) => providerById.get(w.providerId)!.enabled === 1);
+    const pool = enabledList.length > 0 ? enabledList : list;
+    return (
+      pool.find((w) => w.purpose.includes("primary")) ||
+      pool.find((w) => !w.purpose.includes("fallback") && !w.purpose.includes("backup")) ||
+      pool[0]
+    );
+  };
+
+  let provider: ProviderRecord | null = agent.provider_id ? providerById.get(agent.provider_id) || null : null;
+  let model = "";
+  if (provider) {
+    const matchingWired = pickBestWiredProvider(
+      validWiredProviders.filter((w) => w.providerId === provider!.id)
+    );
+    model = (agent.model || "").trim() || matchingWired?.model || provider.default_model || "";
+  } else {
+    const chosenWired = pickBestWiredProvider(validWiredProviders);
+    if (chosenWired) {
+      provider = providerById.get(chosenWired.providerId) || null;
+      // Do not reuse stale agent.model when agent.provider_id pointed to a missing provider
+      model =
+        (!agent.provider_id ? (agent.model || "").trim() : "") ||
+        chosenWired.model ||
+        provider?.default_model ||
+        "";
+    } else {
+      model = (agent.model || "").trim();
+    }
   }
-  const model = agent.model || canvasModelOverride || provider?.default_model || "";
+
+  // Only explicitly wired provider nodes on Canvas act as fallback providers for this agent
+  const fallbackProviders: Array<{ provider: ProviderRecord; model: string }> = [];
+  const seenFallbackIds = new Set<string>(provider ? [provider.id] : []);
+  for (const wp of validWiredProviders) {
+    if (seenFallbackIds.has(wp.providerId)) continue;
+    const p = providerById.get(wp.providerId);
+    if (!p || p.enabled !== 1) continue;
+    seenFallbackIds.add(p.id);
+    fallbackProviders.push({
+      provider: p,
+      model: wp.model || p.default_model || "",
+    });
+  }
 
   // Always auto-check personal folder `agents/<slug>` if it exists and wasn't explicitly mounted
   const defaultPersonalFolder = `agents/${agent.slug}`;
@@ -411,10 +504,16 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
     const openTasks = db
       .prepare(
         `SELECT id, title, owner_agent, status, notes FROM team_tasks
-         WHERE team_id = ? AND status != 'done'
+         WHERE team_id = ? AND status != 'done' ${sessionId ? "AND (session_id = ? OR session_id = '')" : ""}
          ORDER BY updated_at DESC LIMIT 12`
       )
-      .all(teamId) as Array<{ id: string; title: string; owner_agent: string; status: string; notes: string }>;
+      .all(...(sessionId ? [teamId, sessionId] : [teamId])) as Array<{
+      id: string;
+      title: string;
+      owner_agent: string;
+      status: string;
+      notes: string;
+    }>;
     if (openTasks.length > 0) {
       promptSections.push(
         `# SHARED TEAM TASK BOARD (ACTIVE)\n` +
@@ -423,6 +522,12 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
             .join("\n")
       );
     }
+
+    promptSections.push(
+      `# TEAM ISOLATED WORKSPACE\n` +
+        `- Dedicated Team Workspace Root: \`${resolveTeamWorkspaceDir(teamId)}\`\n` +
+        `- All \`workspace_*\`, \`shell_exec\`, \`code_execute\`, and \`term_*\` tools are strictly isolated to this team's workspace so other teams running concurrently never interfere with your files or processes.`
+    );
   }
 
   // Operating Capabilities Note (Shared Persistent Terminal & Real Execution ethos)
@@ -440,6 +545,7 @@ export function compileAgentRuntime(agentId: string, teamId?: string, sessionId?
     agent,
     provider,
     model,
+    fallbackProviders,
     mainBrains,
     teamBrains,
     mountedKnowledge,
@@ -468,7 +574,12 @@ export function getTeamMembers(teamId: string): AgentRecord[] {
 
   const teamBrainNodeIds = new Set(
     nodes
-      .filter((n) => n.type === "team_brain" && (n.ref_id === team.team_brain_id || parseJson<{ teamId?: string }>(n.data_json, {}).teamId === teamId))
+      .filter(
+        (n) =>
+          n.type === "team_brain" &&
+          ((Boolean(team.team_brain_id) && n.ref_id === team.team_brain_id) ||
+            parseJson<{ teamId?: string }>(n.data_json, {}).teamId === teamId)
+      )
       .map((n) => n.id)
   );
 
@@ -487,6 +598,5 @@ export function getTeamMembers(teamId: string): AgentRecord[] {
   }
 
   const allAgents = db.prepare("SELECT * FROM agents WHERE enabled = 1 ORDER BY created_at ASC").all() as unknown as AgentRecord[];
-  const wired = allAgents.filter((a) => memberAgentIds.has(a.id));
-  return wired.length > 0 ? wired : allAgents;
+  return allAgents.filter((a) => memberAgentIds.has(a.id));
 }

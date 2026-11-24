@@ -114,9 +114,9 @@ def open_index_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def fetch_neural_embeddings(texts: list[str], embed_cfg: dict | None) -> tuple[str, list[list[float]] | None]:
+def fetch_neural_embeddings(texts: list[str], embed_cfg: dict | None) -> tuple[str, list[list[float]] | None, str | None]:
     if not embed_cfg or not embed_cfg.get("baseUrl") or not texts:
-        return "", None
+        return "", None, None
     kind = str(embed_cfg.get("kind", "openai")).lower()
     base = str(embed_cfg["baseUrl"]).rstrip("/")
     api_key = str(embed_cfg.get("apiKey", ""))
@@ -134,9 +134,9 @@ def fetch_neural_embeddings(texts: list[str], embed_cfg: dict | None) -> tuple[s
                     data = json.loads(resp.read().decode("utf-8"))
                     vec = data.get("embedding", {}).get("values")
                     if not vec:
-                        return "", None
+                        return "", None, f"Gemini embedding response missing vector ({emb_model})"
                     vectors.append(vec)
-            return emb_model, vectors
+            return emb_model, vectors, None
 
         # OpenAI-compatible /embeddings (OpenAI, OpenRouter, Ollama /v1/embeddings, vLLM, etc.)
         emb_model = model or "text-embedding-3-small"
@@ -150,11 +150,11 @@ def fetch_neural_embeddings(texts: list[str], embed_cfg: dict | None) -> tuple[s
             data = json.loads(resp.read().decode("utf-8"))
             items = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
             vectors = [it.get("embedding") for it in items if it.get("embedding")]
-            if len(vectors) == len(texts[:32]):
-                return emb_model, vectors
-    except Exception:
-        return "", None
-    return "", None
+            if len(vectors) != len(texts[:32]):
+                return "", None, f"Embedding count mismatch ({len(vectors)} != {len(texts[:32])})"
+            return emb_model, vectors, None
+    except Exception as exc:
+        return "", None, f"{kind} embedding failed ({base} / {model or 'default'}): {exc}"
 
 
 def cosine_dense(a: list[float], b: list[float]) -> float:
@@ -168,8 +168,9 @@ def cosine_dense(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-def collect_documents(brains_dir: str, pandawa_db_path: str) -> list[dict]:
+def collect_documents(brains_dir: str, pandawa_db_path: str) -> tuple[list[dict], list[str]]:
     docs = []
+    warnings = []
     # 1. All Brain Vault files
     if brains_dir and os.path.isdir(brains_dir):
         for root, dirs, files in os.walk(brains_dir):
@@ -195,8 +196,8 @@ def collect_documents(brains_dir: str, pandawa_db_path: str) -> list[dict]:
                         "content": content,
                         "links": links,
                     })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    warnings.append(f"Failed reading brain file {rel}: {exc}")
 
     # 2. Episodic Memories & Recent Mission Summaries from pandawa.db
     if pandawa_db_path and os.path.exists(pandawa_db_path):
@@ -225,9 +226,9 @@ def collect_documents(brains_dir: str, pandawa_db_path: str) -> list[dict]:
                     "links": [],
                 })
             pconn.close()
-        except Exception:
-            pass
-    return docs
+        except Exception as exc:
+            warnings.append(f"SQLite read warning ({pandawa_db_path}): {exc}")
+    return docs, warnings
 
 
 def action_index(payload: dict) -> dict:
@@ -235,6 +236,10 @@ def action_index(payload: dict) -> dict:
     pandawa_db = str(payload.get("pandawaDb", ""))
     index_db = str(payload.get("indexDb", ""))
     embed_cfg = payload.get("embedConfig")
+    target_embed_model = ""
+    if embed_cfg:
+        kind = str(embed_cfg.get("kind", "openai")).lower()
+        target_embed_model = str(embed_cfg.get("model") or ("text-embedding-004" if kind == "gemini" else "text-embedding-3-small"))
 
     conn = open_index_db(index_db)
     existing = {
@@ -242,7 +247,7 @@ def action_index(payload: dict) -> dict:
         for row in conn.execute("SELECT chunk_id, content_hash, embedding_model, embedding_json FROM semantic_chunks")
     }
 
-    docs = collect_documents(brains_dir, pandawa_db)
+    docs, doc_warnings = collect_documents(brains_dir, pandawa_db)
     active_ids = set()
     to_embed_rows = []
     now = time.time()
@@ -258,7 +263,13 @@ def action_index(payload: dict) -> dict:
             prev = existing.get(cid)
             if prev and prev[0] == chash:
                 reused += 1
-                if embed_cfg and not prev[2]:
+                needs_reembed = embed_cfg and (not prev[2] or (target_embed_model and prev[1] != target_embed_model))
+                if needs_reembed:
+                    if prev[1] != target_embed_model and prev[2]:
+                        conn.execute(
+                            "UPDATE semantic_chunks SET embedding_model = '', embedding_json = '' WHERE chunk_id = ?",
+                            (cid,),
+                        )
                     to_embed_rows.append((cid, f"{doc['title']}\n{ch}"))
                 continue
 
@@ -306,9 +317,10 @@ def action_index(payload: dict) -> dict:
     # Optional neural embedding batch (capped to keep indexing snappy)
     neural_embedded = 0
     neural_model = ""
+    neural_error = None
     if embed_cfg and to_embed_rows:
         batch = to_embed_rows[:32]
-        mname, vecs = fetch_neural_embeddings([b[1] for b in batch], embed_cfg)
+        mname, vecs, neural_error = fetch_neural_embeddings([b[1] for b in batch], embed_cfg)
         if vecs and mname:
             neural_model = mname
             for (cid, _), vec in zip(batch, vecs):
@@ -323,7 +335,7 @@ def action_index(payload: dict) -> dict:
     neural_total = conn.execute("SELECT COUNT(*) FROM semantic_chunks WHERE length(embedding_json) > 4").fetchone()[0]
     conn.close()
 
-    return {
+    out = {
         "ok": True,
         "totalChunks": total,
         "documents": len(docs),
@@ -334,11 +346,17 @@ def action_index(payload: dict) -> dict:
         "neuralChunksTotal": neural_total,
         "neuralModel": neural_model,
     }
+    if neural_error:
+        out["neuralError"] = neural_error
+    if doc_warnings:
+        out["warnings"] = doc_warnings
+    return out
 
 
 def action_search(payload: dict) -> dict:
     query = str(payload.get("query", "")).strip()
     scope = str(payload.get("scope", "all")).lower()
+    path_prefixes = [str(p).strip().strip("/") for p in (payload.get("pathPrefixes") or []) if str(p).strip()]
     limit = max(1, min(30, int(payload.get("limit", 10))))
     index_db = str(payload.get("indexDb", ""))
     embed_cfg = payload.get("embedConfig")
@@ -351,14 +369,22 @@ def action_search(payload: dict) -> dict:
         action_index(payload)
 
     conn = open_index_db(index_db)
-    where = ""
+    clauses = []
     params = []
     if scope in ("brain_file", "memory", "session"):
-        where = "WHERE source_type = ?"
+        clauses.append("source_type = ?")
         params.append(scope)
+    if path_prefixes:
+        like_clauses = []
+        for pref in path_prefixes:
+            like_clauses.append("(source_path = ? OR source_path LIKE ?)")
+            params.extend([pref, f"{pref}/%"])
+        clauses.append("(" + " OR ".join(like_clauses) + ")")
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     rows = conn.execute(
-        f"SELECT chunk_id, source_type, source_path, title, content, tf_json, links_json, embedding_json FROM semantic_chunks {where}",
+        f"SELECT chunk_id, source_type, source_path, title, content, tf_json, links_json, embedding_model, embedding_json FROM semantic_chunks {where}",
         params,
     ).fetchall()
     conn.close()
@@ -375,8 +401,8 @@ def action_search(payload: dict) -> dict:
         for tok in tf.keys():
             df[tok] += 1
         links = json.loads(r[6] or "[]")
-        emb = json.loads(r[7]) if r[7] and len(r[7]) > 4 else None
-        parsed.append((r[0], r[1], r[2], r[3], r[4], tf, links, emb))
+        emb = json.loads(r[8]) if r[8] and len(r[8]) > 4 else None
+        parsed.append((r[0], r[1], r[2], r[3], r[4], tf, links, r[7], emb))
 
     q_tokens = tokenize(query)
     q_tf = collections.Counter(q_tokens)
@@ -388,20 +414,23 @@ def action_search(payload: dict) -> dict:
     q_lower = query.lower()
 
     # Optional query dense vector if index has neural embeddings
-    has_dense = any(p[7] is not None for p in parsed)
+    has_dense = any(p[8] is not None for p in parsed)
     q_dense = None
+    neural_error = None
+    query_model = ""
     mode = "local-semantic-tfidf"
     if has_dense and embed_cfg:
-        mname, vecs = fetch_neural_embeddings([query], embed_cfg)
+        mname, vecs, neural_error = fetch_neural_embeddings([query], embed_cfg)
         if vecs and vecs[0]:
             q_dense = vecs[0]
+            query_model = mname
             mode = f"hybrid-neural-rrf ({mname})"
 
     sparse_scores = []
     dense_scores = []
 
     for idx, item in enumerate(parsed):
-        cid, stype, spath, title, content, tf, links, emb = item
+        cid, stype, spath, title, content, tf, links, emb_model, emb = item
         dot = 0.0
         d_norm_sq = 0.0
         for tok, cnt in tf.items():
@@ -412,7 +441,6 @@ def action_search(payload: dict) -> dict:
                 dot += w * q_vec[tok]
         cos = dot / (math.sqrt(d_norm_sq) * q_norm) if d_norm_sq > 0 else 0.0
 
-        # Boost exact phrase, title match, and [[wikilink]] relevance
         bonus = 0.0
         if q_lower in title.lower():
             bonus += 0.25
@@ -424,7 +452,7 @@ def action_search(payload: dict) -> dict:
         if s_score > 0.02:
             sparse_scores.append((idx, s_score))
 
-        if q_dense and emb:
+        if q_dense and emb and (not query_model or not emb_model or emb_model == query_model):
             d_score = cosine_dense(q_dense, emb)
             if d_score > 0.15:
                 dense_scores.append((idx, d_score))
@@ -446,7 +474,7 @@ def action_search(payload: dict) -> dict:
     results = []
     seen_paths = set()
     for idx, score in ranked:
-        cid, stype, spath, title, content, _, links, _ = parsed[idx]
+        cid, stype, spath, title, content, _, links, _, _ = parsed[idx]
         if spath in seen_paths:
             continue
         seen_paths.add(spath)
@@ -462,7 +490,10 @@ def action_search(payload: dict) -> dict:
         if len(results) >= limit:
             break
 
-    return {"ok": True, "mode": mode, "totalIndexed": n_docs, "results": results}
+    out = {"ok": True, "mode": mode, "totalIndexed": n_docs, "results": results}
+    if neural_error:
+        out["neuralError"] = neural_error
+    return out
 
 
 def action_status(payload: dict) -> dict:
@@ -487,7 +518,14 @@ def action_status(payload: dict) -> dict:
 def main() -> None:
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
     raw = sys.stdin.read().strip() if not sys.stdin.isatty() else ""
-    payload = json.loads(raw) if raw else {}
+    try:
+        payload = json.loads(raw) if raw else {}
+        if not isinstance(payload, dict):
+            print(json.dumps({"ok": False, "error": "JSON payload must be an object"}))
+            return
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"ok": False, "error": f"Invalid JSON input: {exc}"}))
+        return
 
     if action == "index":
         out = action_index(payload)

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Radio,
   Plus,
@@ -13,9 +13,18 @@ import {
   Activity,
   ShieldCheck,
   LogOut,
+  AlertTriangle,
+  Edit3,
+  X,
 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, TeamItem } from "../../types";
+import {
+  advanceEventCursor,
+  formatTeamPipelineSummary,
+  getChannelRouteStatus,
+  pickDefaultChannelTarget,
+} from "../../utils/routingHelpers";
 
 export interface WhatsAppRuntimeState {
   channelId: string;
@@ -43,6 +52,16 @@ interface ActivityItem {
   title: string;
   target_type: string;
   target_id: string;
+  target_name?: string;
+  team_name?: string;
+  responding_agent_name?: string;
+  attribution?: {
+    teamName?: string;
+    leadAgentName?: string;
+    reviewerAgentName?: string;
+    senderAgentName?: string;
+    senderModel?: string;
+  };
   message_count: number;
   last_message: string | null;
   updated_at: string;
@@ -86,7 +105,7 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
   // Add channel form
   const [chType, setChType] = useState<ChannelRecord["type"]>("whatsapp_qr");
   const [chName, setChName] = useState("");
-  const [targetValue, setTargetValue] = useState("team:team_pandawa");
+  const [targetValue, setTargetValue] = useState("");
   const [botToken, setBotToken] = useState("");
   const [chatId, setChatId] = useState("");
   const [allowedNumbers, setAllowedNumbers] = useState("");
@@ -98,10 +117,17 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
   const [outboundUrl, setOutboundUrl] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
 
+  // Edit channel modal
+  const [editingChannel, setEditingChannel] = useState<ChannelRecord | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editConfig, setEditConfig] = useState<Record<string, string>>({});
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [copiedId, setCopiedId] = useState("");
   const [busyId, setBusyId] = useState("");
+  const lastSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -111,10 +137,22 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
         apiFetch<{ agents: AgentItem[] }>("/api/agents"),
         apiFetch<{ activity: ActivityItem[] }>("/api/channels/activity").catch(() => ({ activity: [] })),
       ]);
+      const nextTeams = tRes.teams || [];
+      const nextAgents = aRes.agents || [];
       setChannels(cRes.channels || []);
-      setTeams(tRes.teams || []);
-      setAgents(aRes.agents || []);
+      setTeams(nextTeams);
+      setAgents(nextAgents);
       setActivity(actRes.activity || []);
+      setTargetValue((prev) => {
+        if (prev) {
+          const idx = prev.indexOf(":");
+          const pt = prev.slice(0, idx);
+          const pid = prev.slice(idx + 1);
+          if (pt === "team" && nextTeams.some((t) => t.id === pid)) return prev;
+          if (pt === "agent" && nextAgents.some((a) => a.id === pid)) return prev;
+        }
+        return pickDefaultChannelTarget(nextTeams, nextAgents);
+      });
     } finally {
       setLoading(false);
     }
@@ -124,22 +162,32 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
     load().catch(() => {});
   }, [load]);
 
-  // Apply real-time WhatsApp QR & status updates pushed over WebSocket
+  // Apply real-time WhatsApp QR & status updates pushed over WebSocket without dropping burst events
   useEffect(() => {
-    const latest = liveEvents[liveEvents.length - 1];
-    if (!latest || latest.type !== "whatsapp_status") return;
-    const chId = String(latest.channelId || "");
-    if (!chId) return;
-    const waPatch: WhatsAppRuntimeState = {
-      channelId: chId,
-      status: String(latest.status || "disconnected") as WhatsAppRuntimeState["status"],
-      qrDataUrl: String(latest.qrDataUrl || ""),
-      phoneNumber: String(latest.phoneNumber || ""),
-      lastError: String(latest.lastError || ""),
-      lastMessageAt: String(latest.lastMessageAt || ""),
-    };
-    setChannels((prev) => prev.map((c) => (c.id === chId ? { ...c, whatsapp: waPatch } : c)));
-  }, [liveEvents]);
+    const { nextSeq, freshEvents } = advanceEventCursor(liveEvents, lastSeqRef.current);
+    lastSeqRef.current = nextSeq;
+    let shouldReload = false;
+    for (const ev of freshEvents) {
+      if (ev.type === "whatsapp_status") {
+        const chId = String(ev.channelId || "");
+        if (!chId) continue;
+        const waPatch: WhatsAppRuntimeState = {
+          channelId: chId,
+          status: String(ev.status || "disconnected") as WhatsAppRuntimeState["status"],
+          qrDataUrl: String(ev.qrDataUrl || ""),
+          phoneNumber: String(ev.phoneNumber || ""),
+          lastError: String(ev.lastError || ""),
+          lastMessageAt: String(ev.lastMessageAt || ""),
+        };
+        setChannels((prev) => prev.map((c) => (c.id === chId ? { ...c, whatsapp: waPatch } : c)));
+      } else if (ev.type === "topology_updated" || ev.type === "team_done") {
+        shouldReload = true;
+      }
+    }
+    if (shouldReload) {
+      load().catch(() => {});
+    }
+  }, [liveEvents, load]);
 
   function copyText(key: string, text: string) {
     navigator.clipboard.writeText(text).catch(() => {});
@@ -152,7 +200,13 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
     setNotice(null);
     setCreating(true);
     try {
-      const [tType, tId] = targetValue.split(":");
+      const sep = targetValue.indexOf(":");
+      const tType = sep !== -1 ? targetValue.slice(0, sep) : "team";
+      const tId = sep !== -1 ? targetValue.slice(sep + 1) : targetValue;
+      if (!tId) {
+        setNotice({ ok: false, text: "Select a target Team or Agent before creating the channel." });
+        return;
+      }
       const config: Record<string, string> = {};
       if (chType === "telegram") {
         config.botToken = botToken.trim();
@@ -191,7 +245,7 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
           name: chName.trim() || defaultName,
           type: chType,
           targetType: tType === "agent" ? "agent" : "team",
-          targetId: tId || "team_pandawa",
+          targetId: tId,
           config,
         }),
       });
@@ -226,26 +280,63 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
   }
 
   async function updateRoute(ch: ChannelRecord, nextTarget: string) {
-    const [tType, tId] = nextTarget.split(":");
-    await apiFetch(`/api/channels/${ch.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ targetType: tType, targetId: tId }),
-    });
-    setChannels((prev) =>
-      prev.map((x) =>
-        x.id === ch.id
-          ? { ...x, target_type: tType === "agent" ? "agent" : "team", target_id: tId }
-          : x
-      )
-    );
+    const sep = nextTarget.indexOf(":");
+    const tType = sep !== -1 ? nextTarget.slice(0, sep) : "team";
+    const tId = sep !== -1 ? nextTarget.slice(sep + 1) : nextTarget;
+    if (!tId) return;
+    setNotice(null);
+    try {
+      await apiFetch(`/api/channels/${ch.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ targetType: tType, targetId: tId }),
+      });
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      await load().catch(() => {});
+    }
+  }
+
+  function openEditChannel(ch: ChannelRecord) {
+    setEditingChannel(ch);
+    setEditName(ch.name);
+    setEditConfig({ ...(ch.config || {}) });
+  }
+
+  async function saveEditChannel(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingChannel) return;
+    setSavingEdit(true);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/channels/${editingChannel.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: editName.trim() || editingChannel.name,
+          config: editConfig,
+        }),
+      });
+      setEditingChannel(null);
+      setNotice({ ok: true, text: `Updated channel "${editName.trim() || editingChannel.name}".` });
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setSavingEdit(false);
+    }
   }
 
   async function toggleEnabled(ch: ChannelRecord) {
-    await apiFetch(`/api/channels/${ch.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ enabled: !ch.enabled }),
-    });
-    await load();
+    setNotice(null);
+    try {
+      await apiFetch(`/api/channels/${ch.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !ch.enabled }),
+      });
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   async function connectWhatsAppQr(chId: string) {
@@ -287,12 +378,24 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
 
   async function deleteChannel(ch: ChannelRecord) {
     if (!window.confirm(`Delete channel "${ch.name}"?`)) return;
-    await apiFetch(`/api/channels/${ch.id}`, { method: "DELETE" });
-    await load();
+    setNotice(null);
+    try {
+      await apiFetch(`/api/channels/${ch.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:7777";
   const selectedTypeMeta = CHANNEL_TYPES.find((t) => t.id === chType)!;
+  const selectedCreateTarget = (() => {
+    if (!targetValue) return null;
+    const sep = targetValue.indexOf(":");
+    const tt = sep !== -1 ? targetValue.slice(0, sep) : "team";
+    const tid = sep !== -1 ? targetValue.slice(sep + 1) : targetValue;
+    return getChannelRouteStatus({ target_type: tt, target_id: tid }, teams, agents);
+  })();
 
   return (
     <div className="h-screen overflow-y-auto bg-[#09090b]">
@@ -408,6 +511,12 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                     </select>
                   </div>
                 </div>
+
+                {selectedCreateTarget && (
+                  <div className="px-3 py-2 rounded-lg bg-[#09090b] border border-white/[0.07] text-[11px] font-mono text-zinc-400">
+                    Pipeline: <span className="text-zinc-200">{selectedCreateTarget.pipelineSummary}</span>
+                  </div>
+                )}
 
                 {/* Type-specific credentials */}
                 {chType === "whatsapp_qr" && (
@@ -602,11 +711,14 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                         c.enabled);
                     const waCallback = `${origin}/api/webhooks/whatsapp/${c.id}`;
                     const genericCallback = `${origin}/api/webhooks/${c.id}`;
+                    const routeStatus = getChannelRouteStatus(c, teams, agents);
 
                     return (
                       <div
                         key={c.id}
-                        className="rounded-xl bg-[#111113] border border-white/[0.08] p-4 space-y-3 text-xs"
+                        className={`rounded-xl bg-[#111113] border p-4 space-y-3 text-xs ${
+                          routeStatus.orphaned ? "border-rose-500/40" : "border-white/[0.08]"
+                        }`}
                       >
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="space-y-1 min-w-0">
@@ -615,6 +727,8 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                                 className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                                   !c.enabled
                                     ? "bg-zinc-600"
+                                    : routeStatus.orphaned
+                                    ? "bg-rose-400"
                                     : c.type === "whatsapp_qr" && wa?.status === "qr"
                                     ? "bg-amber-400 animate-pulse"
                                     : isLive
@@ -626,6 +740,16 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                               <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.07] text-zinc-400">
                                 {TYPE_LABELS[c.type] || c.type}
                               </span>
+                              {routeStatus.orphaned && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/35 text-rose-300 inline-flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3" /> Orphaned Route
+                                </span>
+                              )}
+                              {!routeStatus.orphaned && !routeStatus.valid && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/35 text-amber-300 inline-flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3" /> Empty Team
+                                </span>
+                              )}
                               {c.type === "whatsapp_qr" && wa?.status === "connected" && wa.phoneNumber && (
                                 <span className="text-[10px] font-mono text-emerald-400">+{wa.phoneNumber}</span>
                               )}
@@ -659,6 +783,14 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                             </button>
                             <button
                               type="button"
+                              onClick={() => openEditChannel(c)}
+                              title="Edit channel settings & credentials"
+                              className="h-7 px-2 rounded-md bg-[#18181b] hover:bg-[#222227] border border-white/[0.08] text-zinc-300 text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                            >
+                              <Edit3 className="w-3 h-3" /> Edit
+                            </button>
+                            <button
+                              type="button"
                               disabled={busyId === c.id}
                               onClick={() => testChannel(c.id)}
                               className="h-7 px-2.5 rounded-md bg-[#18181b] hover:bg-[#222227] border border-white/[0.08] text-zinc-200 text-[11px] inline-flex items-center gap-1 cursor-pointer"
@@ -681,10 +813,15 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                           <div className="flex items-center gap-2 flex-1 min-w-[200px]">
                             <span className="text-[11px] text-zinc-500 shrink-0">Routes to:</span>
                             <select
-                              value={`${c.target_type}:${c.target_id}`}
+                              value={routeStatus.orphaned ? "" : `${c.target_type}:${c.target_id}`}
                               onChange={(e) => updateRoute(c, e.target.value)}
                               className="flex-1 h-7 bg-[#09090b] border border-white/[0.09] rounded-md px-2 text-[11px] text-zinc-200 outline-none"
                             >
+                              {routeStatus.orphaned && (
+                                <option value="">
+                                  {routeStatus.label} (Select valid target)
+                                </option>
+                              )}
                               <optgroup label="Teams">
                                 {teams.map((t) => (
                                   <option key={t.id} value={`team:${t.id}`}>
@@ -726,6 +863,18 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                               )}
                             </div>
                           )}
+                        </div>
+
+                        <div
+                          className={`text-[10.5px] font-mono px-2.5 py-1.5 rounded-md bg-[#09090b] border ${
+                            routeStatus.orphaned
+                              ? "border-rose-500/30 text-rose-300"
+                              : !routeStatus.valid
+                              ? "border-amber-500/30 text-amber-300"
+                              : "border-white/[0.06] text-zinc-400"
+                          }`}
+                        >
+                          {routeStatus.pipelineSummary}
                         </div>
 
                         {/* Live Scannable WhatsApp QR Panel */}
@@ -841,7 +990,11 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
                         </span>
                       </div>
                       <div className="text-[10px] font-mono text-zinc-500">
-                        {a.target_type}:{a.target_id} · {a.updated_at}
+                        {a.target_name ? `${a.target_name} (${a.target_type})` : `${a.target_type}:${a.target_id}`}
+                        {a.responding_agent_name ? ` · Reply: ${a.responding_agent_name}` : ""}
+                        {a.attribution?.senderModel ? ` [${a.attribution.senderModel}]` : ""}
+                        {" · "}
+                        {a.updated_at}
                       </div>
                       {a.last_message && (
                         <p className="text-[11px] text-zinc-400 line-clamp-2">{a.last_message}</p>
@@ -854,6 +1007,144 @@ export const ChannelsPage: React.FC<ChannelsPageProps> = ({ liveEvents, onOpenCa
           </div>
         </div>
       </div>
+
+      {editingChannel && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <form
+            onSubmit={saveEditChannel}
+            className="w-full max-w-md rounded-xl bg-[#111113] border border-white/[0.10] p-5 space-y-3.5 text-xs shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-2.5">
+              <h3 className="text-sm font-semibold text-zinc-100">
+                Edit Channel — {editingChannel.name}
+              </h3>
+              <button
+                type="button"
+                aria-label="Close channel editor"
+                onClick={() => setEditingChannel(null)}
+                className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-zinc-400 block mb-1">Channel Name</label>
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 text-white"
+              />
+            </div>
+
+            {editingChannel.type === "telegram" && (
+              <>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Bot Token (leave unchanged or masked to keep)</label>
+                  <input
+                    type="password"
+                    value={editConfig.botToken || ""}
+                    onChange={(e) => setEditConfig((p) => ({ ...p, botToken: e.target.value }))}
+                    className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Allowed Chat ID (optional whitelist)</label>
+                  <input
+                    value={editConfig.chatId || ""}
+                    onChange={(e) => setEditConfig((p) => ({ ...p, chatId: e.target.value }))}
+                    className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                  />
+                </div>
+              </>
+            )}
+
+            {(editingChannel.type === "whatsapp_qr" || editingChannel.type === "whatsapp_cloud") && (
+              <div>
+                <label className="text-zinc-400 block mb-1">Allowed Phone Numbers (optional whitelist)</label>
+                <input
+                  value={editConfig.allowedNumbers || ""}
+                  onChange={(e) => setEditConfig((p) => ({ ...p, allowedNumbers: e.target.value }))}
+                  className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                />
+              </div>
+            )}
+
+            {editingChannel.type === "whatsapp_cloud" && (
+              <>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Meta Phone Number ID</label>
+                  <input
+                    value={editConfig.phoneNumberId || ""}
+                    onChange={(e) => setEditConfig((p) => ({ ...p, phoneNumberId: e.target.value }))}
+                    className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Permanent Access Token (masked if unchanged)</label>
+                  <input
+                    type="password"
+                    value={editConfig.accessToken || ""}
+                    onChange={(e) => setEditConfig((p) => ({ ...p, accessToken: e.target.value }))}
+                    className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                  />
+                </div>
+              </>
+            )}
+
+            {(editingChannel.type === "discord" || editingChannel.type === "slack") && (
+              <div>
+                <label className="text-zinc-400 block mb-1">Webhook URL (masked if unchanged)</label>
+                <input
+                  type="password"
+                  value={editConfig.webhookUrl || ""}
+                  onChange={(e) => setEditConfig((p) => ({ ...p, webhookUrl: e.target.value }))}
+                  className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                />
+              </div>
+            )}
+
+            {editingChannel.type === "webhook" && (
+              <>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Outbound Callback URL</label>
+                  <input
+                    value={editConfig.outboundUrl || ""}
+                    onChange={(e) => setEditConfig((p) => ({ ...p, outboundUrl: e.target.value }))}
+                    className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">Webhook Secret (masked if unchanged)</label>
+                  <input
+                    type="password"
+                    value={editConfig.secret || ""}
+                    onChange={(e) => setEditConfig((p) => ({ ...p, secret: e.target.value }))}
+                    className="w-full h-9 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 font-mono text-white"
+                  />
+                </div>
+              </>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingChannel(null)}
+                className="px-3.5 py-2 rounded-lg bg-[#18181b] text-zinc-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingEdit}
+                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {savingEdit ? "Saving..." : "Save Channel"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

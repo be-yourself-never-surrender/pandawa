@@ -10,14 +10,16 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import pino from "pino";
-import { DATA_DIR, PANDAWA_VERSION, generateId } from "../config.js";
+import { DATA_DIR } from "../config.js";
 import { getDb } from "../db/database.js";
-import { decryptChannelConfig } from "./channelManager.js";
-import { runAgentTurn } from "../engine/agentRunner.js";
-import { runTeamMission } from "../engine/teamEngine.js";
-import { getApprovalMode, listPendingApprovals, resolveApproval } from "../engine/approvalManager.js";
-import { listTerminals } from "../tools/terminalManager.js";
-import type { LLMMessage } from "../providers/llmClient.js";
+import {
+  decryptChannelConfig,
+  enqueueChannelWork,
+  ensureApprovalChannelNotificationHook,
+  executeChannelMission,
+  handleChannelControlCommand,
+  type ChannelRow,
+} from "./channelManager.js";
 
 const WA_SESSIONS_DIR = path.join(DATA_DIR, "whatsapp_sessions");
 
@@ -45,22 +47,17 @@ interface WaHandle {
   reconnectAttempts: number;
 }
 
-interface ChannelRow {
-  id: string;
-  name: string;
-  type: string;
-  config_json: string;
-  target_type: string;
-  target_id: string;
-  enabled: number;
-}
-
 const handles = new Map<string, WaHandle>();
-// Persistent multi-turn thread map: `${channelId}:${remoteKey}` -> sessionId
 const threadSessions = new Map<string, string>();
+const activeChatSessions = new Map<string, string>();
+const waChatQueues = new Map<string, Promise<void>>();
 let _broadcast: ((ev: Record<string, unknown>) => void) | undefined;
 
 const silentLogger = pino({ level: "silent" });
+
+function getWhatsAppGraphApiBase(): string {
+  return (process.env.PANDAWA_WHATSAPP_GRAPH_API_BASE || "https://graph.facebook.com").replace(/\/+$/, "");
+}
 
 function sessionAuthDir(channelId: string): string {
   const safe = channelId.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -104,167 +101,42 @@ function emitWaState(h: WaHandle): void {
   });
 }
 
-function getOrCreateThreadSession(channelId: string, senderKey: string, label: string, ch: ChannelRow): string {
-  const key = `${channelId}:${senderKey}`;
-  const existing = threadSessions.get(key);
-  const db = getDb();
-  if (existing) {
-    const row = db.prepare("SELECT id FROM sessions WHERE id = ?").get(existing) as { id: string } | undefined;
-    if (row) return existing;
-  }
-  const sessionId = generateId("ses");
-  db.prepare("INSERT INTO sessions (id, title, target_type, target_id) VALUES (?, ?, ?, ?)").run(
-    sessionId,
-    label.slice(0, 64),
-    ch.target_type === "agent" ? "agent" : "team",
-    ch.target_id || "team_pandawa"
-  );
-  threadSessions.set(key, sessionId);
-  return sessionId;
-}
-
-function loadSessionHistory(sessionId: string): LLMMessage[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 20")
-    .all(sessionId) as Array<{ role: string; content: string }>;
-  return rows
-    .filter((r) => r.role === "user" || r.role === "assistant")
-    .map((r) => ({ role: r.role as "user" | "assistant", content: r.content }));
-}
-
-async function handleInboundChatCommandOrMission(params: {
-  channelId: string;
-  platformLabel: string;
-  senderKey: string;
-  senderDisplay: string;
-  text: string;
-  replyFn: (out: string) => Promise<void>;
-}): Promise<void> {
-  const db = getDb();
-  // Always re-read live channel routing so Brain Canvas rewiring applies INSTANTLY
-  const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND enabled = 1").get(params.channelId) as
-    | ChannelRow
-    | undefined;
-  if (!ch) return;
-
-  const trimmed = params.text.trim();
-  if (!trimmed) return;
-
-  // Built-in remote OS commands
-  if (trimmed.startsWith("/")) {
-    const [cmdRaw, arg1] = trimmed.split(/\s+/);
-    const cmd = cmdRaw.toLowerCase();
-
-    if (cmd === "/new" || cmd === "/clear" || cmd === "/reset") {
-      threadSessions.delete(`${params.channelId}:${params.senderKey}`);
-      await params.replyFn("Started a fresh Pandawa session thread.").catch(() => {});
-      return;
-    }
-
-    if (cmd === "/approve" || cmd === "/auto" || cmd === "/reject") {
-      const pending = listPendingApprovals();
-      const targetId = arg1 || pending[0]?.id;
-      if (!targetId) {
-        await params.replyFn("No pending approval requests right now.").catch(() => {});
-        return;
-      }
-      const ok = resolveApproval(targetId, cmd !== "/reject", {
-        switchToAuto: cmd === "/auto",
-        reason: cmd === "/reject" ? `Rejected via ${params.platformLabel}` : undefined,
-        broadcast: _broadcast,
-      });
-      await params
-        .replyFn(
-          ok
-            ? `Approval ${targetId} -> ${cmd === "/reject" ? "REJECTED" : cmd === "/auto" ? "APPROVED + AUTO MODE" : "APPROVED"}`
-            : `Approval ${targetId} not found or already resolved.`
-        )
-        .catch(() => {});
-      return;
-    }
-
-    if (cmd === "/term" || cmd === "/terminals") {
-      const tRes = await listTerminals();
-      const out =
-        tRes.sessions.length === 0
-          ? "No active shared terminals."
-          : tRes.sessions.map((s) => `- ${s.name} [${s.ownerAgent}] cwd=${s.cwd} cmd=${s.currentCommand}`).join("\n");
-      await params.replyFn(`Active Pandawa Terminals:\n${out}`).catch(() => {});
-      return;
-    }
-
-    if (cmd === "/status") {
-      const pending = listPendingApprovals();
-      const tRes = await listTerminals();
-      await params
-        .replyFn(
-          `Pandawa OS v${PANDAWA_VERSION} Status\n` +
-            `- Route: ${ch.target_type} -> ${ch.target_id}\n` +
-            `- Approval Mode: ${getApprovalMode()}\n` +
-            `- Pending Approvals: ${pending.length}\n` +
-            `- Active Terminals: ${tRes.sessions.length}\n` +
-            `Commands: /approve [id], /auto [id], /reject [id], /term, /new, /status`
-        )
-        .catch(() => {});
-      return;
-    }
-  }
-
-  const sessionId = getOrCreateThreadSession(
-    params.channelId,
-    params.senderKey,
-    `[${params.platformLabel}:${params.senderDisplay}] ${trimmed.slice(0, 42)}`,
-    ch
-  );
-  const history = loadSessionHistory(sessionId);
-
-  db.prepare("INSERT INTO messages (id, session_id, role, agent_name, content) VALUES (?, ?, 'user', ?, ?)").run(
-    generateId("msg"),
-    sessionId,
-    `${params.platformLabel} (${params.senderDisplay})`,
-    trimmed
-  );
-  db.prepare("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?").run(sessionId);
-
+function cleanupSocketListeners(sock: WASocket | null): void {
+  if (!sock) return;
   try {
-    let reply = "";
-    if (ch.target_type === "agent") {
-      const res = await runAgentTurn({
-        agentId: ch.target_id,
-        sessionId,
-        prompt: trimmed,
-        history,
-        onEvent: _broadcast,
-      });
-      reply = res.content;
-      db.prepare(
-        "INSERT INTO messages (id, session_id, role, agent_id, agent_name, model_used, content, tool_calls_json, meta_json) VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?)"
-      ).run(
-        generateId("msg"),
-        sessionId,
-        res.agentId,
-        res.agentName,
-        res.model,
-        reply,
-        JSON.stringify(res.toolTrace),
-        JSON.stringify({ channelId: params.channelId, platform: params.platformLabel })
-      );
-    } else {
-      const res = await runTeamMission({
-        teamId: ch.target_id || "team_pandawa",
-        sessionId,
-        userPrompt: trimmed,
-        history,
-        onEvent: _broadcast,
-      });
-      reply = res.synthesis.content;
-    }
-    await params.replyFn(reply || "(Empty response)");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await params.replyFn(`Pandawa error: ${msg}`).catch(() => {});
+    const ev = sock.ev as unknown as { removeAllListeners?: (event?: string) => void };
+    ev.removeAllListeners?.("creds.update");
+    ev.removeAllListeners?.("connection.update");
+    ev.removeAllListeners?.("messages.upsert");
+  } catch {
+    // ignore listener cleanup errors
   }
+  try {
+    sock.end(undefined);
+  } catch {
+    // ignore socket end errors
+  }
+}
+
+function resolveBaileysJids(key: {
+  remoteJid?: string | null;
+  remoteJidAlt?: string | null;
+  participant?: string | null;
+  participantAlt?: string | null;
+}): { replyJid: string; senderJid: string; replyDigits: string; senderDigits: string } {
+  const rawRemote = key.remoteJid || "";
+  const altRemote = key.remoteJidAlt || "";
+  const replyJid = rawRemote.endsWith("@lid") && altRemote ? altRemote : rawRemote || altRemote;
+  const senderJid =
+    (key.participant?.endsWith("@lid") && key.participantAlt ? key.participantAlt : key.participant || key.participantAlt) ||
+    replyJid;
+
+  return {
+    replyJid,
+    senderJid,
+    replyDigits: normalizePhoneDigits(replyJid),
+    senderDigits: normalizePhoneDigits(senderJid),
+  };
 }
 
 function extractBaileysText(message: Record<string, unknown> | null | undefined): string {
@@ -288,26 +160,75 @@ async function sendChunkedBaileysText(sock: WASocket, jid: string, text: string)
   }
 }
 
+function dispatchWhatsAppInbound(params: {
+  channelId: string;
+  platformKey: string;
+  platformLabel: string;
+  chatKey: string;
+  senderDisplay: string;
+  text: string;
+  replyFn: (out: string) => Promise<void>;
+}): void {
+  const db = getDb();
+  const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND enabled = 1").get(params.channelId) as
+    | ChannelRow
+    | undefined;
+  if (!ch) return;
+
+  const trimmed = params.text.trim();
+  if (!trimmed) return;
+
+  const runDispatch = async () => {
+    if (trimmed.startsWith("/")) {
+      const handled = await handleChannelControlCommand({
+        platformKey: params.platformKey,
+        platformLabel: params.platformLabel,
+        threadCache: threadSessions,
+        activeSessions: activeChatSessions,
+        ch,
+        chatKey: params.chatKey,
+        text: trimmed,
+        replyFn: params.replyFn,
+        broadcast: _broadcast,
+      });
+      if (handled) return;
+    }
+
+    enqueueChannelWork(waChatQueues, `${params.channelId}:${params.chatKey}`, async () => {
+      await executeChannelMission({
+        platformKey: params.platformKey,
+        platformLabel: params.platformLabel,
+        threadCache: threadSessions,
+        activeSessions: activeChatSessions,
+        channelId: params.channelId,
+        chatKey: params.chatKey,
+        senderDisplay: params.senderDisplay,
+        text: trimmed,
+        replyFn: params.replyFn,
+        broadcast: _broadcast,
+      });
+    });
+  };
+
+  runDispatch().catch(() => {});
+}
+
 export async function startWhatsAppQrChannel(
   channelId: string,
   broadcast?: (ev: Record<string, unknown>) => void
 ): Promise<WhatsAppStateSnapshot> {
   if (broadcast) _broadcast = broadcast;
+  ensureApprovalChannelNotificationHook();
 
   const existing = handles.get(channelId);
   if (existing && !existing.disposed && (existing.status === "connected" || existing.status === "qr" || existing.status === "connecting")) {
     return getWhatsAppStatus(channelId)!;
   }
 
-  // Tear down stale handle if present
   if (existing) {
     existing.disposed = true;
     if (existing.reconnectTimer) clearTimeout(existing.reconnectTimer);
-    try {
-      existing.sock?.end(undefined);
-    } catch {
-      // ignore
-    }
+    cleanupSocketListeners(existing.sock);
     handles.delete(channelId);
   }
 
@@ -328,6 +249,9 @@ export async function startWhatsAppQrChannel(
 
   const connect = async () => {
     if (handle.disposed) return;
+    cleanupSocketListeners(handle.sock);
+    handle.sock = null;
+
     try {
       const authDir = sessionAuthDir(channelId);
       const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -356,7 +280,7 @@ export async function startWhatsAppQrChannel(
       });
 
       sock.ev.on("connection.update", async (update) => {
-        if (handle.disposed) return;
+        if (handle.disposed || handle.sock !== sock) return;
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -384,6 +308,7 @@ export async function startWhatsAppQrChannel(
           const code = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
           const loggedOut = code === DisconnectReason.loggedOut;
           handle.qrDataUrl = "";
+          cleanupSocketListeners(sock);
 
           if (loggedOut) {
             handle.status = "logged_out";
@@ -396,9 +321,10 @@ export async function startWhatsAppQrChannel(
           handle.lastError = code ? `Connection closed (code ${code}), reconnecting...` : "Reconnecting...";
           emitWaState(handle);
 
-          if (!handle.disposed && handle.reconnectAttempts < 8) {
+          if (!handle.disposed) {
             handle.reconnectAttempts += 1;
-            const delay = Math.min(30_000, 2000 * handle.reconnectAttempts);
+            const delay = Math.min(60_000, 3000 * Math.pow(2, Math.min(handle.reconnectAttempts - 1, 5)));
+            if (handle.reconnectTimer) clearTimeout(handle.reconnectTimer);
             handle.reconnectTimer = setTimeout(() => {
               connect().catch(() => {});
             }, delay);
@@ -406,8 +332,8 @@ export async function startWhatsAppQrChannel(
         }
       });
 
-      sock.ev.on("messages.upsert", async ({ messages, type }) => {
-        if (handle.disposed || type !== "notify") return;
+      sock.ev.on("messages.upsert", ({ messages, type }) => {
+        if (handle.disposed || handle.sock !== sock || type !== "notify") return;
         const db = getDb();
         const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND enabled = 1").get(channelId) as
           | ChannelRow
@@ -419,24 +345,30 @@ export async function startWhatsAppQrChannel(
         const ownDigits = normalizePhoneDigits(sock.user?.id || "");
 
         for (const msg of messages) {
-          const remoteJid = msg.key.remoteJid || "";
-          if (!remoteJid || remoteJid === "status@broadcast") continue;
+          const resolved = resolveBaileysJids(
+            msg.key as {
+              remoteJid?: string | null;
+              remoteJidAlt?: string | null;
+              participant?: string | null;
+              participantAlt?: string | null;
+            }
+          );
+          if (!resolved.replyJid || resolved.replyJid === "status@broadcast") continue;
 
           const text = extractBaileysText(msg.message as Record<string, unknown> | undefined).trim();
           if (!text) continue;
 
-          const senderJid = msg.key.participant || remoteJid;
-          const senderDigits = normalizePhoneDigits(senderJid);
-          const isSelfNote = Boolean(msg.key.fromMe) && ownDigits && senderDigits === ownDigits;
+          const isSelfNote =
+            Boolean(msg.key.fromMe) &&
+            Boolean(ownDigits) &&
+            (resolved.senderDigits === ownDigits || resolved.replyDigits === ownDigits);
 
-          // Ignore our own outbound messages to other chats; allow self-chat ("Message Yourself") only with ! or / prefix
           if (msg.key.fromMe) {
             if (!isSelfNote) continue;
             if (!text.startsWith("!") && !text.startsWith("/")) continue;
           }
 
-          // Enforce sender whitelist if configured
-          if (allowed.size > 0 && !allowed.has(senderDigits) && !allowed.has(normalizePhoneDigits(remoteJid))) {
+          if (allowed.size > 0 && !allowed.has(resolved.senderDigits) && !allowed.has(resolved.replyDigits)) {
             continue;
           }
 
@@ -446,15 +378,19 @@ export async function startWhatsAppQrChannel(
           handle.lastMessageAt = new Date().toISOString();
           emitWaState(handle);
 
-          const senderDisplay = msg.pushName || senderDigits || "WhatsApp";
-          await handleInboundChatCommandOrMission({
+          const senderDisplay = msg.pushName || resolved.senderDigits || "WhatsApp";
+          const targetJid = resolved.replyJid;
+
+          dispatchWhatsAppInbound({
             channelId,
+            platformKey: "wa_qr",
             platformLabel: "WhatsApp",
-            senderKey: remoteJid,
+            chatKey: resolved.replyDigits || targetJid,
             senderDisplay,
             text: cleanPrompt,
             replyFn: async (out) => {
-              await sendChunkedBaileysText(sock, remoteJid, out);
+              const activeSock = handle.sock || sock;
+              await sendChunkedBaileysText(activeSock, targetJid, out);
             },
           });
         }
@@ -478,12 +414,9 @@ export async function logoutWhatsAppQrChannel(channelId: string): Promise<void> 
     try {
       await h.sock?.logout();
     } catch {
-      try {
-        h.sock?.end(undefined);
-      } catch {
-        // ignore
-      }
+      // ignore logout error
     }
+    cleanupSocketListeners(h.sock);
     handles.delete(channelId);
   }
   const safe = channelId.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -546,6 +479,7 @@ export function getAllWhatsAppStatuses(): WhatsAppStateSnapshot[] {
 
 export function syncWhatsAppSockets(broadcast?: (ev: Record<string, unknown>) => void): void {
   if (broadcast) _broadcast = broadcast;
+  ensureApprovalChannelNotificationHook();
   const db = getDb();
   const rows = db
     .prepare("SELECT * FROM channels WHERE type = 'whatsapp_qr' AND enabled = 1")
@@ -553,21 +487,15 @@ export function syncWhatsAppSockets(broadcast?: (ev: Record<string, unknown>) =>
 
   const activeIds = new Set(rows.map((r) => r.id));
 
-  // Stop deleted/disabled channels
   for (const [id, h] of handles.entries()) {
     if (!activeIds.has(id)) {
       h.disposed = true;
       if (h.reconnectTimer) clearTimeout(h.reconnectTimer);
-      try {
-        h.sock?.end(undefined);
-      } catch {
-        // ignore
-      }
+      cleanupSocketListeners(h.sock);
       handles.delete(id);
     }
   }
 
-  // Auto-reconnect channels that already have persisted Baileys credentials on disk
   for (const ch of rows) {
     if (handles.has(ch.id)) continue;
     const safe = ch.id.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -582,11 +510,7 @@ export function stopAllWhatsAppSockets(): void {
   for (const h of handles.values()) {
     h.disposed = true;
     if (h.reconnectTimer) clearTimeout(h.reconnectTimer);
-    try {
-      h.sock?.end(undefined);
-    } catch {
-      // ignore
-    }
+    cleanupSocketListeners(h.sock);
   }
   handles.clear();
 }
@@ -610,6 +534,7 @@ export async function sendWhatsAppCloudMessage(
     return { ok: false, detail: "WhatsApp Cloud API missing recipient phone number" };
   }
 
+  const base = getWhatsAppGraphApiBase();
   const chunks: string[] = [];
   for (let i = 0; i < text.length; i += 3800) {
     chunks.push(text.slice(i, i + 3800));
@@ -617,7 +542,7 @@ export async function sendWhatsAppCloudMessage(
 
   let lastStatus = 200;
   for (const chunk of chunks) {
-    const resp = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`, {
+    const resp = await fetch(`${base}/v21.0/${encodeURIComponent(phoneNumberId)}/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -642,7 +567,7 @@ export async function sendWhatsAppCloudMessage(
 }
 
 export function verifyWhatsAppCloudSignature(rawBody: Buffer | undefined, signatureHeader: string, appSecret: string): boolean {
-  if (!appSecret.trim()) return true; // Optional if user did not configure App Secret
+  if (!appSecret.trim()) return true;
   if (!rawBody || !signatureHeader.startsWith("sha256=")) return false;
   const expected = "sha256=" + crypto.createHmac("sha256", appSecret.trim()).update(rawBody).digest("hex");
   const a = Buffer.from(signatureHeader, "utf8");
@@ -657,6 +582,7 @@ export async function handleWhatsAppCloudInbound(
   broadcast?: (ev: Record<string, unknown>) => void
 ): Promise<{ processed: number }> {
   if (broadcast) _broadcast = broadcast;
+  ensureApprovalChannelNotificationHook();
   const db = getDb();
   const ch = db.prepare("SELECT * FROM channels WHERE id = ? AND type = 'whatsapp_cloud' AND enabled = 1").get(channelId) as
     | ChannelRow
@@ -688,17 +614,17 @@ export async function handleWhatsAppCloudInbound(
         );
 
         processed += 1;
-        // Run async so Meta webhook gets immediate 200 OK within its 5s timeout!
-        handleInboundChatCommandOrMission({
+        dispatchWhatsAppInbound({
           channelId,
+          platformKey: "wa_cloud",
           platformLabel: "WA Cloud",
-          senderKey: from,
+          chatKey: from,
           senderDisplay: contactName,
           text,
           replyFn: async (out) => {
             await sendWhatsAppCloudMessage(cfg, from, out);
           },
-        }).catch(() => {});
+        });
       }
     }
   }

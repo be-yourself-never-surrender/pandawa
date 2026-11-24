@@ -23,15 +23,17 @@ function resolveOptionalEmbedConfig(): Record<string, string> | null {
       .prepare("SELECT * FROM providers WHERE enabled = 1 ORDER BY updated_at DESC")
       .all() as unknown as ProviderRecord[];
 
-    // Prefer OpenAI or Gemini if API key is configured for dense neural embeddings
     for (const p of providers) {
       const key = decryptSecret(p.api_key || "").trim();
-      if (!key || key === "ollama") continue;
-      if (p.kind === "openai" && (p.base_url.includes("openai.com") || p.base_url.includes("openrouter.ai"))) {
-        return { kind: "openai", baseUrl: p.base_url, apiKey: key, model: "text-embedding-3-small" };
+      const isLocal = p.base_url.includes("127.0.0.1") || p.base_url.includes("localhost") || p.base_url.includes(":11434");
+      if ((!key && !isLocal) || key.toLowerCase() === "ollama") continue;
+      if (p.kind === "openai") {
+        const model = p.default_model?.includes("embed") ? p.default_model : "text-embedding-3-small";
+        return { kind: "openai", baseUrl: p.base_url, apiKey: key, model };
       }
       if (p.kind === "gemini") {
-        return { kind: "gemini", baseUrl: p.base_url, apiKey: key, model: "text-embedding-004" };
+        const model = p.default_model?.includes("embed") ? p.default_model : "text-embedding-004";
+        return { kind: "gemini", baseUrl: p.base_url, apiKey: key, model };
       }
     }
   } catch {
@@ -102,12 +104,13 @@ export async function reindexSemanticBrain(): Promise<Record<string, unknown>> {
 
 export async function semanticBrainSearch(
   query: string,
-  options?: { scope?: "all" | "brain_file" | "memory" | "session"; limit?: number }
+  options?: { scope?: "all" | "brain_file" | "memory" | "session"; limit?: number; pathPrefixes?: string[] }
 ): Promise<Record<string, unknown>> {
   return runSemanticWorker("search", {
     query,
     scope: options?.scope || "all",
     limit: options?.limit || 10,
+    ...(options?.pathPrefixes && options.pathPrefixes.length > 0 ? { pathPrefixes: options.pathPrefixes } : {}),
     brainsDir: BRAINS_DIR,
     pandawaDb: DB_PATH,
     indexDb: SEMANTIC_DB_PATH,

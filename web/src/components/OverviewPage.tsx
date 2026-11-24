@@ -15,6 +15,7 @@ import {
 import { apiFetch } from "../api/client";
 import type { NavTab, ProviderItem, TeamItem } from "../types";
 import type { ChannelRecord } from "./ops/ChannelsPage";
+import { formatTeamPipelineSummary } from "../utils/routingHelpers";
 
 interface OverviewPageProps {
   approvalMode: string;
@@ -341,6 +342,9 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                           </span>
                         </div>
                         <p className="text-xs text-zinc-500 mt-0.5 line-clamp-1">{t.description}</p>
+                        <p className="text-[11px] font-mono text-violet-300/90 mt-1 truncate">
+                          {formatTeamPipelineSummary(t)}
+                        </p>
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -350,15 +354,13 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                         >
                           <Network className="w-3 h-3" /> Align on Canvas
                         </button>
-                        {t.id !== "team_pandawa" && (
-                          <button
-                            aria-label={`Delete team ${t.name}`}
-                            onClick={() => deleteTeam(t)}
-                            className="h-7 w-7 rounded-md text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 inline-flex items-center justify-center transition cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button
+                          aria-label={`Delete team ${t.name}`}
+                          onClick={() => deleteTeam(t)}
+                          className="h-7 w-7 rounded-md text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 inline-flex items-center justify-center transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
 

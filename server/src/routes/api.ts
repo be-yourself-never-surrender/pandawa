@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Router, type Request, type Response } from "express";
-import { PANDAWA_VERSION, generateId } from "../config.js";
+import { PANDAWA_VERSION, generateId, resolveTeamWorkspaceDir } from "../config.js";
 import { getDb, getSetting, setSetting, logAudit } from "../db/database.js";
 import {
   verifyPassword,
@@ -43,7 +43,7 @@ import {
 } from "../providers/llmClient.js";
 import { compileAgentRuntime, getTeamMembers } from "../engine/contextCompiler.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
-import { runTeamMission } from "../engine/teamEngine.js";
+import { runTeamMission, resolveTeamRoles } from "../engine/teamEngine.js";
 import { listAllToolPacks } from "../tools/toolRegistry.js";
 import { executeCronJob } from "../scheduler/cronEngine.js";
 import {
@@ -69,7 +69,7 @@ import {
   resolveApproval,
   type ApprovalMode,
 } from "../engine/approvalManager.js";
-import { discoverMcpTools, type McpServerRow } from "../mcp/mcpClient.js";
+import { discoverMcpTools, invalidateMcpServer, type McpServerRow } from "../mcp/mcpClient.js";
 import { exportTeamBundle, importTeamBundle, type PandawaBundle } from "../bundles/bundleService.js";
 import {
   registerMissionController,
@@ -127,12 +127,17 @@ function maskProvider(p: ProviderRecord) {
   } catch {
     headers = {};
   }
+  const isLocal =
+    p.base_url.includes("127.0.0.1") ||
+    p.base_url.includes("localhost") ||
+    p.base_url.includes(":11434");
+  const usableKey = key.trim().length > 0 && key.trim().toLowerCase() !== "ollama";
   return {
     id: p.id,
     name: p.name,
     kind: p.kind,
     baseUrl: p.base_url,
-    hasApiKey: key.trim().length > 0,
+    hasApiKey: isLocal || usableKey,
     apiKeyMasked: masked,
     encryptedAtRest: (p.api_key || "").startsWith("enc:v1:"),
     defaultModel: p.default_model,
@@ -156,6 +161,44 @@ function safeEqualStrings(a: string, b: string): boolean {
   const bb = Buffer.from(b, "utf8");
   if (ba.length !== bb.length) return false;
   return crypto.timingSafeEqual(ba, bb);
+}
+
+function safeParseJson<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== "string" || !raw.trim()) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function resolveDefaultTeamId(db: ReturnType<typeof getDb>): string {
+  const enabled = db
+    .prepare("SELECT id FROM teams WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  if (enabled?.id) return enabled.id;
+  const anyRow = db.prepare("SELECT id FROM teams ORDER BY created_at ASC LIMIT 1").get() as { id?: string } | undefined;
+  return anyRow?.id || "";
+}
+
+function resolveDefaultAgentId(db: ReturnType<typeof getDb>): string {
+  const enabled = db
+    .prepare("SELECT id FROM agents WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  if (enabled?.id) return enabled.id;
+  const anyRow = db.prepare("SELECT id FROM agents ORDER BY created_at ASC LIMIT 1").get() as { id?: string } | undefined;
+  return anyRow?.id || "";
+}
+
+function resolveDefaultBrain(db: ReturnType<typeof getDb>): { id: string; folder_path: string } {
+  const row = db
+    .prepare(
+      `SELECT id, folder_path FROM brains
+       ORDER BY CASE layer WHEN 'main' THEN 0 WHEN 'team' THEN 1 ELSE 2 END, created_at ASC
+       LIMIT 1`
+    )
+    .get() as { id?: string; folder_path?: string } | undefined;
+  return { id: row?.id || "", folder_path: row?.folder_path || "" };
 }
 
 export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void): Router {
@@ -232,19 +275,25 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         return;
       }
       const prompt = String(req.body?.prompt || req.body?.message || JSON.stringify(req.body || {}));
+      const targetType = ch.target_type === "agent" ? "agent" : "team";
+      const targetId = String(ch.target_id || "").trim();
+      if (!targetId) {
+        res.status(422).json({ error: "Webhook channel has no target team or agent configured." });
+        return;
+      }
       const sessionId = generateId("ses");
       db.prepare("INSERT INTO sessions (id, title, target_type, target_id) VALUES (?, ?, ?, ?)").run(
         sessionId,
         `[Webhook] ${ch.name}`,
-        ch.target_type === "agent" ? "agent" : "team",
-        ch.target_id || "team_pandawa"
+        targetType,
+        targetId
       );
-      if (ch.target_type === "agent") {
-        const result = await runAgentTurn({ agentId: ch.target_id, sessionId, prompt, onEvent: broadcast });
+      if (targetType === "agent") {
+        const result = await runAgentTurn({ agentId: targetId, sessionId, prompt, onEvent: broadcast });
         res.json({ ok: true, sessionId, reply: result.content });
       } else {
         const result = await runTeamMission({
-          teamId: ch.target_id || "team_pandawa",
+          teamId: targetId,
           sessionId,
           userPrompt: prompt,
           onEvent: broadcast,
@@ -378,7 +427,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         refId: n.ref_id,
         label: n.label,
         position: { x: n.position_x, y: n.position_y },
-        data: JSON.parse(n.data_json || "{}"),
+        data: safeParseJson<Record<string, unknown>>(n.data_json, {}),
       })),
       edges: edges.map((e) => ({
         id: e.id,
@@ -390,7 +439,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         permission: e.permission,
         label: e.label,
         animated: Boolean(e.animated),
-        data: JSON.parse(e.data_json || "{}"),
+        data: safeParseJson<Record<string, unknown>>(e.data_json, {}),
       })),
     });
   });
@@ -439,18 +488,33 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       }
 
       // Auto-sync Channel -> Team / Agent visual wires straight into live channels routing!
-      const nodeById = new Map<string, { type: string; refId: string; data?: Record<string, unknown> }>();
+      const nodeById = new Map<string, { type: string; refId: string; label: string; data?: Record<string, unknown> }>();
       for (const n of nodes) {
         nodeById.set(String(n.id), {
           type: String(n.type || ""),
           refId: String(n.refId || n.ref_id || ""),
+          label: String(n.label || n.refId || n.ref_id || ""),
           data: (n.data && typeof n.data === "object" ? n.data : {}) as Record<string, unknown>,
         });
       }
-      const allTeams = db.prepare("SELECT id, team_brain_id FROM teams").all() as Array<{
+      const allTeams = db.prepare("SELECT id, name, team_brain_id FROM teams").all() as Array<{
         id: string;
+        name: string;
         team_brain_id: string | null;
       }>;
+      const channelTargets = new Map<string, Set<string>>();
+      const channelLabels = new Map<string, string>();
+      const targetLabels = new Map<string, string>();
+
+      for (const n of nodeById.values()) {
+        if (n.type === "channel" && n.refId) {
+          channelLabels.set(n.refId, n.label || n.refId);
+          if (!channelTargets.has(n.refId)) {
+            channelTargets.set(n.refId, new Set());
+          }
+        }
+      }
+
       for (const e of edges) {
         const src = nodeById.get(String(e.source));
         const dst = nodeById.get(String(e.target));
@@ -459,31 +523,59 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         const tgtNode = src.type === "channel" ? dst : dst.type === "channel" ? src : null;
         if (!chNode || !tgtNode || !chNode.refId) continue;
 
+        const targets = channelTargets.get(chNode.refId) || new Set<string>();
         if (tgtNode.type === "agent" && tgtNode.refId) {
-          db.prepare("UPDATE channels SET target_type = 'agent', target_id = ? WHERE id = ?").run(
-            tgtNode.refId,
-            chNode.refId
-          );
+          const key = `agent:${tgtNode.refId}`;
+          targets.add(key);
+          targetLabels.set(key, `Agent ${tgtNode.label || tgtNode.refId}`);
         } else if (tgtNode.type === "team_brain") {
-          const teamId =
-            String(tgtNode.data?.teamId || "") ||
-            allTeams.find((t) => t.team_brain_id === tgtNode.refId)?.id ||
-            "";
-          if (teamId) {
-            db.prepare("UPDATE channels SET target_type = 'team', target_id = ? WHERE id = ?").run(
-              teamId,
-              chNode.refId
-            );
+          const matchedTeam =
+            allTeams.find((t) => t.id === String(tgtNode.data?.teamId || "")) ||
+            allTeams.find((t) => t.team_brain_id === tgtNode.refId);
+          if (matchedTeam) {
+            const key = `team:${matchedTeam.id}`;
+            targets.add(key);
+            targetLabels.set(key, `Team ${matchedTeam.name || matchedTeam.id}`);
           }
+        }
+        channelTargets.set(chNode.refId, targets);
+      }
+
+      for (const [channelId, targets] of channelTargets.entries()) {
+        if (targets.size > 1) {
+          db.exec("ROLLBACK");
+          const chName = channelLabels.get(channelId) || channelId;
+          const desc = Array.from(targets)
+            .map((k) => targetLabels.get(k) || k)
+            .join(", ");
+          res.status(400).json({
+            error: `Channel routing conflict: channel "${chName}" is wired to multiple targets (${desc}). Connect each channel to only one Team or Agent.`,
+          });
+          return;
+        }
+        if (targets.size === 1) {
+          const [onlyTarget] = Array.from(targets);
+          const idx = onlyTarget.indexOf(":");
+          const tType = onlyTarget.slice(0, idx);
+          const tId = onlyTarget.slice(idx + 1);
+          db.prepare("UPDATE channels SET target_type = ?, target_id = ? WHERE id = ?").run(tType, tId, channelId);
+        } else {
+          db.prepare("UPDATE channels SET target_id = '' WHERE id = ?").run(channelId);
         }
       }
 
       db.exec("COMMIT");
+      syncTelegramPollers(broadcast);
+      syncWhatsAppSockets(broadcast);
       logAudit("admin", "topology.save", "canvas", `${nodes.length} nodes, ${edges.length} edges`);
       broadcast({ type: "topology_updated" });
       res.json({ ok: true, nodesCount: nodes.length, edgesCount: edges.length });
     } catch (err) {
-      db.exec("ROLLBACK");
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback if transaction not active
+      }
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
@@ -538,9 +630,15 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
   router.delete("/brains/:id", (req: Request, res: Response) => {
     const db = getDb();
-    db.prepare("DELETE FROM brains WHERE id = ?").run(String(req.params.id));
-    db.prepare("DELETE FROM canvas_nodes WHERE ref_id = ?").run(String(req.params.id));
-    logAudit("admin", "brain.delete", String(req.params.id));
+    const id = String(req.params.id);
+    const nodeRows = db.prepare("SELECT id FROM canvas_nodes WHERE ref_id = ?").all(id) as Array<{ id: string }>;
+    for (const nr of nodeRows) {
+      db.prepare("DELETE FROM canvas_edges WHERE source = ? OR target = ?").run(nr.id, nr.id);
+    }
+    db.prepare("DELETE FROM canvas_nodes WHERE ref_id = ?").run(id);
+    db.prepare("DELETE FROM brains WHERE id = ?").run(id);
+    logAudit("admin", "brain.delete", id);
+    broadcast({ type: "topology_updated" });
     res.json({ ok: true });
   });
 
@@ -636,12 +734,14 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       const saved: string[] = [];
       let convertedDocs = 0;
       let skipped = 0;
+      const skippedDetails: Array<{ path: string; reason: string }> = [];
       const richExts = new Set([".pdf", ".docx", ".xlsx", ".xlsm"]);
 
       for (const f of files) {
         const cleanName = String(f.name || "untitled.md").replace(/\\/g, "/").replace(/^\/+/, "");
         if (!cleanName || cleanName.includes("..")) {
           skipped++;
+          skippedDetails.push({ path: String(f.name || "untitled"), reason: "Invalid path" });
           continue;
         }
         const ext = path.extname(cleanName).toLowerCase();
@@ -658,11 +758,12 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
               count?: number;
               convertedDocs?: number;
               skipped?: number;
+              skippedDetails?: Array<{ path: string; reason: string }>;
               paths?: string[];
               error?: string;
             }>(
               "import_zip",
-              { zipPath: tmpZip, targetDir, relPrefix: folder },
+              { zipPath: tmpZip, targetDir, relPrefix: folder, maxFiles: 5000 },
               120_000
             );
             if (!zRes.ok) {
@@ -671,6 +772,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
             for (const p of zRes.paths || []) saved.push(p);
             convertedDocs += Number(zRes.convertedDocs || 0);
             skipped += Number(zRes.skipped || 0);
+            if (Array.isArray(zRes.skippedDetails)) {
+              for (const sd of zRes.skippedDetails) skippedDetails.push(sd);
+            }
           } finally {
             try {
               fs.unlinkSync(tmpZip);
@@ -694,6 +798,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
             );
             if (!parsed.ok) {
               skipped++;
+              skippedDetails.push({ path: cleanName, reason: parsed.error || "Rich document extraction failed" });
               continue;
             }
             const mdName = cleanName.slice(0, -ext.length) + ".md";
@@ -714,7 +819,17 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
         // 3. Regular Text / Markdown / Code File (supports full folder relative paths e.g. my-vault/sub/note.md)
         const relPath = folder ? `${folder}/${cleanName}` : cleanName;
-        writeBrainFile(relPath, String(f.content ?? ""));
+        let textContent = f.content !== undefined && f.content !== null ? String(f.content) : "";
+        if (f.content === undefined && f.base64) {
+          const buf = Buffer.from(String(f.base64).replace(/^data:[^;]+;base64,/, ""), "base64");
+          if (buf.includes(0)) {
+            skipped++;
+            skippedDetails.push({ path: cleanName, reason: "Unsupported binary file" });
+            continue;
+          }
+          textContent = buf.toString("utf8");
+        }
+        writeBrainFile(relPath, textContent);
         saved.push(relPath);
       }
 
@@ -726,7 +841,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         folder || "root",
         `${saved.length} file(s) imported (${convertedDocs} rich docs converted, ${skipped} skipped)`
       );
-      res.json({ ok: true, count: saved.length, convertedDocs, skipped, paths: saved.slice(0, 200) });
+      res.json({ ok: true, count: saved.length, convertedDocs, skipped, skippedDetails, paths: saved });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -745,7 +860,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const db = getDb();
     const id = generateId("prov");
     const name = String(req.body?.name || "Custom AI Provider").trim();
-    const kind = ["openai", "anthropic", "gemini"].includes(req.body?.kind) ? req.body.kind : "openai";
+    const kind = ["openai", "openai_responses", "anthropic", "gemini"].includes(req.body?.kind)
+      ? req.body.kind
+      : "openai";
     const baseUrl = String(req.body?.baseUrl || "https://api.openai.com/v1").trim();
     const apiKeyRaw = String(req.body?.apiKey || "").trim();
     const apiKey = apiKeyRaw ? encryptSecret(apiKeyRaw) : "";
@@ -776,7 +893,10 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       return;
     }
     const name = req.body?.name !== undefined ? String(req.body.name).trim() : existing.name;
-    const kind = req.body?.kind !== undefined ? String(req.body.kind) : existing.kind;
+    const kind =
+      req.body?.kind !== undefined && ["openai", "openai_responses", "anthropic", "gemini"].includes(String(req.body.kind))
+        ? String(req.body.kind)
+        : existing.kind;
     const baseUrl = req.body?.baseUrl !== undefined ? String(req.body.baseUrl).trim() : existing.base_url;
     // Only overwrite API key if explicitly provided and non-empty (or explicit clearApiKey=true)
     const apiKey =
@@ -832,7 +952,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({
       agents: rows.map((r) => ({
         ...r,
-        toolPacks: JSON.parse(String(r.tool_packs_json || "[]")),
+        toolPacks: safeParseJson<string[]>(r.tool_packs_json, []),
         enabled: Boolean(r.enabled),
       })),
     });
@@ -977,9 +1097,21 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
   router.delete("/agents/:id", (req: Request, res: Response) => {
     const db = getDb();
-    db.prepare("DELETE FROM agents WHERE id = ?").run(String(req.params.id));
-    db.prepare("DELETE FROM canvas_nodes WHERE ref_id = ?").run(String(req.params.id));
-    logAudit("admin", "agent.delete", String(req.params.id));
+    const id = String(req.params.id);
+    const nodeRows = db.prepare("SELECT id FROM canvas_nodes WHERE ref_id = ?").all(id) as Array<{ id: string }>;
+    for (const nr of nodeRows) {
+      db.prepare("DELETE FROM canvas_edges WHERE source = ? OR target = ?").run(nr.id, nr.id);
+    }
+    db.prepare("DELETE FROM canvas_nodes WHERE ref_id = ?").run(id);
+    db.prepare("UPDATE teams SET lead_agent_id = '' WHERE lead_agent_id = ?").run(id);
+    db.prepare("UPDATE teams SET reviewer_agent_id = '' WHERE reviewer_agent_id = ?").run(id);
+    db.prepare("UPDATE teams SET sender_agent_id = '' WHERE sender_agent_id = ?").run(id);
+    db.prepare("UPDATE channels SET target_id = '' WHERE target_type = 'agent' AND target_id = ?").run(id);
+    db.prepare("DELETE FROM agents WHERE id = ?").run(id);
+    syncTelegramPollers(broadcast);
+    syncWhatsAppSockets(broadcast);
+    logAudit("admin", "agent.delete", id);
+    broadcast({ type: "topology_updated" });
     res.json({ ok: true });
   });
 
@@ -1023,22 +1155,36 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       team_brain_id: string | null;
       collaboration_mode: string;
       max_rounds: number;
+      lead_agent_id?: string | null;
+      reviewer_agent_id?: string | null;
+      sender_agent_id?: string | null;
       enabled: number;
     }>;
     res.json({
-      teams: rows.map((t) => ({
-        ...t,
-        enabled: Boolean(t.enabled),
-        members: getTeamMembers(t.id).map((m) => ({
-          id: m.id,
-          name: m.name,
-          avatar: m.avatar,
-          title: m.title,
-          purpose: m.purpose,
-          model: m.model,
-          color: m.color,
-        })),
-      })),
+      teams: rows.map((t) => {
+        const members = getTeamMembers(t.id);
+        const roles = members.length > 0 ? resolveTeamRoles(t, members) : null;
+        return {
+          ...t,
+          lead_agent_id: roles?.lead.id || t.lead_agent_id || "",
+          reviewer_agent_id: roles?.reviewer.id || t.reviewer_agent_id || "",
+          sender_agent_id: roles?.sender.id || t.sender_agent_id || "",
+          lead_agent_name: roles?.lead.name || "",
+          reviewer_agent_name: roles?.reviewer.name || "",
+          sender_agent_name: roles?.sender.name || "",
+          workspaceDir: resolveTeamWorkspaceDir(t.id),
+          enabled: Boolean(t.enabled),
+          members: members.map((m) => ({
+            id: m.id,
+            name: m.name,
+            avatar: m.avatar,
+            title: m.title,
+            purpose: m.purpose,
+            model: m.model,
+            color: m.color,
+          })),
+        };
+      }),
     });
   });
 
@@ -1056,6 +1202,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const description = String(req.body?.description || "");
     const mode = String(req.body?.collaboration_mode || req.body?.collaborationMode || "deliberate");
     const maxRounds = Number(req.body?.max_rounds || req.body?.maxRounds || 2);
+    const leadAgentId = String(req.body?.lead_agent_id ?? req.body?.leadAgentId ?? "").trim();
+    const reviewerAgentId = String(req.body?.reviewer_agent_id ?? req.body?.reviewerAgentId ?? "").trim();
+    const senderAgentId = String(req.body?.sender_agent_id ?? req.body?.senderAgentId ?? "").trim();
 
     // Auto-create a dedicated Team Brain for this new team
     const brainId = generateId("brain");
@@ -1070,12 +1219,23 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     ).run(brainId, `${slug}-brain`, `Team Brain: ${name}`, description, folderPath);
 
     db.prepare(
-      `INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
-    ).run(id, slug, name, description, brainId, mode, maxRounds);
+      `INSERT INTO teams (id, slug, name, description, team_brain_id, collaboration_mode, max_rounds, lead_agent_id, reviewer_agent_id, sender_agent_id, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    ).run(id, slug, name, description, brainId, mode, maxRounds, leadAgentId, reviewerAgentId, senderAgentId);
 
     logAudit("admin", "team.create", id, name);
-    res.json({ id, slug, name, description, team_brain_id: brainId, collaboration_mode: mode, max_rounds: maxRounds });
+    res.json({
+      id,
+      slug,
+      name,
+      description,
+      team_brain_id: brainId,
+      collaboration_mode: mode,
+      max_rounds: maxRounds,
+      lead_agent_id: leadAgentId,
+      reviewer_agent_id: reviewerAgentId,
+      sender_agent_id: senderAgentId,
+    });
   });
 
   router.patch("/teams/:id", (req: Request, res: Response) => {
@@ -1100,9 +1260,26 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         ? Number(req.body.maxRounds)
         : Number(cur.max_rounds);
 
+    const hasLead = req.body?.lead_agent_id !== undefined || req.body?.leadAgentId !== undefined;
+    const rawLead = req.body?.lead_agent_id !== undefined ? req.body.lead_agent_id : req.body?.leadAgentId;
+    const leadAgentId = hasLead ? String(rawLead || "").trim() : String(cur.lead_agent_id || "");
+
+    const hasReviewer = req.body?.reviewer_agent_id !== undefined || req.body?.reviewerAgentId !== undefined;
+    const rawReviewer =
+      req.body?.reviewer_agent_id !== undefined ? req.body.reviewer_agent_id : req.body?.reviewerAgentId;
+    const reviewerAgentId = hasReviewer ? String(rawReviewer || "").trim() : String(cur.reviewer_agent_id || "");
+
+    const hasSender = req.body?.sender_agent_id !== undefined || req.body?.senderAgentId !== undefined;
+    const rawSender = req.body?.sender_agent_id !== undefined ? req.body.sender_agent_id : req.body?.senderAgentId;
+    const senderAgentId = hasSender ? String(rawSender || "").trim() : String(cur.sender_agent_id || "");
+
     db.prepare(
-      "UPDATE teams SET name=?, description=?, collaboration_mode=?, max_rounds=?, updated_at=datetime('now') WHERE id=?"
-    ).run(name, description, mode, maxRounds, String(req.params.id));
+      `UPDATE teams
+       SET name=?, description=?, collaboration_mode=?, max_rounds=?, lead_agent_id=?, reviewer_agent_id=?, sender_agent_id=?, updated_at=datetime('now')
+       WHERE id=?`
+    ).run(name, description, mode, maxRounds, leadAgentId, reviewerAgentId, senderAgentId, String(req.params.id));
+    logAudit("admin", "team.update", String(req.params.id), `${name} (${mode})`);
+    broadcast({ type: "topology_updated" });
     res.json({ ok: true });
   });
 
@@ -1164,13 +1341,20 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       db.prepare("DELETE FROM canvas_nodes WHERE id = ?").run(nid);
     }
     for (const aid of agentIdsToRemove) {
+      db.prepare("UPDATE teams SET lead_agent_id = '' WHERE lead_agent_id = ?").run(aid);
+      db.prepare("UPDATE teams SET reviewer_agent_id = '' WHERE reviewer_agent_id = ?").run(aid);
+      db.prepare("UPDATE teams SET sender_agent_id = '' WHERE sender_agent_id = ?").run(aid);
+      db.prepare("UPDATE channels SET target_id = '' WHERE target_type = 'agent' AND target_id = ?").run(aid);
       db.prepare("DELETE FROM agents WHERE id = ?").run(aid);
     }
     if (team.team_brain_id) {
       db.prepare("DELETE FROM brains WHERE id = ?").run(team.team_brain_id);
     }
+    db.prepare("UPDATE channels SET target_id = '' WHERE target_type = 'team' AND target_id = ?").run(teamId);
     db.prepare("DELETE FROM teams WHERE id = ?").run(teamId);
 
+    syncTelegramPollers(broadcast);
+    syncWhatsAppSockets(broadcast);
     logAudit("admin", "team.delete", teamId, `Removed team + ${nodeIdsToRemove.size} canvas nodes`);
     broadcast({ type: "topology_updated" });
     res.json({ ok: true, removedNodes: nodeIdsToRemove.size });
@@ -1300,7 +1484,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const db = getDb();
     const id = generateId("ses");
     const targetType = req.body?.targetType === "agent" ? "agent" : "team";
-    const targetId = String(req.body?.targetId || "team_pandawa");
+    const targetId = String(
+      req.body?.targetId || (targetType === "agent" ? resolveDefaultAgentId(db) : resolveDefaultTeamId(db))
+    ).trim();
     const title = String(req.body?.title || "New Mission").trim();
     db.prepare("INSERT INTO sessions (id, title, target_type, target_id) VALUES (?, ?, ?, ?)").run(
       id,
@@ -1319,8 +1505,8 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     res.json({
       messages: rows.map((r) => ({
         ...r,
-        toolCalls: JSON.parse(String(r.tool_calls_json || "[]")),
-        meta: JSON.parse(String(r.meta_json || "{}")),
+        toolCalls: safeParseJson<unknown[]>(r.tool_calls_json, []),
+        meta: safeParseJson<Record<string, unknown>>(r.meta_json, {}),
       })),
     });
   });
@@ -1349,7 +1535,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         return;
       }
       const targetType = req.body?.targetType === "agent" ? "agent" : "team";
-      const targetId = String(req.body?.targetId || (targetType === "team" ? "team_pandawa" : "agent_yudhistira"));
+      const targetId = String(
+        req.body?.targetId || (targetType === "team" ? resolveDefaultTeamId(db) : resolveDefaultAgentId(db))
+      ).trim();
+      if (!targetId) {
+        res.status(422).json({ error: `No target ${targetType} configured. Create or select a ${targetType} first.` });
+        return;
+      }
       let sessionId = String(req.body?.sessionId || "");
 
       if (!sessionId) {
@@ -1366,9 +1558,17 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       activeSessionId = sessionId;
       controller = registerMissionController(sessionId);
 
-      // Load prior history for session
+      // Load most recent history for session in chronological order
       const priorRows = db
-        .prepare("SELECT role, agent_name, content FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 24")
+        .prepare(
+          `SELECT role, agent_name, content FROM (
+             SELECT role, agent_name, content, created_at
+             FROM messages
+             WHERE session_id = ?
+             ORDER BY created_at DESC
+             LIMIT 24
+           ) ORDER BY created_at ASC`
+        )
         .all(sessionId) as Array<{ role: string; agent_name: string; content: string }>;
 
       const history: LLMMessage[] = priorRows
@@ -1535,11 +1735,16 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
   router.post("/skills", (req: Request, res: Response) => {
     try {
+      const db = getDb();
       const slug = String(req.body?.slug || "custom-skill").toLowerCase().replace(/[^a-z0-9-_]/g, "-");
       const title = String(req.body?.title || slug);
       const description = String(req.body?.description || "");
       const instructions = String(req.body?.instructions || "");
-      const brainFolder = String(req.body?.brainFolder || "main-brain");
+      const brainFolder = String(req.body?.brainFolder || resolveDefaultBrain(db).folder_path || "").trim();
+      if (!brainFolder) {
+        res.status(400).json({ error: "No target Brain folder found. Create a Brain first." });
+        return;
+      }
       const relPath = `${brainFolder}/skills/${slug}/SKILL.md`;
       const md = `---\nname: ${title}\ndescription: ${description}\n---\n\n# ${title}\n\n${instructions}\n`;
       writeBrainFile(relPath, md);
@@ -1553,9 +1758,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   // Skill Installer: Preview & Security Scan (GitHub repo/folder, raw SKILL.md URL, .zip URL, or uploaded files)
   router.post("/skills/preview", async (req: Request, res: Response) => {
     try {
+      const db = getDb();
       const source = typeof req.body?.source === "string" ? req.body.source.trim() : "";
       const files = Array.isArray(req.body?.files) ? (req.body.files as UploadedSkillFileInput[]) : undefined;
-      const brainFolder = typeof req.body?.brainFolder === "string" ? req.body.brainFolder.trim() : "main-brain";
+      const brainFolder =
+        typeof req.body?.brainFolder === "string" && req.body.brainFolder.trim()
+          ? req.body.brainFolder.trim()
+          : resolveDefaultBrain(db).folder_path;
       if (!source && (!files || files.length === 0)) {
         res.status(400).json({ error: "Provide a skill source (GitHub repo/URL) or upload skill files/.zip." });
         return;
@@ -1575,9 +1784,13 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   // Skill Installer: Commit selected skills into target Brain vault + provenance metadata + FTS5/semantic reindex
   router.post("/skills/install", async (req: Request, res: Response) => {
     try {
+      const db = getDb();
       const source = typeof req.body?.source === "string" ? req.body.source.trim() : "";
       const files = Array.isArray(req.body?.files) ? (req.body.files as UploadedSkillFileInput[]) : undefined;
-      const brainFolder = typeof req.body?.brainFolder === "string" ? req.body.brainFolder.trim() : "main-brain";
+      const brainFolder =
+        typeof req.body?.brainFolder === "string" && req.body.brainFolder.trim()
+          ? req.body.brainFolder.trim()
+          : resolveDefaultBrain(db).folder_path;
       const selectedSlugs = Array.isArray(req.body?.selectedSlugs)
         ? (req.body.selectedSlugs as unknown[]).map((s) => String(s))
         : undefined;
@@ -1660,10 +1873,14 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   router.post("/memories", (req: Request, res: Response) => {
     const db = getDb();
     const id = generateId("mem");
-    const brainId = String(req.body?.brainId || "brain_main");
+    const brainId = String(req.body?.brainId || resolveDefaultBrain(db).id || "").trim();
     const category = String(req.body?.category || "fact");
     const content = String(req.body?.content || "").trim();
     const importance = Math.min(10, Math.max(1, Number(req.body?.importance || 6)));
+    if (!brainId) {
+      res.status(400).json({ error: "No Brain found for memory storage." });
+      return;
+    }
     if (!content) {
       res.status(400).json({ error: "Content is required" });
       return;
@@ -1698,6 +1915,10 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   router.post("/cron", (req: Request, res: Response) => {
     const db = getDb();
     const id = generateId("cron");
+    const targetType = String(req.body?.targetType || "team");
+    const targetId = String(
+      req.body?.targetId || (targetType === "agent" ? resolveDefaultAgentId(db) : resolveDefaultTeamId(db))
+    ).trim();
     db.prepare(
       `INSERT INTO cron_jobs (id, name, schedule, target_type, target_id, prompt, enabled)
        VALUES (?, ?, ?, ?, ?, ?, 1)`
@@ -1705,8 +1926,8 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       id,
       String(req.body?.name || "Scheduled Mission"),
       String(req.body?.schedule || "0 9 * * *"),
-      String(req.body?.targetType || "team"),
-      String(req.body?.targetId || "team_pandawa"),
+      targetType,
+      targetId,
       String(req.body?.prompt || "")
     );
     res.json({ id });
@@ -1741,7 +1962,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const waStatuses = getAllWhatsAppStatuses();
     res.json({
       channels: rows.map((r) => {
-        const rawCfg = JSON.parse(String(r.config_json || "{}")) as Record<string, string>;
+        const rawCfg = safeParseJson<Record<string, string>>(r.config_json, {});
         const maskedCfg: Record<string, string> = {};
         for (const [k, v] of Object.entries(rawCfg)) {
           maskedCfg[k] = SECRET_CHANNEL_FIELDS.has(k) ? maskSecretValue(v) : v;
@@ -1769,12 +1990,45 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       .prepare(
         `SELECT s.id, s.title, s.target_type, s.target_id, s.created_at, s.updated_at,
                 (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as message_count,
-                (SELECT content FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as last_message
+                (SELECT content FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as last_message,
+                (SELECT agent_name FROM messages m WHERE m.session_id = s.id AND m.role = 'assistant' ORDER BY m.created_at DESC LIMIT 1) as responding_agent_name,
+                (SELECT meta_json FROM messages m WHERE m.session_id = s.id AND m.role = 'assistant' ORDER BY m.created_at DESC LIMIT 1) as last_meta_json
          FROM sessions s
          ORDER BY s.updated_at DESC LIMIT 25`
       )
-      .all();
-    res.json({ activity: sessions });
+      .all() as Array<Record<string, unknown>>;
+    const teamsMap = new Map(
+      (db.prepare("SELECT id, name FROM teams").all() as Array<{ id: string; name: string }>).map((t) => [t.id, t.name])
+    );
+    const agentsMap = new Map(
+      (db.prepare("SELECT id, name FROM agents").all() as Array<{ id: string; name: string }>).map((a) => [a.id, a.name])
+    );
+    res.json({
+      activity: sessions.map((s) => {
+        const meta = safeParseJson<Record<string, unknown>>(s.last_meta_json, {});
+        const targetId = String(s.target_id || "");
+        const targetType = String(s.target_type || "");
+        const targetName = targetType === "agent" ? agentsMap.get(targetId) || "" : teamsMap.get(targetId) || "";
+        const attribution =
+          meta.attribution && typeof meta.attribution === "object"
+            ? (meta.attribution as Record<string, unknown>)
+            : undefined;
+        return {
+          id: s.id,
+          title: s.title,
+          target_type: s.target_type,
+          target_id: s.target_id,
+          target_name: targetName,
+          team_name: targetType === "team" ? targetName : String(attribution?.teamName || ""),
+          responding_agent_name: String(s.responding_agent_name || attribution?.senderAgentName || ""),
+          attribution,
+          message_count: s.message_count,
+          last_message: s.last_message,
+          created_at: s.created_at,
+          updated_at: s.updated_at,
+        };
+      }),
+    });
   });
 
   router.post("/channels", (req: Request, res: Response) => {
@@ -1805,6 +2059,11 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       encryptedCfg.verifyToken = encryptSecret(generatedVerifyToken);
     }
 
+    const resolvedTargetType = String(req.body?.targetType === "agent" ? "agent" : "team");
+    const resolvedTargetId = String(
+      req.body?.targetId || (resolvedTargetType === "agent" ? resolveDefaultAgentId(db) : resolveDefaultTeamId(db))
+    ).trim();
+
     db.prepare(
       `INSERT INTO channels (id, name, type, config_json, target_type, target_id, enabled)
        VALUES (?, ?, ?, ?, ?, ?, 1)`
@@ -1813,14 +2072,14 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       String(req.body?.name || "New Channel"),
       type,
       JSON.stringify(encryptedCfg),
-      String(req.body?.targetType || "team"),
-      String(req.body?.targetId || "team_pandawa")
+      resolvedTargetType,
+      resolvedTargetId
     );
     syncTelegramPollers(broadcast);
     if (type === "whatsapp_qr") {
       startWhatsAppQrChannel(id, broadcast).catch(() => {});
     }
-    logAudit("admin", "channel.create", id, `${type} -> ${req.body?.targetType || "team"}:${req.body?.targetId || "team_pandawa"}`);
+    logAudit("admin", "channel.create", id, `${type} -> ${resolvedTargetType}:${resolvedTargetId}`);
     res.json({
       id,
       ...(generatedWebhookSecret ? { webhookSecret: generatedWebhookSecret } : {}),
@@ -1843,7 +2102,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const nextTargetType =
       req.body?.targetType === "agent" || req.body?.targetType === "team" ? req.body.targetType : existing.target_type;
     const nextTargetId =
-      typeof req.body?.targetId === "string" && req.body.targetId.trim() ? req.body.targetId.trim() : existing.target_id;
+      req.body?.targetId !== undefined ? String(req.body.targetId).trim() : existing.target_id;
     const nextEnabled = typeof req.body?.enabled === "boolean" ? (req.body.enabled ? 1 : 0) : existing.enabled;
 
     let mergedCfg: Record<string, string> = {};
@@ -1864,6 +2123,55 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     db.prepare(
       "UPDATE channels SET name = ?, config_json = ?, target_type = ?, target_id = ?, enabled = ? WHERE id = ?"
     ).run(nextName, JSON.stringify(mergedCfg), nextTargetType, nextTargetId, nextEnabled, id);
+
+    // Bidirectional sync: keep Canvas channel_route edges aligned with updated target
+    if (nextTargetType !== existing.target_type || nextTargetId !== existing.target_id) {
+      const chNodes = db
+        .prepare("SELECT id FROM canvas_nodes WHERE type = 'channel' AND ref_id = ?")
+        .all(id) as Array<{ id: string }>;
+      if (chNodes.length > 0) {
+        const allNodes = db
+          .prepare("SELECT id, type, ref_id, data_json FROM canvas_nodes")
+          .all() as Array<{ id: string; type: string; ref_id: string; data_json: string }>;
+        const nodeTypeById = new Map(allNodes.map((n) => [n.id, n.type]));
+
+        let targetNode: (typeof allNodes)[number] | undefined;
+        if (nextTargetId) {
+          if (nextTargetType === "agent") {
+            targetNode = allNodes.find((n) => n.type === "agent" && n.ref_id === nextTargetId);
+          } else {
+            const teamRow = db
+              .prepare("SELECT id, team_brain_id FROM teams WHERE id = ?")
+              .get(nextTargetId) as { id: string; team_brain_id: string | null } | undefined;
+            targetNode = allNodes.find((n) => {
+              if (n.type !== "team_brain") return false;
+              const d = safeParseJson<Record<string, unknown>>(n.data_json, {});
+              return d.teamId === nextTargetId || (teamRow?.team_brain_id && n.ref_id === teamRow.team_brain_id);
+            });
+          }
+        }
+
+        for (const chNode of chNodes) {
+          const curEdges = db
+            .prepare("SELECT id, source, target, relation FROM canvas_edges WHERE source = ? OR target = ?")
+            .all(chNode.id, chNode.id) as Array<{ id: string; source: string; target: string; relation: string }>;
+          for (const ce of curEdges) {
+            const otherId = ce.source === chNode.id ? ce.target : ce.source;
+            const otherType = nodeTypeById.get(otherId);
+            if (ce.relation === "channel_route" || otherType === "agent" || otherType === "team_brain") {
+              db.prepare("DELETE FROM canvas_edges WHERE id = ?").run(ce.id);
+            }
+          }
+          if (targetNode) {
+            db.prepare(
+              `INSERT INTO canvas_edges (id, source, target, source_handle, target_handle, relation, permission, label, animated, data_json)
+               VALUES (?, ?, ?, 'bottom', 'top', 'channel_route', 'read_write', 'routes to', 1, '{}')`
+            ).run(generateId("edge"), chNode.id, targetNode.id);
+          }
+        }
+        broadcast({ type: "topology_updated" });
+      }
+    }
 
     syncTelegramPollers(broadcast);
     syncWhatsAppSockets(broadcast);
@@ -1907,10 +2215,18 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const id = String(req.params.id);
     const db = getDb();
     await logoutWhatsAppQrChannel(id).catch(() => {});
+    const chNodes = db
+      .prepare("SELECT id FROM canvas_nodes WHERE type = 'channel' AND ref_id = ?")
+      .all(id) as Array<{ id: string }>;
+    for (const cn of chNodes) {
+      db.prepare("DELETE FROM canvas_edges WHERE source = ? OR target = ?").run(cn.id, cn.id);
+    }
+    db.prepare("DELETE FROM canvas_nodes WHERE type = 'channel' AND ref_id = ?").run(id);
     db.prepare("DELETE FROM channels WHERE id = ?").run(id);
     syncTelegramPollers(broadcast);
     syncWhatsAppSockets(broadcast);
     logAudit("admin", "channel.delete", id);
+    broadcast({ type: "topology_updated" });
     res.json({ ok: true });
   });
 
@@ -1919,7 +2235,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const rows = db.prepare("SELECT * FROM mcp_servers ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
     res.json({
       servers: rows.map((r) => {
-        const rawHdrs = JSON.parse(String(r.headers_json || "{}")) as Record<string, string>;
+        const rawHdrs = safeParseJson<Record<string, string>>(r.headers_json, {});
         const maskedHdrs: Record<string, string> = {};
         for (const [k, v] of Object.entries(rawHdrs)) {
           maskedHdrs[k] = maskSecretValue(v);
@@ -1980,7 +2296,9 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
   const handleDeleteMcp = (req: Request, res: Response) => {
     const db = getDb();
-    db.prepare("DELETE FROM mcp_servers WHERE id = ?").run(String(req.params.id));
+    const id = String(req.params.id);
+    invalidateMcpServer(id);
+    db.prepare("DELETE FROM mcp_servers WHERE id = ?").run(id);
     res.json({ ok: true });
   };
 
@@ -2322,7 +2640,22 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
     const mainBrains = nodes.filter((n) => n.type === "main_brain");
     const teamBrains = nodes.filter((n) => n.type === "team_brain");
-    const topKnowledge = nodes.filter((n) => n.type === "knowledge" && String(n.ref_id).startsWith("main-brain/"));
+    const mainBrainPrefixes = Array.from(
+      new Set([
+        ...mainBrains
+          .map((m) => {
+            const d = safeParseJson<Record<string, unknown>>(m.data_json, {});
+            const fp = String(d.folderPath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+            return fp ? `${fp}/` : "";
+          })
+          .filter(Boolean),
+        "main-brain/",
+        "main-brains/",
+      ])
+    );
+    const isTopKnowledge = (refId: string) =>
+      mainBrainPrefixes.some((pfx) => String(refId || "").startsWith(pfx));
+    const topKnowledge = nodes.filter((n) => n.type === "knowledge" && isTopKnowledge(String(n.ref_id)));
 
     const placed = new Set<string>();
     const AGENT_GAP = 280;
@@ -2372,7 +2705,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         const extras = [
           ...connectedOfType(ag.id, "knowledge"),
           ...connectedOfType(ag.id, "toolpack"),
-        ].filter((k) => !placed.has(k.id) && !String(k.ref_id).startsWith("main-brain/"));
+        ].filter((k) => !placed.has(k.id) && !isTopKnowledge(String(k.ref_id)));
         extras.forEach((k, kidx) => {
           upd.run(ax + kidx * 250, 870, k.id);
           placed.add(k.id);
@@ -2461,6 +2794,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         name: String(req.body?.name || "main"),
         cwd: req.body?.cwd ? String(req.body.cwd) : undefined,
         ownerAgent: String(req.body?.ownerAgent || "user"),
+        teamId: req.body?.teamId ? String(req.body.teamId) : undefined,
       });
       res.json(out);
     } catch (err) {
@@ -2484,6 +2818,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
         command: String(req.body?.command || ""),
         timeoutSec: req.body?.timeoutSec ? Number(req.body.timeoutSec) : 35,
         actor: "user",
+        teamId: req.body?.teamId ? String(req.body.teamId) : undefined,
       });
       res.json(out);
     } catch (err) {
@@ -2641,6 +2976,11 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     const allProvs = db.prepare("SELECT * FROM providers").all() as unknown as ProviderRecord[];
     const readyProviders = allProvs.filter((p) => {
       if (!p.enabled) return false;
+      const isLocal =
+        p.base_url.includes("127.0.0.1") ||
+        p.base_url.includes("localhost") ||
+        p.base_url.includes(":11434");
+      if (isLocal) return true;
       const k = decryptSecret(p.api_key || "").trim();
       return k.length > 0 && k.toLowerCase() !== "ollama";
     }).length;

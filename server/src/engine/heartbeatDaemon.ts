@@ -48,8 +48,54 @@ let timer: NodeJS.Timeout | null = null;
 let pulsing = false;
 let _broadcast: ((ev: Record<string, unknown>) => void) | undefined;
 
+function resolvePrimaryBrainFolder(): string {
+  const db = getDb();
+  const mainRow = db
+    .prepare("SELECT folder_path FROM brains WHERE layer = 'main' ORDER BY created_at ASC LIMIT 1")
+    .get() as { folder_path?: string } | undefined;
+  if (mainRow?.folder_path) return mainRow.folder_path;
+  const anyRow = db
+    .prepare("SELECT folder_path FROM brains ORDER BY created_at ASC LIMIT 1")
+    .get() as { folder_path?: string } | undefined;
+  return anyRow?.folder_path || "";
+}
+
+function resolveHeartbeatTeamId(): string {
+  const db = getDb();
+  const configured = (getSetting("heartbeat_team_id") || "").trim();
+  if (configured) {
+    const valid = db
+      .prepare("SELECT id FROM teams WHERE id = ? AND enabled = 1")
+      .get(configured) as { id?: string } | undefined;
+    if (valid?.id) return valid.id;
+  }
+  const firstEnabled = db
+    .prepare("SELECT id FROM teams WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  if (firstEnabled?.id) return firstEnabled.id;
+  const anyTeam = db
+    .prepare("SELECT id FROM teams ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  return anyTeam?.id || "";
+}
+
 export function ensureHeartbeatChecklist(): string {
-  const rel = getSetting("heartbeat_checklist_path") || "main-brain/HEARTBEAT.md";
+  const configured = (getSetting("heartbeat_checklist_path") || "").trim();
+  let rel = configured;
+  if (rel === "main-brain/HEARTBEAT.md") {
+    const db = getDb();
+    const hasStarterBrain = db
+      .prepare("SELECT 1 as ok FROM brains WHERE folder_path = 'main-brain' OR slug = 'main-brain' LIMIT 1")
+      .get() as { ok?: number } | undefined;
+    if (!hasStarterBrain && !fs.existsSync(resolveBrainPath(rel))) {
+      rel = "";
+    }
+  }
+  if (!rel) {
+    const primaryFolder = resolvePrimaryBrainFolder();
+    if (!primaryFolder) return "";
+    rel = `${primaryFolder}/HEARTBEAT.md`;
+  }
   const full = resolveBrainPath(rel);
   if (!fs.existsSync(full)) {
     writeBrainFile(rel, DEFAULT_HEARTBEAT_MD);
@@ -62,7 +108,7 @@ export function getHeartbeatConfig(): HeartbeatConfig {
   return {
     enabled: getSetting("heartbeat_enabled") === "1",
     intervalMinutes: Math.max(5, Math.min(1440, Number(getSetting("heartbeat_interval_min") || 30))),
-    teamId: getSetting("heartbeat_team_id") || "team_pandawa",
+    teamId: resolveHeartbeatTeamId(),
     notifyChannelId: getSetting("heartbeat_notify_channel_id") || "",
     checklistPath,
     lastPulseAt: getSetting("heartbeat_last_pulse_at") || "",
@@ -82,11 +128,16 @@ export function updateHeartbeatConfig(patch: Partial<{
     const clamped = Math.max(5, Math.min(1440, Math.round(Number(patch.intervalMinutes) || 30)));
     setSetting("heartbeat_interval_min", String(clamped));
   }
-  if (patch.teamId !== undefined) setSetting("heartbeat_team_id", String(patch.teamId || "team_pandawa"));
+  if (patch.teamId !== undefined) {
+    const tid = String(patch.teamId || "").trim() || resolveHeartbeatTeamId();
+    setSetting("heartbeat_team_id", tid);
+  }
   if (patch.notifyChannelId !== undefined) setSetting("heartbeat_notify_channel_id", String(patch.notifyChannelId || ""));
   if (typeof patch.checklistMarkdown === "string" && patch.checklistMarkdown.trim()) {
     const rel = ensureHeartbeatChecklist();
-    writeBrainFile(rel, patch.checklistMarkdown);
+    if (rel) {
+      writeBrainFile(rel, patch.checklistMarkdown);
+    }
   }
   const next = getHeartbeatConfig();
   logAudit("admin", "heartbeat.configure", "daemon", `enabled=${next.enabled}, every ${next.intervalMinutes}m`);
@@ -118,11 +169,17 @@ export async function runHeartbeatPulse(trigger: "daemon" | "manual" = "daemon")
   const db = getDb();
 
   try {
+    if (!cfg.teamId) {
+      throw new Error("No enabled team available for Heartbeat pulse.");
+    }
+
     let checklist = DEFAULT_HEARTBEAT_MD;
-    try {
-      checklist = readBrainFile(cfg.checklistPath).content;
-    } catch {
-      // use default
+    if (cfg.checklistPath) {
+      try {
+        checklist = readBrainFile(cfg.checklistPath).content;
+      } catch {
+        // use default
+      }
     }
 
     const [terms, jobs] = await Promise.all([listTerminals(), Promise.resolve(listBackgroundJobs(8))]);
@@ -130,10 +187,16 @@ export async function runHeartbeatPulse(trigger: "daemon" | "manual" = "daemon")
       .prepare("SELECT id, title, owner_agent, status FROM team_tasks WHERE team_id = ? AND status != 'done' LIMIT 15")
       .all(cfg.teamId) as Array<{ id: string; title: string; owner_agent: string; status: string }>;
 
+    const team = db
+      .prepare("SELECT id, name, lead_agent_id FROM teams WHERE id = ?")
+      .get(cfg.teamId) as { id: string; name: string; lead_agent_id?: string } | undefined;
     const members = getTeamMembers(cfg.teamId);
-    const lead = members.find((m) => m.purpose === "strategy" || m.slug === "yudhistira") || members[0];
+    const lead =
+      (team?.lead_agent_id ? members.find((m) => m.id === team.lead_agent_id) : undefined) ||
+      members.find((m) => m.purpose === "strategy") ||
+      members[0];
     if (!lead) {
-      throw new Error("No enabled agent available for Heartbeat pulse.");
+      throw new Error(`No enabled agent wired to team "${team?.name || cfg.teamId}" for Heartbeat pulse.`);
     }
 
     const systemSnapshot =

@@ -310,6 +310,24 @@ export async function invokeMcpTool(
   return JSON.stringify(res).slice(0, 16_000);
 }
 
+export function invalidateMcpServer(serverId: string): void {
+  toolCache.delete(serverId);
+  const session = stdioSessions.get(serverId);
+  if (session) {
+    for (const [, pending] of session.pending.entries()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("MCP server removed."));
+    }
+    session.pending.clear();
+    try {
+      session.proc.kill();
+    } catch {
+      // ignore
+    }
+    stdioSessions.delete(serverId);
+  }
+}
+
 export function shutdownAllStdioMcp(): void {
   for (const [, session] of stdioSessions.entries()) {
     try {

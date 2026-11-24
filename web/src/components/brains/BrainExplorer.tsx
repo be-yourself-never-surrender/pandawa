@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Folder,
   FolderOpen,
@@ -24,6 +24,7 @@ import {
 import { apiFetch } from "../../api/client";
 import type { BrainTreeNode, TopologyEdge, TopologyNode } from "../../types";
 import { MarkdownView } from "../MarkdownView";
+import { pickInitialBrainFile } from "../../utils/routingHelpers";
 
 interface BrainExplorerProps {
   initialFilePath?: string | null;
@@ -32,13 +33,13 @@ interface BrainExplorerProps {
 
 export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, onPinnedToCanvas }) => {
   const [tree, setTree] = useState<BrainTreeNode[]>([]);
-  const [expanded, setExpanded] = useState<Set<string>>(
-    new Set(["main-brain", "teams", "teams/pandawa-core", "agents"])
-  );
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showTree, setShowTree] = useState(true);
   const [viewMode, setViewMode] = useState<"edit" | "split" | "preview">("edit");
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadFolder, setUploadFolder] = useState("main-brain");
+  const dragDepthRef = useRef(0);
+  const didInitTreeRef = useRef(false);
+  const [uploadFolder, setUploadFolder] = useState("");
   const [activeFile, setActiveFile] = useState<string>("");
   const [content, setContent] = useState<string>("");
   const [dirty, setDirty] = useState(false);
@@ -66,6 +67,14 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
       apiFetch<{ totalChunks?: number; mode?: string }>("/api/brain/semantic/status").catch(() => null),
     ]);
     setTree(res.tree);
+    if (!didInitTreeRef.current && res.tree.length > 0) {
+      didInitTreeRef.current = true;
+      const topFolders = res.tree.filter((n) => n.type === "folder").map((n) => n.path);
+      if (topFolders.length > 0) {
+        setExpanded((prev) => new Set([...prev, ...topFolders]));
+        setUploadFolder((prev) => prev || topFolders[0]);
+      }
+    }
     const map: Record<string, { outgoing: string[]; backlinks: string[] }> = {};
     for (const f of gRes.files || []) {
       map[f.path] = { outgoing: f.outgoing || [], backlinks: f.backlinks || [] };
@@ -86,17 +95,8 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
       setDirty(false);
       const dir = res.path.includes("/") ? res.path.split("/").slice(0, -1).join("/") : "";
       if (dir) setUploadFolder(dir);
-    } catch {
-      try {
-        const fb = await apiFetch<{ path: string; content: string }>(
-          `/api/files/read?path=${encodeURIComponent("main-brain/soul.md")}`
-        );
-        setActiveFile(fb.path);
-        setContent(fb.content);
-        setDirty(false);
-      } catch {
-        // ignore
-      }
+    } catch (err) {
+      setNotice(`Could not open ${relPath}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, []);
 
@@ -107,10 +107,11 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   useEffect(() => {
     if (initialFilePath) {
       openFile(initialFilePath);
-    } else if (!activeFile) {
-      openFile("main-brain/soul.md");
+    } else if (!activeFile && tree.length > 0) {
+      const first = pickInitialBrainFile(tree);
+      if (first) openFile(first);
     }
-  }, [initialFilePath, activeFile, openFile]);
+  }, [initialFilePath, activeFile, tree, openFile]);
 
   async function saveCurrentFile() {
     if (!activeFile) return;
@@ -152,11 +153,13 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
       const binaryExts = [".zip", ".pdf", ".docx", ".xlsx", ".xlsm"];
       const skipSegs = new Set([".git", "node_modules", "__macosx", ".obsidian", ".ds_store"]);
       const payload: Array<{ name: string; content?: string; base64?: string }> = [];
+      const clientSkipped: Array<{ path: string; reason: string }> = [];
 
       for (const { file, relPath } of entries) {
         const norm = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
         const parts = norm.split("/").filter(Boolean);
         if (parts.length === 0 || parts.some((p) => skipSegs.has(p.toLowerCase()) || p.startsWith("._"))) {
+          clientSkipped.push({ path: norm || file.name, reason: "Ignored system/cache path" });
           continue;
         }
         const low = norm.toLowerCase();
@@ -164,17 +167,30 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
           const base64 = await fileToBase64(file);
           payload.push({ name: norm, base64 });
         } else {
-          // Skip giant binary blobs (> 3 MB non-text)
-          if (file.size > 3 * 1024 * 1024) continue;
+          if (file.size > 3 * 1024 * 1024) {
+            clientSkipped.push({ path: norm, reason: "Exceeds 3MB text limit" });
+            continue;
+          }
           const text = await file.text();
-          if (text.includes("\u0000")) continue;
+          if (text.includes("\u0000")) {
+            clientSkipped.push({ path: norm, reason: "Binary file (null bytes)" });
+            continue;
+          }
           payload.push({ name: norm, content: text });
         }
       }
 
       if (payload.length === 0) {
-        setNotice("No supported text, ZIP, PDF, DOCX, or XLSX files found.");
-        setTimeout(() => setNotice(""), 3000);
+        const reasonSample = clientSkipped
+          .slice(0, 3)
+          .map((s) => `${s.path} (${s.reason})`)
+          .join("; ");
+        setNotice(
+          clientSkipped.length > 0
+            ? `Skipped ${clientSkipped.length} item(s): ${reasonSample}`
+            : "No supported text, ZIP, PDF, DOCX, or XLSX files found."
+        );
+        setTimeout(() => setNotice(""), 4200);
         return;
       }
 
@@ -182,6 +198,7 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
         count: number;
         convertedDocs?: number;
         skipped?: number;
+        skippedDetails?: Array<{ path: string; reason: string }>;
         paths: string[];
       }>("/api/files/upload", {
         method: "POST",
@@ -195,9 +212,18 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
         if (firstDir) setExpanded((prev) => new Set([...prev, firstDir]));
         await openFile(res.paths[0]);
       }
-      const docNote = res.convertedDocs ? ` (${res.convertedDocs} PDF/Office converted)` : "";
-      setNotice(`Imported ${res.count} file(s)${docNote} & indexed!`);
-      setTimeout(() => setNotice(""), 3800);
+      const totalSkipped = (res.skipped || 0) + clientSkipped.length;
+      const allSkipDetails = [...clientSkipped, ...(res.skippedDetails || [])];
+      const docNote = res.convertedDocs ? ` (${res.convertedDocs} rich doc converted)` : "";
+      const skipNote =
+        totalSkipped > 0
+          ? ` · ${totalSkipped} skipped (${allSkipDetails
+              .slice(0, 2)
+              .map((s) => `${s.path}: ${s.reason}`)
+              .join("; ")})`
+          : "";
+      setNotice(`Imported ${res.count} file(s)${docNote}${skipNote}`);
+      setTimeout(() => setNotice(""), 5500);
     } catch (err) {
       setNotice(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
       setTimeout(() => setNotice(""), 4200);
@@ -477,13 +503,21 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
   return (
     <div
       className="flex h-screen bg-[#09090b] relative"
-      onDragOver={(e) => {
+      onDragEnter={(e) => {
         e.preventDefault();
+        dragDepthRef.current += 1;
         setIsDragging(true);
       }}
-      onDragLeave={() => setIsDragging(false)}
+      onDragOver={(e) => {
+        e.preventDefault();
+      }}
+      onDragLeave={() => {
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) setIsDragging(false);
+      }}
       onDrop={async (e) => {
         e.preventDefault();
+        dragDepthRef.current = 0;
         setIsDragging(false);
         const entries = await collectDroppedEntries(e.dataTransfer);
         await importEntries(entries, uploadFolder);
@@ -618,10 +652,24 @@ export const BrainExplorer: React.FC<BrainExplorerProps> = ({ initialFilePath, o
             <div className="text-[10px] text-zinc-500 truncate">
               Import target: <code className="text-amber-300/90">{uploadFolder || "root"}</code> (Files · Folder · .ZIP · PDF)
             </div>
-            <div className="grid grid-cols-3 gap-1 text-[9px] text-center">
-              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">main-brain</span>
-              <span className="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20">teams/</span>
-              <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">agents/</span>
+            <div className="flex flex-wrap gap-1 text-[9px]">
+              {tree
+                .filter((n) => n.type === "folder")
+                .slice(0, 6)
+                .map((root) => (
+                  <button
+                    key={root.path}
+                    type="button"
+                    onClick={() => setUploadFolder(root.path)}
+                    className={`px-1.5 py-0.5 rounded border cursor-pointer truncate max-w-[96px] ${
+                      uploadFolder === root.path
+                        ? "bg-amber-500/20 text-amber-200 border-amber-500/40"
+                        : "bg-white/[0.04] text-zinc-400 border-white/[0.08] hover:text-zinc-200"
+                    }`}
+                  >
+                    {root.name}/
+                  </button>
+                ))}
             </div>
           </div>
 

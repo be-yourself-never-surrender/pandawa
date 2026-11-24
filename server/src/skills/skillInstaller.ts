@@ -4,10 +4,30 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { BRAINS_DIR } from "../config.js";
+import { getDb } from "../db/database.js";
 import { normalizeRelPath, resolveBrainPath, reindexAllBrainFiles } from "../brains/brainFs.js";
 import { assertSafeOutboundUrl } from "../tools/netGuard.js";
 import { runPythonWorker } from "../tools/pythonWorker.js";
 import { reindexSemanticBrain } from "../brains/semanticMemory.js";
+
+function resolveDefaultBrainFolder(): string {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare(
+        `SELECT folder_path FROM brains
+         ORDER BY CASE layer WHEN 'main' THEN 0 WHEN 'team' THEN 1 ELSE 2 END, created_at ASC
+         LIMIT 1`
+      )
+      .get() as { folder_path?: string } | undefined;
+    if (row?.folder_path) {
+      return normalizeRelPath(row.folder_path) || "main-brain";
+    }
+  } catch {
+    // Fallback when DB is not initialized yet
+  }
+  return "main-brain";
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -376,7 +396,7 @@ async function safeFetchBuffer(rawUrl: string, maxBytes: number): Promise<Buffer
 async function extractZipSafely(zipPath: string, targetDir: string): Promise<void> {
   const zRes = await runPythonWorker<{ ok?: boolean; error?: string }>(
     "import_zip",
-    { zipPath, targetDir, relPrefix: "", maxFiles: 500, maxTotalBytes: 30 * 1024 * 1024 },
+    { zipPath, targetDir, relPrefix: "", maxFiles: 5000, maxTotalBytes: 100 * 1024 * 1024 },
     90_000
   );
   if (!zRes.ok) {
@@ -580,7 +600,7 @@ export function discoverSkillsInDir(
   brainFolder: string,
   canonicalSource: string
 ): InternalDiscoveredSkill[] {
-  const cleanBrain = normalizeRelPath(brainFolder || "main-brain") || "main-brain";
+  const cleanBrain = normalizeRelPath(brainFolder || "") || resolveDefaultBrainFolder();
   const foundDirs: Array<{ dir: string; sourceSubpath: string }> = [];
   const rootReal = path.resolve(scanRoot);
 
@@ -728,7 +748,7 @@ export async function previewSkillInstall(params: {
   brainFolder?: string;
   allowLocalPath?: boolean;
 }): Promise<{ source: string; brainFolder: string; skills: DiscoveredSkillPreview[] }> {
-  const brainFolder = normalizeRelPath(params.brainFolder || "main-brain") || "main-brain";
+  const brainFolder = normalizeRelPath(params.brainFolder || "") || resolveDefaultBrainFolder();
   const staged = params.files?.length
     ? await stageUploadedFilesToTempDir(params.files)
     : await fetchSourceToTempDir(String(params.source || ""), Boolean(params.allowLocalPath));
@@ -761,7 +781,7 @@ export async function installSkillsFromSource(params: {
   installed: Array<{ slug: string; name: string; path: string; dirPath: string; fileCount: number; riskLevel: string }>;
   skipped: Array<{ slug: string; reason: string }>;
 }> {
-  const brainFolder = normalizeRelPath(params.brainFolder || "main-brain") || "main-brain";
+  const brainFolder = normalizeRelPath(params.brainFolder || "") || resolveDefaultBrainFolder();
   const staged = params.files?.length
     ? await stageUploadedFilesToTempDir(params.files)
     : await fetchSourceToTempDir(String(params.source || ""), Boolean(params.allowLocalPath));

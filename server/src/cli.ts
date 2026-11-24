@@ -15,6 +15,7 @@ import {
   generateId,
 } from "./config.js";
 import { getDb } from "./db/database.js";
+import { decryptSecret } from "./auth/cryptoVault.js";
 import { seedInitialData } from "./db/seed.js";
 import { listSkills } from "./brains/brainFs.js";
 import {
@@ -62,7 +63,7 @@ ${C.bold}Usage:${C.reset}
   pandawa chat [prompt]              Alias for 'pandawa live'
   pandawa term [list|open|attach|read|close] [name]
                                      Manage or attach (tmux) directly into living shared agent terminals
-  pandawa skill [list|install|remove] <source|slug> [--brain main-brain] [--overwrite]
+  pandawa skill [list|install|remove] <source|slug> [--brain <folder>] [--overwrite]
                                      Install skills from GitHub, raw SKILL.md URL, .zip, or local folder
   pandawa status                     Show Brains, Teams, Agents, Providers, Terminals, Jobs & Tool Arsenal
   pandawa doctor                     Check Node, SQLite FTS5, Python Worker, tmux, Playwright & Doc parsers
@@ -70,6 +71,29 @@ ${C.bold}Usage:${C.reset}
   pandawa backup [file.json]         Export Team + Brains + Canvas into portable .pandawa.json kit
   pandawa help                       Show this help screen
 `);
+}
+
+function resolveDefaultTarget(db: ReturnType<typeof getDb>): { targetType: "team" | "agent"; targetId: string } | null {
+  const t = db
+    .prepare("SELECT id FROM teams WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  if (t?.id) return { targetType: "team", targetId: t.id };
+  const a = db
+    .prepare("SELECT id FROM agents WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+    .get() as { id?: string } | undefined;
+  if (a?.id) return { targetType: "agent", targetId: a.id };
+  return null;
+}
+
+function resolveDefaultBrainFolder(db: ReturnType<typeof getDb>): string {
+  const mainRow = db
+    .prepare("SELECT folder_path FROM brains WHERE layer = 'main' ORDER BY created_at ASC LIMIT 1")
+    .get() as { folder_path?: string } | undefined;
+  if (mainRow?.folder_path) return mainRow.folder_path;
+  const anyRow = db
+    .prepare("SELECT folder_path FROM brains ORDER BY created_at ASC LIMIT 1")
+    .get() as { folder_path?: string } | undefined;
+  return anyRow?.folder_path || "";
 }
 
 async function cmdStatus() {
@@ -92,9 +116,10 @@ async function cmdStatus() {
   const providers = db
     .prepare("SELECT name, kind, base_url, api_key, enabled FROM providers")
     .all() as Array<{ name: string; kind: string; base_url: string; api_key: string; enabled: number }>;
-  const readyProviderCount = providers.filter(
-    (p) => p.enabled === 1 && p.api_key.trim().length > 0 && p.api_key.trim().toLowerCase() !== "ollama"
-  ).length;
+  const readyProviderCount = providers.filter((p) => {
+    const key = decryptSecret(p.api_key || "").trim();
+    return p.enabled === 1 && key.length > 0 && key.toLowerCase() !== "ollama";
+  }).length;
   const packs = listAllToolPacks();
   const totalTools = packs.reduce((acc, p) => acc + p.tools.length, 0);
   const terms = await listTerminals();
@@ -209,10 +234,16 @@ async function cmdTerm(args: string[]) {
   }
 
   if (sub === "attach") {
-    const slug = name.replace(/[^a-zA-Z0-9_-]+/g, "_").toLowerCase();
+    const slug =
+      String(name || "main")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 64) || "main";
     const tname = slug.startsWith("pdw_") ? slug : `pdw_${slug}`;
     console.log(`${C.cyan}Attaching to ${tname} (detach anytime with Ctrl+B then D)...${C.reset}`);
-    spawnSync("tmux", ["attach", "-t", tname], { stdio: "inherit" });
+    spawnSync("tmux", ["attach", "-t", `=${tname}`], { stdio: "inherit" });
     return;
   }
 
@@ -223,8 +254,13 @@ async function cmdLive(initialPrompt: string) {
   ensureDirectories();
   seedInitialData();
   const db = getDb();
-  let targetType: "team" | "agent" = "team";
-  let targetId = "team_pandawa";
+  const defaultTarget = resolveDefaultTarget(db);
+  if (!defaultTarget) {
+    console.log(`${C.red}No enabled teams or agents found. Configure a team or agent in Web UI first.${C.reset}`);
+    return;
+  }
+  let targetType: "team" | "agent" = defaultTarget.targetType;
+  let targetId = defaultTarget.targetId;
   let modeOverride: string | undefined = undefined;
   let sessionId = generateId("ses");
   db.prepare("INSERT INTO sessions (id, title, target_type, target_id) VALUES (?, ?, ?, ?)").run(
@@ -237,6 +273,7 @@ async function cmdLive(initialPrompt: string) {
   // Enable inline interactive Approval prompts directly in the terminal TUI!
   let promptingApproval = false;
   setApprovalRequestedHook((record) => {
+    if (record.sessionId && record.sessionId !== sessionId) return;
     if (promptingApproval) return;
     promptingApproval = true;
     const askRl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -382,9 +419,23 @@ async function cmdLive(initialPrompt: string) {
         return;
       }
       if (slash === "/team") {
-        targetType = "team";
-        targetId = args[0] || "team_pandawa";
-        console.log(`${C.amber}Switched to team: ${targetId}${C.reset}`);
+        const q = (args[0] || "").trim().toLowerCase();
+        const t = q
+          ? (db
+              .prepare(
+                "SELECT id, name FROM teams WHERE id = ? OR lower(slug) = ? OR lower(name) LIKE ? LIMIT 1"
+              )
+              .get(args[0], q, `%${q}%`) as { id: string; name: string } | undefined)
+          : (db
+              .prepare("SELECT id, name FROM teams WHERE enabled = 1 ORDER BY created_at ASC LIMIT 1")
+              .get() as { id: string; name: string } | undefined);
+        if (t) {
+          targetType = "team";
+          targetId = t.id;
+          console.log(`${C.amber}Switched to team: ${t.name} (${t.id})${C.reset}`);
+        } else {
+          console.log(`Team "${args[0] || "(none)"}" not found.`);
+        }
         return;
       }
       if (slash === "/auto") {
@@ -487,7 +538,7 @@ async function cmdSkill(args: string[]) {
   if (sub === "install" || sub === "add") {
     const restArgs = args.slice(1);
     let source = "";
-    let brainFolder = "main-brain";
+    let brainFolder = resolveDefaultBrainFolder(getDb());
     let overwrite = false;
     let previewOnly = false;
     for (let i = 0; i < restArgs.length; i++) {
@@ -503,7 +554,13 @@ async function cmdSkill(args: string[]) {
       }
     }
     if (!source) {
-      console.log(`Usage: pandawa skill install <owner/repo|github-url|raw-url|zip|local-path> [--brain main-brain] [--overwrite] [--preview]`);
+      console.log(
+        `Usage: pandawa skill install <owner/repo|github-url|raw-url|zip|local-path> [--brain <folder>] [--overwrite] [--preview]`
+      );
+      return;
+    }
+    if (!brainFolder) {
+      console.log(`${C.red}No Brain exists yet to install skills into. Pass --brain <folder> or create a Brain first.${C.reset}`);
       return;
     }
 

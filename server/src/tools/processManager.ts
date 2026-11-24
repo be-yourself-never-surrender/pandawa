@@ -1,11 +1,13 @@
+import fs from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
-import { WORKSPACE_DIR, generateId } from "../config.js";
+import { generateId, resolveScopedCwd } from "../config.js";
 
 export interface ManagedProcessInfo {
   id: string;
   name: string;
   command: string;
   cwd: string;
+  teamId?: string;
   pid: number | undefined;
   status: "running" | "exited";
   exitCode: number | null;
@@ -39,9 +41,11 @@ export function startManagedProcess(params: {
   name?: string;
   command: string;
   cwd?: string;
+  teamId?: string;
 }): ManagedProcessInfo {
   const id = generateId("proc");
-  const cwd = params.cwd || WORKSPACE_DIR;
+  const cwd = resolveScopedCwd(params.cwd, params.teamId);
+  fs.mkdirSync(cwd, { recursive: true });
   const proc = spawn(params.command, {
     cwd,
     shell: true,
@@ -53,6 +57,7 @@ export function startManagedProcess(params: {
     name: params.name || params.command.slice(0, 36),
     command: params.command,
     cwd,
+    ...(params.teamId ? { teamId: params.teamId } : {}),
     pid: proc.pid,
     status: "running",
     exitCode: null,
@@ -75,22 +80,30 @@ export function startManagedProcess(params: {
   return info;
 }
 
-export function listManagedProcesses(): ManagedProcessInfo[] {
-  return Array.from(processes.values()).map((p) => ({ ...p.info }));
+export function listManagedProcesses(teamId?: string): ManagedProcessInfo[] {
+  return Array.from(processes.values())
+    .filter((p) => !teamId || p.info.teamId === teamId)
+    .map((p) => ({ ...p.info }));
 }
 
-export function getManagedProcessLogs(id: string, tail = 80): { info: ManagedProcessInfo; logs: string[] } | null {
+export function getManagedProcessLogs(
+  id: string,
+  tail = 80,
+  teamId?: string
+): { info: ManagedProcessInfo; logs: string[] } | null {
   const entry = processes.get(id);
   if (!entry) return null;
+  if (teamId && entry.info.teamId && entry.info.teamId !== teamId) return null;
   return {
     info: { ...entry.info },
     logs: entry.logs.slice(-Math.min(MAX_LOG_LINES, Math.max(1, tail))),
   };
 }
 
-export function killManagedProcess(id: string): boolean {
+export function killManagedProcess(id: string, teamId?: string): boolean {
   const entry = processes.get(id);
   if (!entry) return false;
+  if (teamId && entry.info.teamId && entry.info.teamId !== teamId) return false;
   try {
     entry.proc.kill("SIGTERM");
     setTimeout(() => {

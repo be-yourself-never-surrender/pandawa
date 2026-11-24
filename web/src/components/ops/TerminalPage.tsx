@@ -19,6 +19,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { apiFetch, requestWsTicket } from "../../api/client";
+import { advanceEventCursor } from "../../utils/routingHelpers";
 
 interface TerminalSession {
   name: string;
@@ -79,6 +80,7 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
   const termContainerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const lastSeqRef = useRef(0);
 
   const loadAll = useCallback(async () => {
     const [tRes, jRes, rRes] = await Promise.all([
@@ -106,12 +108,18 @@ export const TerminalPage: React.FC<TerminalPageProps> = ({ liveEvents }) => {
 
   // React immediately when any agent creates/closes a terminal or updates a background job
   useEffect(() => {
-    const latest = liveEvents[liveEvents.length - 1];
-    if (!latest) return;
-    const t = String(latest.type || "");
-    if (t === "terminal_updated" || t === "terminal_exec") {
+    const { nextSeq, freshEvents } = advanceEventCursor(liveEvents, lastSeqRef.current);
+    lastSeqRef.current = nextSeq;
+    let reloadAllFlag = false;
+    let reloadJobsFlag = false;
+    for (const ev of freshEvents) {
+      const t = String(ev.type || "");
+      if (t === "terminal_updated" || t === "terminal_exec") reloadAllFlag = true;
+      else if (t === "background_job_updated") reloadJobsFlag = true;
+    }
+    if (reloadAllFlag) {
       loadAll().catch(() => {});
-    } else if (t === "background_job_updated") {
+    } else if (reloadJobsFlag) {
       apiFetch<{ jobs: BackgroundJob[] }>("/api/jobs")
         .then((r) => setJobs(r.jobs || []))
         .catch(() => {});

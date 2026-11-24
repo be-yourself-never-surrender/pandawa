@@ -10,6 +10,9 @@ export interface PendingApproval {
   toolName: string;
   args: Record<string, unknown>;
   createdAt: string;
+  sessionId?: string;
+  channelId?: string;
+  chatId?: string;
 }
 
 interface InternalApproval {
@@ -37,13 +40,39 @@ const SENSITIVE_TOOLS = new Set([
 ]);
 
 const pendingMap = new Map<string, InternalApproval>();
+const sessionApprovalModes = new Map<string, ApprovalMode>();
+const sessionRoutes = new Map<string, { channelId?: string; chatId?: string }>();
 let _onApprovalRequestedHook: ((record: PendingApproval) => void) | undefined;
 
 export function setApprovalRequestedHook(fn: (record: PendingApproval) => void): void {
   _onApprovalRequestedHook = fn;
 }
 
-export function getApprovalMode(): ApprovalMode {
+export function registerSessionApprovalRoute(
+  sessionId: string,
+  route: { channelId?: string; chatId?: string }
+): void {
+  if (!sessionId) return;
+  sessionRoutes.set(sessionId, { channelId: route.channelId, chatId: route.chatId });
+}
+
+export function clearSessionApprovalState(sessionId: string): void {
+  if (!sessionId) return;
+  sessionRoutes.delete(sessionId);
+  sessionApprovalModes.delete(sessionId);
+  for (const [id, entry] of pendingMap.entries()) {
+    if (entry.record.sessionId === sessionId) {
+      clearTimeout(entry.timer);
+      pendingMap.delete(id);
+      entry.resolve({ approved: false, reason: "Session ended." });
+    }
+  }
+}
+
+export function getApprovalMode(sessionId?: string): ApprovalMode {
+  if (sessionId && sessionApprovalModes.has(sessionId)) {
+    return sessionApprovalModes.get(sessionId)!;
+  }
   const val = getSetting(SETTING_KEY);
   if (val === "auto" || val === "approve_shell" || val === "approve_sensitive" || val === "approve_all") {
     return val;
@@ -51,13 +80,18 @@ export function getApprovalMode(): ApprovalMode {
   return "approve_shell"; // Safe default: approve shell commands, full freedom otherwise (switchable to 'auto' in 1 click)
 }
 
-export function setApprovalMode(mode: ApprovalMode): void {
+export function setApprovalMode(mode: ApprovalMode, sessionId?: string): void {
+  if (sessionId && sessionId !== "*") {
+    sessionApprovalModes.set(sessionId, mode);
+    logAudit("admin", "approval.mode_change", `session:${sessionId}`, `Approval mode -> ${mode}`);
+    return;
+  }
   setSetting(SETTING_KEY, mode);
   logAudit("admin", "approval.mode_change", "system", `Approval mode -> ${mode}`);
 }
 
-export function toolRequiresApproval(toolName: string): boolean {
-  const mode = getApprovalMode();
+export function toolRequiresApproval(toolName: string, sessionId?: string): boolean {
+  const mode = getApprovalMode(sessionId);
   if (mode === "auto") return false;
   if (mode === "approve_all") return true;
   if (mode === "approve_shell") return SHELL_TOOLS.has(toolName);
@@ -67,8 +101,19 @@ export function toolRequiresApproval(toolName: string): boolean {
   return false;
 }
 
-export function listPendingApprovals(): PendingApproval[] {
-  return Array.from(pendingMap.values()).map((x) => x.record);
+export function listPendingApprovals(filter?: {
+  sessionId?: string;
+  channelId?: string;
+  chatId?: string;
+}): PendingApproval[] {
+  const all = Array.from(pendingMap.values()).map((x) => x.record);
+  if (!filter) return all;
+  return all.filter((r) => {
+    if (filter.sessionId !== undefined && r.sessionId !== filter.sessionId) return false;
+    if (filter.channelId !== undefined && r.channelId !== filter.channelId) return false;
+    if (filter.chatId !== undefined && r.chatId !== filter.chatId) return false;
+    return true;
+  });
 }
 
 export function requestApproval(params: {
@@ -76,6 +121,9 @@ export function requestApproval(params: {
   agentName: string;
   toolName: string;
   args: Record<string, unknown>;
+  sessionId?: string;
+  channelId?: string;
+  chatId?: string;
   onEvent?: (ev: Record<string, unknown>) => void;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -84,6 +132,7 @@ export function requestApproval(params: {
     return Promise.resolve({ approved: false, reason: "Mission aborted by user." });
   }
   const id = generateId("apr");
+  const route = params.sessionId ? sessionRoutes.get(params.sessionId) : undefined;
   const record: PendingApproval = {
     id,
     agentId: params.agentId,
@@ -91,6 +140,9 @@ export function requestApproval(params: {
     toolName: params.toolName,
     args: params.args,
     createdAt: new Date().toISOString(),
+    ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+    ...((params.channelId ?? route?.channelId) ? { channelId: params.channelId ?? route?.channelId } : {}),
+    ...((params.chatId ?? route?.chatId) ? { chatId: params.chatId ?? route?.chatId } : {}),
   };
 
   return new Promise((resolve) => {
@@ -98,14 +150,26 @@ export function requestApproval(params: {
       if (!pendingMap.has(id)) return;
       clearTimeout(timer);
       pendingMap.delete(id);
-      params.onEvent?.({ type: "approval_resolved", id, approved: false, reason: "Mission aborted" });
+      params.onEvent?.({
+        type: "approval_resolved",
+        id,
+        approved: false,
+        reason: "Mission aborted",
+        sessionId: record.sessionId,
+      });
       resolve({ approved: false, reason: "Mission aborted by user." });
     };
 
     const timer = setTimeout(() => {
       params.signal?.removeEventListener("abort", onAbort);
       pendingMap.delete(id);
-      params.onEvent?.({ type: "approval_resolved", id, approved: false, reason: "Timed out waiting for approval" });
+      params.onEvent?.({
+        type: "approval_resolved",
+        id,
+        approved: false,
+        reason: "Timed out waiting for approval",
+        sessionId: record.sessionId,
+      });
       resolve({ approved: false, reason: "Approval request timed out (180s)." });
     }, params.timeoutMs ?? 180_000);
 
@@ -130,7 +194,12 @@ export function requestApproval(params: {
 export function resolveApproval(
   id: string,
   approved: boolean,
-  options?: { switchToAuto?: boolean; reason?: string; broadcast?: (ev: Record<string, unknown>) => void }
+  options?: {
+    switchToAuto?: boolean;
+    scopeGlobalAuto?: boolean;
+    reason?: string;
+    broadcast?: (ev: Record<string, unknown>) => void;
+  }
 ): boolean {
   const entry = pendingMap.get(id);
   if (!entry) return false;
@@ -138,14 +207,59 @@ export function resolveApproval(
   clearTimeout(entry.timer);
   pendingMap.delete(id);
 
+  const originSessionId = entry.record.sessionId;
+
   if (approved && options?.switchToAuto) {
-    setApprovalMode("auto");
-    // Also auto-approve any other queued approvals since user switched to Auto
-    for (const [otherId, other] of pendingMap.entries()) {
-      clearTimeout(other.timer);
-      pendingMap.delete(otherId);
-      other.resolve({ approved: true });
-      options?.broadcast?.({ type: "approval_resolved", id: otherId, approved: true });
+    if (options.scopeGlobalAuto === true) {
+      setApprovalMode("auto");
+      for (const [otherId, other] of pendingMap.entries()) {
+        clearTimeout(other.timer);
+        pendingMap.delete(otherId);
+        other.resolve({ approved: true });
+        options?.broadcast?.({
+          type: "approval_resolved",
+          id: otherId,
+          approved: true,
+          sessionId: other.record.sessionId,
+          channelId: other.record.channelId,
+          chatId: other.record.chatId,
+        });
+      }
+    } else if (originSessionId) {
+      // Scope /auto strictly to the originating session so concurrent sessions remain gated
+      setApprovalMode("auto", originSessionId);
+      for (const [otherId, other] of pendingMap.entries()) {
+        if (other.record.sessionId === originSessionId) {
+          clearTimeout(other.timer);
+          pendingMap.delete(otherId);
+          other.resolve({ approved: true });
+          options?.broadcast?.({
+            type: "approval_resolved",
+            id: otherId,
+            approved: true,
+            sessionId: other.record.sessionId,
+            channelId: other.record.channelId,
+            chatId: other.record.chatId,
+          });
+        }
+      }
+    } else {
+      // Legacy untagged approval: update global mode, but only auto-approve other untagged approvals
+      setApprovalMode("auto");
+      for (const [otherId, other] of pendingMap.entries()) {
+        if (!other.record.sessionId) {
+          clearTimeout(other.timer);
+          pendingMap.delete(otherId);
+          other.resolve({ approved: true });
+          options?.broadcast?.({
+            type: "approval_resolved",
+            id: otherId,
+            approved: true,
+            channelId: other.record.channelId,
+            chatId: other.record.chatId,
+          });
+        }
+      }
     }
   }
 
@@ -161,7 +275,48 @@ export function resolveApproval(
     type: "approval_resolved",
     id,
     approved,
-    mode: getApprovalMode(),
+    mode: getApprovalMode(originSessionId),
+    sessionId: originSessionId,
+    channelId: entry.record.channelId,
+    chatId: entry.record.chatId,
   });
   return true;
+}
+
+export function approveLatest(options?: {
+  sessionId?: string;
+  channelId?: string;
+  chatId?: string;
+  switchToAuto?: boolean;
+  scopeGlobalAuto?: boolean;
+  reason?: string;
+  broadcast?: (ev: Record<string, unknown>) => void;
+}): { ok: boolean; id?: string; record?: PendingApproval } {
+  const matches = listPendingApprovals({
+    sessionId: options?.sessionId,
+    channelId: options?.channelId,
+    chatId: options?.chatId,
+  });
+  const target = matches[matches.length - 1];
+  if (!target) return { ok: false };
+  const ok = resolveApproval(target.id, true, options);
+  return ok ? { ok: true, id: target.id, record: target } : { ok: false };
+}
+
+export function rejectLatest(options?: {
+  sessionId?: string;
+  channelId?: string;
+  chatId?: string;
+  reason?: string;
+  broadcast?: (ev: Record<string, unknown>) => void;
+}): { ok: boolean; id?: string; record?: PendingApproval } {
+  const matches = listPendingApprovals({
+    sessionId: options?.sessionId,
+    channelId: options?.channelId,
+    chatId: options?.chatId,
+  });
+  const target = matches[matches.length - 1];
+  if (!target) return { ok: false };
+  const ok = resolveApproval(target.id, false, options);
+  return ok ? { ok: true, id: target.id, record: target } : { ok: false };
 }

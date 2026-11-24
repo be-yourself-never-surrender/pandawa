@@ -101,13 +101,24 @@ wss.on("connection", (ws) => {
 function getPythonBin(): string {
   const venvUnix = path.join(PYTHON_WORKER_DIR, ".venv", "bin", "python3");
   if (fs.existsSync(venvUnix)) return venvUnix;
+  const venvWin = path.join(PYTHON_WORKER_DIR, ".venv", "Scripts", "python.exe");
+  if (fs.existsSync(venvWin)) return venvWin;
   return process.platform === "win32" ? "python" : "python3";
+}
+
+function sanitizeWsSessionName(raw: string): string {
+  const slug = String(raw || "main")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return (slug || "main").slice(0, 64);
 }
 
 // Real-Time 60fps Interactive xterm.js <-> Python PTY <-> tmux Bridge
 termWss.on("connection", (ws, req) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const sessionName = (url.searchParams.get("name") || "main").trim();
+  const sessionName = sanitizeWsSessionName(url.searchParams.get("name") || "main");
   const cols = Math.max(20, Math.min(400, Number(url.searchParams.get("cols") || 120)));
   const rows = Math.max(8, Math.min(200, Number(url.searchParams.get("rows") || 32)));
   const bridgeScript = path.join(PYTHON_WORKER_DIR, "pty_bridge.py");
@@ -225,6 +236,9 @@ app.get("/health", (_req, res) => {
 
 setTerminalBroadcast(broadcast);
 app.use("/api", createApiRouter(broadcast));
+app.all("/api/{*splat}", (req, res) => {
+  res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
+});
 
 // Serve built React SPA if present
 if (fs.existsSync(WEB_DIST_DIR)) {

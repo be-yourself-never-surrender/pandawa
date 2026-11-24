@@ -91,6 +91,9 @@ function initSchema(db: DatabaseSync): void {
       team_brain_id TEXT,
       collaboration_mode TEXT NOT NULL DEFAULT 'deliberate',
       max_rounds INTEGER NOT NULL DEFAULT 2,
+      lead_agent_id TEXT NOT NULL DEFAULT '',
+      reviewer_agent_id TEXT NOT NULL DEFAULT '',
+      sender_agent_id TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -301,6 +304,17 @@ function initSchema(db: DatabaseSync): void {
     }
   } catch {
     // ignore migration error if already present
+  }
+
+  for (const col of ["lead_agent_id", "reviewer_agent_id", "sender_agent_id"] as const) {
+    try {
+      const teamCols = db.prepare("PRAGMA table_info(teams)").all() as Array<{ name: string }>;
+      if (!teamCols.some((c) => c.name === col)) {
+        db.exec(`ALTER TABLE teams ADD COLUMN ${col} TEXT NOT NULL DEFAULT '';`);
+      }
+    } catch {
+      // ignore migration error if already present
+    }
   }
 }
 

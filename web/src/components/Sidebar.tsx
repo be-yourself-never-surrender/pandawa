@@ -113,7 +113,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             Change default password
           </div>
           <div className="text-[10px] text-zinc-400 mt-0.5">
-            Update from 11111111 in Settings
+            Rotate initial password in Settings
           </div>
         </button>
       )}

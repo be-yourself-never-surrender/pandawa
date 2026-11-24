@@ -95,7 +95,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
 
   // Installer tabs: url | upload | manual
   const [tab, setTab] = useState<"url" | "upload" | "manual">("url");
-  const [targetBrainFolder, setTargetBrainFolder] = useState("main-brain");
+  const [targetBrainFolder, setTargetBrainFolder] = useState("");
 
   // GitHub / URL installer state
   const [sourceInput, setSourceInput] = useState("");
@@ -120,7 +120,7 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
 
   // Memory state
   const [memContent, setMemContent] = useState("");
-  const [memBrainId, setMemBrainId] = useState("brain_main");
+  const [memBrainId, setMemBrainId] = useState("");
   const [memCategory, setMemCategory] = useState("lesson");
   const [memSearch, setMemSearch] = useState("");
 
@@ -133,6 +133,14 @@ export const SkillsPage: React.FC<{ onOpenFile: (path: string) => void }> = ({ o
     setSkills(sRes.skills);
     setMemories(mRes.memories);
     setBrains(bRes.brains);
+    if (bRes.brains.length > 0) {
+      setTargetBrainFolder((prev) =>
+        prev && bRes.brains.some((b) => b.folder_path === prev) ? prev : bRes.brains[0].folder_path
+      );
+      setMemBrainId((prev) =>
+        prev && bRes.brains.some((b) => b.id === prev) ? prev : bRes.brains[0].id
+      );
+    }
   }, []);
 
   useEffect(() => {

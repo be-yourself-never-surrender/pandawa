@@ -26,5 +26,5 @@ jobs:
       - name: Build server & Web Studio
         run: npm run build
 
-      - name: Run automated security & engine tests
-        run: npm test
+      - name: Run automated security, engine & web tests
+        run: npm test && npm run test:web

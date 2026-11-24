@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -37,11 +37,19 @@ import { apiFetch } from "../../api/client";
 import type { AgentItem, BrainItem, BrainTreeNode, ProviderItem, TeamItem, TopologyEdge, TopologyNode } from "../../types";
 import { PandawaNode, type PandawaNodeData } from "./PandawaNode";
 import { BundlePreviewModal, type PreviewBundleData } from "../BundlePreviewModal";
+import {
+  advanceEventCursor,
+  findTeamForAgent,
+  formatTeamPipelineSummary,
+  getAgentRoleBadges,
+  resolveEffectiveTeamRoles,
+} from "../../utils/routingHelpers";
 
 interface BrainCanvasProps {
   onOpenBrainFile: (filePath: string) => void;
   onOpenChannels?: () => void;
   activeAgentIds: Set<string>;
+  liveEvents?: Array<Record<string, unknown>>;
   initialFocusTeamId?: string | null;
 }
 
@@ -84,6 +92,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
   onOpenBrainFile,
   onOpenChannels,
   activeAgentIds,
+  liveEvents = [],
   initialFocusTeamId,
 }) => {
   const nodeTypes = useMemo(() => ({ pandawa: PandawaNode }), []);
@@ -107,7 +116,11 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState("");
+  const [errorNotice, setErrorNotice] = useState("");
   const [dirty, setDirty] = useState(false);
+  const lastEventSeqRef = useRef(0);
+  const agentPatchTimerRef = useRef<number | null>(null);
+  const pendingAgentPatchRef = useRef<{ agentId: string; patch: Partial<AgentItem> } | null>(null);
 
   // Compiled Brain preview modal
   const [compiledPreview, setCompiledPreview] = useState<{
@@ -135,17 +148,40 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
     setTeams(teamsRes.teams);
     setChannels(chRes.channels || []);
 
-    const rfNodes: Array<Node<PandawaNodeData>> = topoRes.nodes.map((n) => ({
-      id: n.id,
-      type: "pandawa",
-      position: n.position,
-      data: {
+    const agentMap = new Map(agentsRes.agents.map((a) => [a.id, a]));
+    const rfNodes: Array<Node<PandawaNodeData>> = topoRes.nodes.map((n) => {
+      const baseData: PandawaNodeData = {
         ...n.data,
         nodeType: n.type,
         label: n.label,
         refId: n.refId,
-      },
-    }));
+      };
+      if (n.type === "agent") {
+        const aid = String(n.refId || n.data.agentId || "");
+        const ag = agentMap.get(aid);
+        if (ag) {
+          baseData.label = ag.name;
+          baseData.role = ag.title;
+          baseData.avatar = ag.avatar;
+          baseData.purpose = ag.purpose;
+          baseData.model = ag.model;
+        }
+        baseData.roleBadges = getAgentRoleBadges(aid, teamsRes.teams);
+      } else if (n.type === "team_brain") {
+        const tm = teamsRes.teams.find(
+          (t) => t.id === String(n.data.teamId || "") || (t.team_brain_id && t.team_brain_id === n.refId)
+        );
+        if (tm) {
+          baseData.pipelineSummary = formatTeamPipelineSummary(tm);
+        }
+      }
+      return {
+        id: n.id,
+        type: "pandawa",
+        position: n.position,
+        data: baseData,
+      };
+    });
 
     const rfEdges: Edge[] = topoRes.edges.map((e) => {
       const color = RELATION_COLORS[e.relation] || "#64748b";
@@ -181,19 +217,43 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
   }, [loadAll]);
 
   useEffect(() => {
+    const { nextSeq, freshEvents } = advanceEventCursor(liveEvents, lastEventSeqRef.current);
+    lastEventSeqRef.current = nextSeq;
+    if (freshEvents.some((ev) => ev.type === "topology_updated") && !dirty) {
+      loadAll().catch(() => {});
+    }
+  }, [liveEvents, dirty, loadAll]);
+
+  useEffect(() => {
     setNodes((prev) =>
       prev.map((n) => {
-        const aid = String(n.data.agentId || n.data.refId || "");
-        const nextActive = n.data.nodeType === "agent" && activeAgentIds.has(aid);
-        if (Boolean(n.data.isActive) === nextActive) return n;
-        return { ...n, data: { ...n.data, isActive: nextActive } };
+        if (n.data.nodeType === "agent") {
+          const aid = String(n.data.agentId || n.data.refId || "");
+          const nextActive = activeAgentIds.has(aid);
+          const nextBadges = getAgentRoleBadges(aid, teams);
+          const prevBadges = Array.isArray(n.data.roleBadges) ? n.data.roleBadges : [];
+          const badgesSame =
+            prevBadges.length === nextBadges.length && prevBadges.every((b, idx) => b === nextBadges[idx]);
+          if (Boolean(n.data.isActive) === nextActive && badgesSame) return n;
+          return { ...n, data: { ...n.data, isActive: nextActive, roleBadges: nextBadges } };
+        }
+        if (n.data.nodeType === "team_brain") {
+          const tm = teams.find(
+            (t) => t.id === String(n.data.teamId || "") || (t.team_brain_id && t.team_brain_id === n.data.refId)
+          );
+          const nextSummary = tm ? formatTeamPipelineSummary(tm) : undefined;
+          if (n.data.pipelineSummary === nextSummary) return n;
+          return { ...n, data: { ...n.data, pipelineSummary: nextSummary } };
+        }
+        return n;
       })
     );
-  }, [activeAgentIds, setNodes]);
+  }, [activeAgentIds, teams, setNodes]);
 
   async function applyTemplate(template: string) {
     if (!template) return;
     setSpawningTpl(true);
+    setErrorNotice("");
     try {
       await apiFetch("/api/templates/apply", {
         method: "POST",
@@ -202,29 +262,45 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
       await loadAll();
       setSavedNotice("Team Kit spawned & wired!");
       setTimeout(() => setSavedNotice(""), 2500);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
     } finally {
       setSpawningTpl(false);
     }
   }
 
   async function runAutoLayout() {
-    await apiFetch("/api/topology/auto-layout", { method: "POST" });
-    await loadAll();
-    setSavedNotice("Auto-layout applied!");
-    setTimeout(() => setSavedNotice(""), 2200);
+    setErrorNotice("");
+    try {
+      await apiFetch("/api/topology/auto-layout", { method: "POST" });
+      await loadAll();
+      setSavedNotice("Auto-layout applied!");
+      setTimeout(() => setSavedNotice(""), 2200);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function exportBundle() {
-    const bundle = await apiFetch<Record<string, unknown>>("/api/bundles/export?includeMainBrain=true");
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `pandawa-brain-kit-${Date.now()}.pandawa.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setSavedNotice("Exported .pandawa.json Brain Kit!");
-    setTimeout(() => setSavedNotice(""), 2500);
+    setErrorNotice("");
+    try {
+      const q =
+        focusTeamId && focusTeamId !== "all"
+          ? `?teamId=${encodeURIComponent(focusTeamId)}&includeMainBrain=true`
+          : "?includeMainBrain=true";
+      const bundle = await apiFetch<Record<string, unknown>>(`/api/bundles/export${q}`);
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pandawa-brain-kit-${Date.now()}.pandawa.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setSavedNotice("Exported .pandawa.json Brain Kit!");
+      setTimeout(() => setSavedNotice(""), 2500);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function importBundleFile(file: File | null) {
@@ -263,11 +339,17 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
 
   async function deleteTeamSquad(teamId: string) {
     if (!window.confirm("Delete this entire Team, its Team Brain, and its squad agents from Pandawa?")) return;
-    await apiFetch(`/api/teams/${teamId}?cascade=true`, { method: "DELETE" });
-    setSelectedNodeId(null);
-    await loadAll();
-    setSavedNotice("Removed team squad cleanly!");
-    setTimeout(() => setSavedNotice(""), 2500);
+    setErrorNotice("");
+    try {
+      await apiFetch(`/api/teams/${teamId}?cascade=true`, { method: "DELETE" });
+      setSelectedNodeId(null);
+      if (focusTeamId === teamId) setFocusTeamId("all");
+      await loadAll();
+      setSavedNotice("Removed team squad cleanly!");
+      setTimeout(() => setSavedNotice(""), 2500);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
+    }
   }
 
   const onConnect = useCallback(
@@ -302,8 +384,9 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
     [nodes, setEdges]
   );
 
-  async function saveTopology() {
+  async function saveTopology(): Promise<boolean> {
     setSaving(true);
+    setErrorNotice("");
     try {
       const payloadNodes: TopologyNode[] = nodes.map((n) => ({
         id: n.id,
@@ -333,6 +416,10 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
       setDirty(false);
       setSavedNotice("Topology saved & live!");
       setTimeout(() => setSavedNotice(""), 2500);
+      return true;
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -426,7 +513,11 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
     }
 
     if (kind === "knowledge") {
-      const firstFile = fileChoices[0] || { path: "main-brain/soul.md", isFolder: false };
+      const firstFile = fileChoices.find((f) => !f.isFolder) || fileChoices[0];
+      if (!firstFile) {
+        setErrorNotice("Create a Brain file first before adding a Knowledge node.");
+        return;
+      }
       setNodes((prev) => [
         ...prev,
         {
@@ -537,32 +628,102 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
     setDirty(true);
   }
 
-  async function saveSelectedAgent(patch: Partial<AgentItem>) {
+  function saveSelectedAgent(patch: Partial<AgentItem>, immediate = true) {
     if (!selectedAgent) return;
-    await apiFetch(`/api/agents/${selectedAgent.id}`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
-    await loadAgentsOnly();
-    if (selectedNode) {
-      updateNodeData(selectedNode.id, {
+    const targetAgentId = selectedAgent.id;
+    const targetNodeId = selectedNode?.id;
+
+    // Optimistic local state update so controlled inputs never lag or jump
+    setAgents((prev) => prev.map((a) => (a.id === targetAgentId ? { ...a, ...patch } : a)));
+    if (targetNodeId) {
+      updateNodeData(targetNodeId, {
         label: patch.name ?? selectedAgent.name,
         role: patch.title ?? selectedAgent.title,
         avatar: patch.avatar ?? selectedAgent.avatar,
         purpose: patch.purpose ?? selectedAgent.purpose,
+        model: patch.model ?? selectedAgent.model,
       });
+    }
+
+    const flush = async (aid: string, mergedPatch: Partial<AgentItem>) => {
+      try {
+        await apiFetch(`/api/agents/${aid}`, {
+          method: "PATCH",
+          body: JSON.stringify(mergedPatch),
+        });
+        await loadAgentsOnly();
+      } catch (err) {
+        setErrorNotice(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    if (agentPatchTimerRef.current !== null) {
+      window.clearTimeout(agentPatchTimerRef.current);
+      agentPatchTimerRef.current = null;
+    }
+
+    const merged =
+      pendingAgentPatchRef.current && pendingAgentPatchRef.current.agentId === targetAgentId
+        ? { ...pendingAgentPatchRef.current.patch, ...patch }
+        : patch;
+
+    if (immediate) {
+      pendingAgentPatchRef.current = null;
+      void flush(targetAgentId, merged);
+    } else {
+      pendingAgentPatchRef.current = { agentId: targetAgentId, patch: merged };
+      agentPatchTimerRef.current = window.setTimeout(() => {
+        const cur = pendingAgentPatchRef.current;
+        pendingAgentPatchRef.current = null;
+        agentPatchTimerRef.current = null;
+        if (cur) void flush(cur.agentId, cur.patch);
+      }, 350);
+    }
+  }
+
+  async function saveTeamRoles(
+    teamId: string,
+    patch: {
+      collaboration_mode?: TeamItem["collaboration_mode"];
+      max_rounds?: number;
+      lead_agent_id?: string | null;
+      reviewer_agent_id?: string | null;
+      sender_agent_id?: string | null;
+    }
+  ) {
+    setErrorNotice("");
+    try {
+      await apiFetch(`/api/teams/${teamId}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      await loadAll();
+      setSavedNotice("Team roles & routing saved!");
+      setTimeout(() => setSavedNotice(""), 2400);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
     }
   }
 
   async function inspectCompiledBrain(agentId: string) {
-    if (dirty) await saveTopology();
-    const res = await apiFetch<{
-      agentName: string;
-      model: string;
-      summary: { totalFiles: number; totalChars: number; brainNames: string[]; mountedPaths: string[] };
-      systemPrompt: string;
-    }>(`/api/agents/${agentId}/compiled?teamId=team_pandawa`);
-    setCompiledPreview(res);
+    setErrorNotice("");
+    try {
+      if (dirty) {
+        const ok = await saveTopology();
+        if (!ok) return;
+      }
+      const targetTeamId = findTeamForAgent(agentId, teams, focusTeamId);
+      const q = targetTeamId ? `?teamId=${encodeURIComponent(targetTeamId)}` : "";
+      const res = await apiFetch<{
+        agentName: string;
+        model: string;
+        summary: { totalFiles: number; totalChars: number; brainNames: string[]; mountedPaths: string[] };
+        systemPrompt: string;
+      }>(`/api/agents/${agentId}/compiled${q}`);
+      setCompiledPreview(res);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : String(err));
+    }
   }
 
   function deleteSelected() {
@@ -792,6 +953,18 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
       )}
 
       {/* Main Workspace: Canvas + Inspector */}
+      {errorNotice && (
+        <div className="px-4 py-2 bg-rose-500/15 border-b border-rose-500/35 text-xs text-rose-200 flex items-center justify-between gap-2 shrink-0">
+          <span className="font-mono break-all">{errorNotice}</span>
+          <button
+            type="button"
+            onClick={() => setErrorNotice("")}
+            className="text-rose-300 hover:text-white shrink-0 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="flex-1 flex min-h-0 relative">
         <div className="flex-1 h-full relative">
           {showTip && (
@@ -920,7 +1093,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                         <label className="text-zinc-400 block mb-1">Avatar</label>
                         <input
                           value={selectedAgent.avatar}
-                          onChange={(e) => saveSelectedAgent({ avatar: e.target.value })}
+                          onChange={(e) => saveSelectedAgent({ avatar: e.target.value }, false)}
                           className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-zinc-100"
                         />
                       </div>
@@ -928,7 +1101,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                         <label className="text-zinc-400 block mb-1">Purpose</label>
                         <select
                           value={selectedAgent.purpose}
-                          onChange={(e) => saveSelectedAgent({ purpose: e.target.value })}
+                          onChange={(e) => saveSelectedAgent({ purpose: e.target.value }, true)}
                           className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-1.5 text-zinc-100"
                         >
                           <option value="strategy">Strategy</option>
@@ -946,7 +1119,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                       <label className="text-zinc-400 block mb-1">Role / Title</label>
                       <input
                         value={selectedAgent.title}
-                        onChange={(e) => saveSelectedAgent({ title: e.target.value })}
+                        onChange={(e) => saveSelectedAgent({ title: e.target.value }, false)}
                         className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-zinc-100"
                       />
                     </div>
@@ -957,10 +1130,13 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                         value={selectedAgent.provider_id || ""}
                         onChange={(e) => {
                           const prov = providers.find((p) => p.id === e.target.value);
-                          saveSelectedAgent({
-                            provider_id: e.target.value || null,
-                            model: prov?.defaultModel || selectedAgent.model,
-                          });
+                          saveSelectedAgent(
+                            {
+                              provider_id: e.target.value || null,
+                              model: prov?.defaultModel || selectedAgent.model,
+                            },
+                            true
+                          );
                         }}
                         className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-1.5 text-zinc-100"
                       >
@@ -978,7 +1154,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                       <input
                         list={`models_${selectedAgent.id}`}
                         value={selectedAgent.model}
-                        onChange={(e) => saveSelectedAgent({ model: e.target.value })}
+                        onChange={(e) => saveSelectedAgent({ model: e.target.value }, false)}
                         placeholder="e.g. gpt-4.1, claude-sonnet-4-20250514"
                         className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-1.5 font-mono text-zinc-100"
                       />
@@ -1048,7 +1224,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                       <textarea
                         rows={4}
                         value={selectedAgent.system_prompt}
-                        onChange={(e) => saveSelectedAgent({ system_prompt: e.target.value })}
+                        onChange={(e) => saveSelectedAgent({ system_prompt: e.target.value }, false)}
                         className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2.5 py-2 text-zinc-100 outline-none focus:border-amber-500"
                       />
                     </div>
@@ -1195,45 +1371,144 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                 )}
 
                 {/* MAIN / TEAM BRAIN NODE CONFIG */}
-                {(selectedNode.data.nodeType === "main_brain" || selectedNode.data.nodeType === "team_brain") && (
-                  <>
-                    <div>
-                      <label className="text-zinc-400 block mb-1">Linked Brain</label>
-                      <select
-                        value={selectedNode.data.refId || ""}
-                        onChange={(e) => {
-                          const b = brains.find((x) => x.id === e.target.value);
-                          if (b) {
-                            updateNodeData(selectedNode.id, {
-                              refId: b.id,
-                              label: b.name,
-                              folderPath: b.folder_path,
-                            });
-                          }
-                        }}
-                        className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
-                      >
-                        {brains.map((b) => (
-                          <option key={b.id} value={b.id}>
-                            [{b.layer.toUpperCase()}] {b.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-[#0c0c0e] border border-white/[0.08] text-[11px] text-zinc-400">
-                      Folder: <code className="text-amber-300">{String(selectedNode.data.folderPath || "")}</code>
-                    </div>
-                    <button
-                      onClick={() =>
-                        onOpenBrainFile(`${String(selectedNode.data.folderPath || "main-brain")}/soul.md`)
-                      }
-                      className="w-full py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" /> Manage Brain Folder
-                    </button>
-                    {selectedNode.data.nodeType === "team_brain" &&
-                      typeof selectedNode.data.teamId === "string" &&
-                      selectedNode.data.teamId !== "team_pandawa" && (
+                {(selectedNode.data.nodeType === "main_brain" || selectedNode.data.nodeType === "team_brain") && (() => {
+                  const matchedBrain = brains.find((b) => b.id === selectedNode.data.refId) || brains[0];
+                  const activeFolder = String(selectedNode.data.folderPath || matchedBrain?.folder_path || "");
+                  const selectedTeam =
+                    selectedNode.data.nodeType === "team_brain"
+                      ? teams.find(
+                          (t) =>
+                            t.id === String(selectedNode.data.teamId || "") ||
+                            (t.team_brain_id && t.team_brain_id === selectedNode.data.refId)
+                        ) || null
+                      : null;
+                  const resolvedRoles = selectedTeam ? resolveEffectiveTeamRoles(selectedTeam) : null;
+
+                  return (
+                    <>
+                      <div>
+                        <label className="text-zinc-400 block mb-1">Linked Brain</label>
+                        <select
+                          value={selectedNode.data.refId || ""}
+                          onChange={(e) => {
+                            const b = brains.find((x) => x.id === e.target.value);
+                            if (b) {
+                              updateNodeData(selectedNode.id, {
+                                refId: b.id,
+                                label: b.name,
+                                folderPath: b.folder_path,
+                              });
+                            }
+                          }}
+                          className="w-full bg-[#0c0c0e] border border-white/[0.10] rounded-lg px-2 py-2 text-zinc-100"
+                        >
+                          {brains.map((b) => (
+                            <option key={b.id} value={b.id}>
+                              [{b.layer.toUpperCase()}] {b.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-[#0c0c0e] border border-white/[0.08] text-[11px] text-zinc-400">
+                        Folder: <code className="text-amber-300">{activeFolder || "unset"}</code>
+                      </div>
+
+                      {selectedTeam && resolvedRoles && (
+                        <div className="p-3 rounded-lg bg-[#09090b] border border-violet-500/25 space-y-2.5">
+                          <div className="text-[10px] font-mono uppercase tracking-wider text-violet-300 font-semibold">
+                            Team Role Pipeline
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-zinc-400 block mb-1">Mode</label>
+                              <select
+                                value={selectedTeam.collaboration_mode}
+                                onChange={(e) =>
+                                  saveTeamRoles(selectedTeam.id, {
+                                    collaboration_mode: e.target.value as TeamItem["collaboration_mode"],
+                                  })
+                                }
+                                className="w-full bg-[#111113] border border-white/[0.10] rounded-md px-2 py-1 text-[11px] text-zinc-100"
+                              >
+                                <option value="execute">execute (Smart Triage -&gt; Do -&gt; QA)</option>
+                                <option value="deliberate">deliberate (Musyawarah)</option>
+                                <option value="sequential">sequential (Relay)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-zinc-400 block mb-1">Max Rounds</label>
+                              <select
+                                value={selectedTeam.max_rounds || 2}
+                                onChange={(e) =>
+                                  saveTeamRoles(selectedTeam.id, { max_rounds: Number(e.target.value) })
+                                }
+                                className="w-full bg-[#111113] border border-white/[0.10] rounded-md px-2 py-1 text-[11px] text-zinc-100"
+                              >
+                                {[1, 2, 3, 4, 5].map((r) => (
+                                  <option key={r} value={r}>
+                                    {r} round{r > 1 ? "s" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-zinc-400 block mb-1">Team Lead (Prompt Receiver)</label>
+                            <select
+                              value={resolvedRoles.leadId}
+                              onChange={(e) => saveTeamRoles(selectedTeam.id, { lead_agent_id: e.target.value })}
+                              className="w-full bg-[#111113] border border-white/[0.10] rounded-md px-2 py-1.5 text-[11px] text-zinc-100"
+                            >
+                              {selectedTeam.members.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.name} ({m.title || m.purpose})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-zinc-400 block mb-1">QA / Reviewer</label>
+                            <select
+                              value={resolvedRoles.reviewerId}
+                              onChange={(e) => saveTeamRoles(selectedTeam.id, { reviewer_agent_id: e.target.value })}
+                              className="w-full bg-[#111113] border border-white/[0.10] rounded-md px-2 py-1.5 text-[11px] text-zinc-100"
+                            >
+                              {selectedTeam.members.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.name} ({m.title || m.purpose})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-zinc-400 block mb-1">Result Sender (Final Reply)</label>
+                            <select
+                              value={resolvedRoles.senderId}
+                              onChange={(e) => saveTeamRoles(selectedTeam.id, { sender_agent_id: e.target.value })}
+                              className="w-full bg-[#111113] border border-white/[0.10] rounded-md px-2 py-1.5 text-[11px] text-zinc-100"
+                            >
+                              {selectedTeam.members.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.name} ({m.title || m.purpose})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeFolder && (
+                        <button
+                          onClick={() => onOpenBrainFile(`${activeFolder}/soul.md`)}
+                          className="w-full py-2 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" /> Manage Brain Folder
+                        </button>
+                      )}
+                      {selectedNode.data.nodeType === "team_brain" && typeof selectedNode.data.teamId === "string" && (
                         <button
                           onClick={() => deleteTeamSquad(String(selectedNode.data.teamId))}
                           className="w-full py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-300 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
@@ -1241,8 +1516,9 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                           <Trash2 className="w-3.5 h-3.5" /> Delete Entire Squad
                         </button>
                       )}
-                  </>
-                )}
+                    </>
+                  );
+                })()}
 
                 {/* TOOLPACK CONFIG */}
                 {selectedNode.data.nodeType === "toolpack" && (
@@ -1300,6 +1576,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
                     <option value="knowledge_mount">Knowledge File / Folder Mount</option>
                     <option value="peer_collab">Peer Team Collaboration</option>
                     <option value="tool_grant">Toolpack Grant</option>
+                    <option value="channel_route">Channel Route (Channel → Team / Agent)</option>
                   </select>
                 </div>
                 <div>

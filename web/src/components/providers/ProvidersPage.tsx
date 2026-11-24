@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Cpu, Plus, CheckCircle2, XCircle, Trash2, Zap, KeyRound, Globe, Save } from "lucide-react";
+import { Cpu, Plus, CheckCircle2, XCircle, Trash2, Zap, KeyRound, Globe, Save, Loader2 } from "lucide-react";
 import { apiFetch } from "../../api/client";
 import type { AgentItem, ProviderItem } from "../../types";
 
@@ -10,20 +10,26 @@ export const ProvidersPage: React.FC = () => {
   const [editing, setEditing] = useState<ProviderItem | null>(null);
   const [newApiKey, setNewApiKey] = useState("");
   const [modelsText, setModelsText] = useState("");
-  const [testState, setTestState] = useState<Record<string, { ok: boolean; msg: string; loading?: boolean }>>({});
+  const [testState, setTestState] = useState<
+    Record<string, { ok: boolean; msg: string; loading?: boolean; discoveredModels?: string[] }>
+  >({});
   const [quickKeys, setQuickKeys] = useState<Record<string, string>>({});
+  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Add new custom provider modal
   const [showAdd, setShowAdd] = useState(false);
   const [formName, setFormName] = useState("");
-  const [formKind, setFormKind] = useState<"openai" | "anthropic" | "gemini">("openai");
+  const [formKind, setFormKind] = useState<ProviderItem["kind"]>("openai");
   const [formBaseUrl, setFormBaseUrl] = useState("https://api.openai.com/v1");
   const [formApiKey, setFormApiKey] = useState("");
   const [formModel, setFormModel] = useState("gpt-4.1");
 
-  const PRESETS: Array<{ label: string; kind: "openai" | "anthropic" | "gemini"; baseUrl: string; model: string }> = [
-    { label: "Groq Fast", kind: "openai", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+  const PRESETS: Array<{ label: string; kind: ProviderItem["kind"]; baseUrl: string; model: string }> = [
+    { label: "OpenAI Responses (/v1/responses)", kind: "openai_responses", baseUrl: "https://api.openai.com/v1", model: "gpt-4.1" },
+    { label: "9Router / LiteLLM Gateway", kind: "openai", baseUrl: "http://127.0.0.1:20128/v1", model: "gpt-4.1" },
     { label: "xAI Grok", kind: "openai", baseUrl: "https://api.x.ai/v1", model: "grok-3" },
+    { label: "Groq Fast", kind: "openai", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
     { label: "Mistral AI", kind: "openai", baseUrl: "https://api.mistral.ai/v1", model: "mistral-large-latest" },
     { label: "Together AI", kind: "openai", baseUrl: "https://api.together.xyz/v1", model: "meta-llama/Llama-3.3-70B-Instruct-Turbo" },
     { label: "vLLM / Local", kind: "openai", baseUrl: "http://127.0.0.1:8000/v1", model: "local-model" },
@@ -33,13 +39,18 @@ export const ProvidersPage: React.FC = () => {
   async function saveQuickKey(id: string) {
     const key = (quickKeys[id] || "").trim();
     if (!key) return;
-    await apiFetch(`/api/providers/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ apiKey: key }),
-    });
-    setQuickKeys((prev) => ({ ...prev, [id]: "" }));
-    await load();
-    await testProvider(id);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/providers/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ apiKey: key }),
+      });
+      setQuickKeys((prev) => ({ ...prev, [id]: "" }));
+      await load();
+      await testProvider(id);
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   const load = useCallback(async () => {
@@ -50,6 +61,9 @@ export const ProvidersPage: React.FC = () => {
       ]);
       setProviders(pRes.providers);
       setAgents(aRes.agents);
+      const drafts: Record<string, string> = {};
+      for (const a of aRes.agents) drafts[a.id] = a.model || "";
+      setModelDrafts(drafts);
     } finally {
       setLoading(false);
     }
@@ -68,71 +82,95 @@ export const ProvidersPage: React.FC = () => {
   async function saveEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editing) return;
-    const models = modelsText
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    await apiFetch(`/api/providers/${editing.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        name: editing.name,
-        kind: editing.kind,
-        baseUrl: editing.baseUrl,
-        defaultModel: editing.defaultModel,
-        models,
-        enabled: editing.enabled,
-        ...(newApiKey.trim() ? { apiKey: newApiKey.trim() } : {}),
-      }),
-    });
-    setEditing(null);
-    await load();
+    setNotice(null);
+    try {
+      const models = modelsText
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      await apiFetch(`/api/providers/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: editing.name,
+          kind: editing.kind,
+          baseUrl: editing.baseUrl,
+          defaultModel: editing.defaultModel,
+          models,
+          enabled: editing.enabled,
+          ...(newApiKey.trim() ? { apiKey: newApiKey.trim() } : {}),
+        }),
+      });
+      setEditing(null);
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   async function createProvider(e: React.FormEvent) {
     e.preventDefault();
     if (!formName.trim() || !formBaseUrl.trim()) return;
-    await apiFetch("/api/providers", {
-      method: "POST",
-      body: JSON.stringify({
-        name: formName.trim(),
-        kind: formKind,
-        baseUrl: formBaseUrl.trim(),
-        apiKey: formApiKey.trim(),
-        defaultModel: formModel.trim(),
-        models: formModel.trim() ? [formModel.trim()] : [],
-      }),
-    });
-    setShowAdd(false);
-    setFormName("");
-    setFormApiKey("");
-    await load();
+    setNotice(null);
+    try {
+      await apiFetch("/api/providers", {
+        method: "POST",
+        body: JSON.stringify({
+          name: formName.trim(),
+          kind: formKind,
+          baseUrl: formBaseUrl.trim(),
+          apiKey: formApiKey.trim(),
+          defaultModel: formModel.trim(),
+          models: formModel.trim() ? [formModel.trim()] : [],
+        }),
+      });
+      setShowAdd(false);
+      setFormName("");
+      setFormApiKey("");
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   async function testProvider(id: string) {
-    setTestState((prev) => ({ ...prev, [id]: { ok: true, msg: "Testing...", loading: true } }));
+    setTestState((prev) => ({ ...prev, [id]: { ok: false, msg: "Running real LLM completion test...", loading: true } }));
     try {
-      const res = await apiFetch<{ ok: boolean; latencyMs: number; message: string }>(
-        `/api/providers/${id}/test`,
-        { method: "POST" }
-      );
+      const res = await apiFetch<{
+        ok: boolean;
+        latencyMs: number;
+        message: string;
+        discoveredModels?: string[];
+        error?: { code?: string; stage?: string; detail?: string };
+      }>(`/api/providers/${id}/test`, { method: "POST" });
+      const detail = res.error?.detail && !res.message.includes(res.error.detail) ? ` — ${res.error.detail}` : "";
       setTestState((prev) => ({
         ...prev,
-        [id]: { ok: res.ok, msg: `${res.message} (${res.latencyMs}ms)` },
+        [id]: {
+          ok: res.ok,
+          msg: `${res.message}${detail} (${res.latencyMs}ms)`,
+          loading: false,
+          discoveredModels: res.discoveredModels,
+        },
       }));
     } catch (err) {
       setTestState((prev) => ({
         ...prev,
-        [id]: { ok: false, msg: err instanceof Error ? err.message : "Test failed" },
+        [id]: { ok: false, msg: err instanceof Error ? err.message : "Test failed", loading: false },
       }));
     }
   }
 
   async function updateAgentModel(agentId: string, providerId: string, model: string) {
-    await apiFetch(`/api/agents/${agentId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ provider_id: providerId || null, model }),
-    });
-    await load();
+    setNotice(null);
+    try {
+      await apiFetch(`/api/agents/${agentId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ provider_id: providerId || null, model }),
+      });
+      await load();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   return (
@@ -143,7 +181,7 @@ export const ProvidersPage: React.FC = () => {
             <Cpu className="w-5 h-5 text-emerald-400" /> Multi-AI Provider Hub
           </h1>
           <p className="text-xs text-zinc-400 mt-1">
-            Connect Official APIs (OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama) or ANY Custom Base URL — then bind different models to each Pandawa Agent by purpose.
+            Connect Official APIs (OpenAI Chat / Responses, Anthropic, Gemini, xAI, DeepSeek, OpenRouter) or ANY Custom Base URL (Ollama, vLLM, 9Router) — then bind models per Agent.
           </p>
         </div>
         <button
@@ -153,6 +191,18 @@ export const ProvidersPage: React.FC = () => {
           <Plus className="w-4 h-4" /> Add Custom AI Provider
         </button>
       </div>
+
+      {notice && (
+        <div
+          className={`px-4 py-2.5 rounded-lg border text-xs font-mono ${
+            notice.ok
+              ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+              : "bg-rose-500/10 border-rose-500/30 text-rose-300"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
 
       {/* Add Provider Form with 1-Click Presets */}
       {showAdd && (
@@ -194,10 +244,11 @@ export const ProvidersPage: React.FC = () => {
               <label className="text-zinc-400 block mb-1">API Protocol</label>
               <select
                 value={formKind}
-                onChange={(e) => setFormKind(e.target.value as "openai" | "anthropic" | "gemini")}
+                onChange={(e) => setFormKind(e.target.value as ProviderItem["kind"])}
                 className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
               >
                 <option value="openai">OpenAI-Compatible (Chat Completions / Custom Base URL)</option>
+                <option value="openai_responses">OpenAI Responses API (/v1/responses)</option>
                 <option value="anthropic">Anthropic Messages API</option>
                 <option value="gemini">Google Gemini Native API</option>
               </select>
@@ -296,13 +347,20 @@ export const ProvidersPage: React.FC = () => {
                 </div>
 
                 <div className="text-xs text-zinc-300 flex items-center justify-between bg-[#09090b] rounded-lg px-2.5 py-1.5 border border-white/[0.07]">
-                  <span className="text-zinc-500">Default:</span>
+                  <span className="text-zinc-500 flex items-center gap-1.5">
+                    <span>Default:</span>
+                    {p.kind === "openai_responses" && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 border border-violet-500/30 font-mono">
+                        /responses
+                      </span>
+                    )}
+                  </span>
                   <code className="text-amber-300 truncate ml-2">{p.defaultModel || "—"}</code>
                 </div>
 
                 {p.hasApiKey ? (
                   <div className="text-[11px] text-zinc-500 font-mono flex items-center gap-1">
-                    <KeyRound className="w-3 h-3 text-emerald-400" /> {p.apiKeyMasked}
+                    <KeyRound className="w-3 h-3 text-emerald-400" /> {p.apiKeyMasked || "Local Gateway"}
                   </div>
                 ) : (
                   <div className="flex items-center gap-1.5">
@@ -326,7 +384,7 @@ export const ProvidersPage: React.FC = () => {
 
                 {ts && (
                   <div
-                    className={`text-[11px] px-2.5 py-1.5 rounded-lg border flex items-start gap-1.5 ${
+                    className={`text-[11px] px-2.5 py-1.5 rounded-lg border space-y-1 ${
                       ts.loading
                         ? "bg-white/[0.06] border-white/[0.10] text-zinc-300"
                         : ts.ok
@@ -334,12 +392,22 @@ export const ProvidersPage: React.FC = () => {
                         : "bg-rose-500/10 border-rose-500/30 text-rose-300"
                     }`}
                   >
-                    {ts.ok ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    ) : (
-                      <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <div className="flex items-start gap-1.5">
+                      {ts.loading ? (
+                        <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 animate-spin" />
+                      ) : ts.ok ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      )}
+                      <span className="break-all">{ts.msg}</span>
+                    </div>
+                    {Array.isArray(ts.discoveredModels) && ts.discoveredModels.length > 0 && (
+                      <div className="text-[10px] font-mono text-zinc-400 truncate">
+                        Models ({ts.discoveredModels.length}): {ts.discoveredModels.slice(0, 6).join(", ")}
+                        {ts.discoveredModels.length > 6 ? " ..." : ""}
+                      </div>
                     )}
-                    <span className="break-all">{ts.msg}</span>
                   </div>
                 )}
               </div>
@@ -409,7 +477,9 @@ export const ProvidersPage: React.FC = () => {
                       value={a.provider_id || ""}
                       onChange={(e) => {
                         const prov = providers.find((p) => p.id === e.target.value);
-                        updateAgentModel(a.id, e.target.value, prov?.defaultModel || a.model);
+                        const nextModel = prov?.defaultModel || modelDrafts[a.id] || a.model;
+                        setModelDrafts((prev) => ({ ...prev, [a.id]: nextModel }));
+                        updateAgentModel(a.id, e.target.value, nextModel);
                       }}
                       className="w-52 max-w-full bg-[#09090b] border border-white/[0.10] rounded-lg pl-2.5 pr-7 py-1.5 text-zinc-100 truncate"
                     >
@@ -423,8 +493,12 @@ export const ProvidersPage: React.FC = () => {
                   </td>
                   <td className="px-4 py-2.5">
                     <input
-                      defaultValue={a.model}
-                      title={a.model}
+                      value={modelDrafts[a.id] ?? a.model}
+                      title={modelDrafts[a.id] ?? a.model}
+                      onChange={(e) => setModelDrafts((prev) => ({ ...prev, [a.id]: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                      }}
                       onBlur={(e) => {
                         if (e.target.value !== a.model) {
                           updateAgentModel(a.id, a.provider_id || "", e.target.value);
@@ -465,7 +539,8 @@ export const ProvidersPage: React.FC = () => {
                   onChange={(e) => setEditing({ ...editing, kind: e.target.value as ProviderItem["kind"] })}
                   className="w-full bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
                 >
-                  <option value="openai">OpenAI-Compatible</option>
+                  <option value="openai">OpenAI-Compatible (Chat Completions)</option>
+                  <option value="openai_responses">OpenAI Responses API (/v1/responses)</option>
                   <option value="anthropic">Anthropic Messages</option>
                   <option value="gemini">Google Gemini</option>
                 </select>

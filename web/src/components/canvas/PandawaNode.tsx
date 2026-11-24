@@ -16,6 +16,8 @@ export interface PandawaNodeData extends Record<string, unknown> {
   isFolder?: boolean;
   color?: string;
   packs?: string[];
+  roleBadges?: string[];
+  pipelineSummary?: string;
   isActive?: boolean;
 }
 
@@ -134,6 +136,29 @@ export const PandawaNode: React.FC<NodeProps> = ({ data, selected }) => {
         {(d.role || d.subtitle || d.folderPath || d.path || d.model) && (
           <div className="text-[11px] text-zinc-500 truncate mt-0.5 font-mono">
             {d.role || d.model || d.folderPath || d.path || d.subtitle}
+          </div>
+        )}
+        {d.pipelineSummary && (
+          <div className="text-[10px] text-violet-300/90 truncate mt-1 font-mono" title={d.pipelineSummary}>
+            {d.pipelineSummary}
+          </div>
+        )}
+        {Array.isArray(d.roleBadges) && d.roleBadges.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {d.roleBadges.map((rb) => (
+              <span
+                key={rb}
+                className={`text-[9px] font-mono font-semibold px-1.5 py-0.5 rounded border ${
+                  rb === "LEAD"
+                    ? "bg-amber-500/15 text-amber-300 border-amber-500/35"
+                    : rb === "QA"
+                    ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/35"
+                    : "bg-emerald-500/15 text-emerald-300 border-emerald-500/35"
+                }`}
+              >
+                {rb}
+              </span>
+            ))}
           </div>
         )}
         {Array.isArray(d.packs) && d.packs.length > 0 && (

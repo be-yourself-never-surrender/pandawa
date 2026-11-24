@@ -77,6 +77,7 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
   // Cron form
   const [cronName, setCronName] = useState("");
   const [cronExpr, setCronExpr] = useState("0 9 * * *");
+  const [cronTargetTeamId, setCronTargetTeamId] = useState("");
   const [cronPrompt, setCronPrompt] = useState("");
 
   // MCP form
@@ -99,6 +100,9 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
     setChannels(cRes.channels);
     setMcps(mRes.servers);
     setTeams(tRes.teams);
+    setCronTargetTeamId((prev) =>
+      prev && tRes.teams.some((t) => t.id === prev) ? prev : tRes.teams[0]?.id || ""
+    );
     if (hRes) {
       setHbConfig(hRes.config);
       setHbLogs(hRes.logs || []);
@@ -129,14 +133,15 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
 
   async function addCron(e: React.FormEvent) {
     e.preventDefault();
-    if (!cronName.trim() || !cronPrompt.trim()) return;
+    const targetId = cronTargetTeamId || teams[0]?.id || "";
+    if (!cronName.trim() || !cronPrompt.trim() || !targetId) return;
     await apiFetch("/api/cron", {
       method: "POST",
       body: JSON.stringify({
         name: cronName.trim(),
         schedule: cronExpr.trim(),
         targetType: "team",
-        targetId: teams[0]?.id || "team_pandawa",
+        targetId,
         prompt: cronPrompt.trim(),
       }),
     });
@@ -164,7 +169,7 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
           <Clock className="w-5 h-5 text-cyan-400" /> Automation, Channels & MCP
         </h1>
         <p className="text-xs text-zinc-400 mt-1">
-          Schedule recurring Team Pandawa missions, bridge Telegram / Discord / Webhooks, and register external MCP servers.
+          Schedule recurring agent team missions, bridge Telegram / Discord / Webhooks, and register external MCP servers.
         </p>
       </div>
 
@@ -187,15 +192,15 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
               )}
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Periodically wakes Team Pandawa to inspect living terminals, background jobs, open tasks &amp;{" "}
-              <code className="text-amber-300">main-brain/HEARTBEAT.md</code> — silently logs <code>HEARTBEAT_OK</code>{" "}
-              and alerts Telegram/Discord only when real action is needed.
+              Periodically wakes your selected team to inspect living terminals, background jobs, open tasks &amp;{" "}
+              <code className="text-amber-300">{hbConfig?.checklistPath || "HEARTBEAT.md"}</code> — silently logs{" "}
+              <code>HEARTBEAT_OK</code> and alerts Telegram/Discord only when real action is needed.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap text-xs">
-            {onOpenFile && (
+            {onOpenFile && hbConfig?.checklistPath && (
               <button
-                onClick={() => onOpenFile(hbConfig?.checklistPath || "main-brain/HEARTBEAT.md")}
+                onClick={() => onOpenFile(hbConfig.checklistPath)}
                 className="px-3 py-1.5 rounded-lg bg-[#18181b] hover:bg-[#222227] border border-white/[0.10] text-amber-300 font-medium flex items-center gap-1.5 cursor-pointer"
               >
                 <FileText className="w-3.5 h-3.5" /> Edit HEARTBEAT.md
@@ -229,6 +234,20 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
               />
               24/7 Autonomous Daemon: {hbConfig.enabled ? "ON" : "OFF"}
             </button>
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-400 whitespace-nowrap">Target Team:</span>
+              <select
+                value={hbConfig.teamId}
+                onChange={(e) => saveHeartbeat({ teamId: e.target.value })}
+                className="bg-[#09090b] border border-white/[0.10] rounded-lg px-2.5 py-1.5 text-white max-w-[180px]"
+              >
+                {teams.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-zinc-400 whitespace-nowrap">Interval:</span>
               <select
@@ -307,15 +326,27 @@ export const AutomationPage: React.FC<AutomationPageProps> = ({ onOpenFile, onOp
             placeholder="0 9 * * *"
             className="lg:col-span-2 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 font-mono text-white"
           />
+          <select
+            value={cronTargetTeamId}
+            onChange={(e) => setCronTargetTeamId(e.target.value)}
+            aria-label="Cron target team"
+            className="lg:col-span-2 bg-[#09090b] border border-white/[0.10] rounded-lg px-2.5 py-2 text-white"
+          >
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
           <input
             value={cronPrompt}
             onChange={(e) => setCronPrompt(e.target.value)}
-            placeholder="Mission prompt for Team Pandawa..."
-            className="lg:col-span-5 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
+            placeholder="Mission prompt for selected team..."
+            className="lg:col-span-3 bg-[#09090b] border border-white/[0.10] rounded-lg px-3 py-2 text-white"
           />
           <button
             type="submit"
-            disabled={!cronName.trim() || !cronPrompt.trim()}
+            disabled={!cronName.trim() || !cronPrompt.trim() || (!cronTargetTeamId && teams.length === 0)}
             className="lg:col-span-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:bg-[#18181b] disabled:text-zinc-500 disabled:cursor-not-allowed text-zinc-950 font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" /> Add

@@ -448,7 +448,7 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
             </h2>
             {status?.usingDefaultPassword && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-semibold">
-                Default (11111111)
+                Initial password active
               </span>
             )}
           </div>

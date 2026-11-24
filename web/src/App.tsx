@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useState } from "react";
+import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { apiFetch, createRealtimeSocket, getStoredToken, setStoredToken } from "./api/client";
 import type { NavTab } from "./types";
 import { LoginScreen } from "./components/LoginScreen";
@@ -41,6 +41,7 @@ export const App: React.FC = () => {
   const [liveEvents, setLiveEvents] = useState<Array<Record<string, unknown>>>([]);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApprovalItem[]>([]);
   const [activeAgentIds, setActiveAgentIds] = useState<Set<string>>(new Set());
+  const eventSeqRef = useRef(0);
 
   useEffect(() => {
     const onUnauthorized = () => setAuthed(false);
@@ -114,20 +115,21 @@ export const App: React.FC = () => {
         ws = await createRealtimeSocket((ev) => {
           const evType = String(ev.type || "");
           if (evType !== "agent_token") {
-            setLiveEvents((prev) => [...prev.slice(-30), ev]);
+            const seq = ++eventSeqRef.current;
+            setLiveEvents((prev) => [...prev.slice(-49), { ...ev, _seq: seq }]);
           }
 
           if (evType === "agent_start" && typeof ev.agentId === "string") {
             const aid = ev.agentId;
             setActiveAgentIds((prev) => new Set([...prev, aid]));
-          } else if (evType === "agent_done" && typeof ev.agentId === "string") {
+          } else if ((evType === "agent_done" || evType === "agent_error") && typeof ev.agentId === "string") {
             const aid = ev.agentId;
             setActiveAgentIds((prev) => {
               const next = new Set(prev);
               next.delete(aid);
               return next;
             });
-          } else if (evType === "mission_aborted") {
+          } else if (evType === "mission_aborted" || evType === "team_done") {
             setActiveAgentIds(new Set());
           } else if (evType === "approval_required" && ev.approval) {
             const item = ev.approval as PendingApprovalItem;
@@ -232,6 +234,7 @@ export const App: React.FC = () => {
               onOpenBrainFile={handleOpenBrainFile}
               onOpenChannels={() => setTab("channels")}
               activeAgentIds={activeAgentIds}
+              liveEvents={liveEvents}
               initialFocusTeamId={focusTeamId}
             />
           </Suspense>

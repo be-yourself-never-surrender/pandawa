@@ -12,10 +12,11 @@ export type NavTab =
 export interface ProviderItem {
   id: string;
   name: string;
-  kind: "openai" | "anthropic" | "gemini";
+  kind: "openai" | "openai_responses" | "anthropic" | "gemini";
   baseUrl: string;
   hasApiKey: boolean;
   apiKeyMasked: string;
+  encryptedAtRest?: boolean;
   defaultModel: string;
   models: string[];
   headers: Record<string, string>;
@@ -60,6 +61,12 @@ export interface TeamItem {
   team_brain_id: string | null;
   collaboration_mode: "execute" | "deliberate" | "parallel" | "sequential" | "consensus";
   max_rounds: number;
+  lead_agent_id?: string | null;
+  reviewer_agent_id?: string | null;
+  sender_agent_id?: string | null;
+  lead_agent_name?: string;
+  reviewer_agent_name?: string;
+  sender_agent_name?: string;
   enabled: boolean;
   members: Array<{
     id: string;

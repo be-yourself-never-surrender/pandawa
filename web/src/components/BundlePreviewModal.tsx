@@ -7,7 +7,15 @@ export interface PreviewBundleData {
   bundleName?: string;
   description?: string;
   author?: string;
-  team?: { name: string; description?: string; collaborationMode?: string };
+  warnings?: string[];
+  team?: {
+    name: string;
+    description?: string;
+    collaborationMode?: string;
+    leadAgentSlug?: string;
+    reviewerAgentSlug?: string;
+    senderAgentSlug?: string;
+  };
   brains?: Array<{ name: string; layer: string; folderPath: string }>;
   agents?: Array<{ name: string; title: string; avatar?: string; purpose?: string; model?: string }>;
   files?: Array<{ path: string; content: string }>;
@@ -65,6 +73,26 @@ export const BundlePreviewModal: React.FC<BundlePreviewModalProps> = ({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+          {Array.isArray(bundle.warnings) && bundle.warnings.length > 0 && (
+            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 space-y-1">
+              <div className="text-[10px] font-mono uppercase tracking-wider text-amber-300">
+                Bundle Warnings ({bundle.warnings.length})
+              </div>
+              {bundle.warnings.map((w, idx) => (
+                <div key={idx} className="text-[11px]">
+                  • {w}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {bundle.team && (bundle.team.leadAgentSlug || bundle.team.reviewerAgentSlug || bundle.team.senderAgentSlug) && (
+            <div className="p-2.5 rounded-lg bg-[#09090b] border border-white/[0.07] text-[11px] font-mono text-zinc-300 flex flex-wrap gap-3">
+              {bundle.team.leadAgentSlug && <span>Lead: <strong className="text-amber-300">{bundle.team.leadAgentSlug}</strong></span>}
+              {bundle.team.reviewerAgentSlug && <span>QA: <strong className="text-cyan-300">{bundle.team.reviewerAgentSlug}</strong></span>}
+              {bundle.team.senderAgentSlug && <span>Reply: <strong className="text-emerald-300">{bundle.team.senderAgentSlug}</strong></span>}
+            </div>
+          )}
           <div className="grid grid-cols-3 rounded-lg bg-[#09090b] border border-white/[0.07] divide-x divide-white/[0.06]">
             <div className="p-3">
               <div className="text-[11px] text-zinc-500">Brains</div>

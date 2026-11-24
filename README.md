@@ -27,12 +27,13 @@
 
 <table>
 <tr><td><b>Visual Control Plane &amp; Channel Routing (Brain Canvas)</b></td><td>Wire <b>Channels</b> (WhatsApp / Telegram / Webhooks) → <b>Team Brains</b> → <b>Agents</b> → <b>AI Models</b> → <b>Files/Folders</b> &amp; <b>Toolpacks</b> visually. Saving a <code>Channel → Team/Agent</code> wire updates live bot routing instantly without restarting!</td></tr>
-<tr><td><b>Omnichannel Messaging (WhatsApp QR + Cloud API + Telegram)</b></td><td>Choose either <b>WhatsApp QR (Baileys — free 2-way, live QR scanner right in Web UI)</b> OR <b>WhatsApp Official Meta Cloud API</b> (<code>GET/POST /api/webhooks/whatsapp/:id</code> with HMAC-SHA256 verification), plus <b>Telegram 2-way</b>, <b>Discord</b>, <b>Slack</b>, and <b>Webhooks</b> — with persistent threads (<code>/new</code>) &amp; mobile remote approvals (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>, <code>/term</code>, <code>/status</code>).</td></tr>
-<tr><td><b>Programmatic Execute &amp; Verify (Up to 100 Steps)</b></td><td>Architect splits tasks with <code>verifyCmd</code> → Builders execute in shared terminals under enforced file locks &amp; atomic writes → Orchestrator executes <code>verifyCmd</code> directly and enforces real exit codes (<code>verified=true</code> only on exit <code>0</code>) → Auto-fix loop.</td></tr>
+<tr><td><b>Smart Triage &amp; Programmatic Execute &amp; Verify (Up to 100 Steps)</b></td><td><code>execute</code> mode starts with Lead <b>Smart Triage</b> (<code>direct_reply</code> for casual chat without waking specialists, or selective delegation with <code>needsReview</code>) → Builders work under enforced locks in <b>per-team isolated workspaces</b> (<code>data/workspaces/&lt;teamId&gt;/</code>) → Real peer collaboration (<code>consult_teammate</code>, live mid-turn <code>team_message</code> with read receipts, Team Blackboard) → Programmatic exit-code <code>verifyCmd</code> gate &amp; auto-fix loop.</td></tr>
+<tr><td><b>Omnichannel Messaging (WhatsApp QR + Cloud API + Telegram)</b></td><td>Choose either <b>WhatsApp QR (Baileys — free 2-way, live QR scanner right in Web UI)</b> OR <b>WhatsApp Official Meta Cloud API</b> (<code>GET/POST /api/webhooks/whatsapp/:id</code> with HMAC-SHA256 verification), plus <b>Telegram 2-way</b>, <b>Discord</b>, <b>Slack</b>, and <b>Webhooks</b> — delivering clean natural replies in chat (no noisy headers) while preserving full agent attribution in metadata &amp; <code>/status</code>, plus persistent threads (<code>/new</code>) and mobile approvals (<code>/approve</code>, <code>/auto</code>, <code>/reject</code>, <code>/term</code>).</td></tr>
+<tr><td><b>Official API Keys + OpenAI Responses API &amp; Custom Gateways</b></td><td>Connect official keys (<b>OpenAI</b> Chat Completions or native <code>openai_responses</code> <code>/v1/responses</code>, <b>Anthropic</b>, <b>Gemini</b>, <b>DeepSeek</b>, <b>OpenRouter</b>), <b>Ollama</b>, or your own external proxy such as a <b>9Router / LiteLLM Gateway</b> preset — keeping Pandawa focused cleanly on Agentic Teaming.</td></tr>
 <tr><td><b>Pandawa Skill Installer (GitHub / URL / .zip / Folder / CLI)</b></td><td>Install multi-file <code>SKILL.md</code> packages (preserving <code>scripts/</code> &amp; <code>references/</code>) from <b>GitHub repos/folders</b> (<code>owner/repo</code>), raw URLs, <code>.zip</code> packs, or local folders — with <b>pre-install preview &amp; static security scanning</b> (<code>CLEAN</code> / <code>REVIEW</code> / <code>CAUTION</code>) and 1-click uninstall.</td></tr>
 <tr><td><b>Executable Layered Brain Vault (<code>[[wikilinks]]</code>)</b></td><td><code>Main Brain → Team Brain → Personal Brain</code> stored as plain Markdown with <code>[[wikilinks]]</code>, backlinks, SQLite FTS5, hybrid semantic search (offline TF-IDF + optional neural RRF), and bulk import for <b>Files, Obsidian Folders, <code>.zip</code>, PDF, DOCX, and XLSX</b>.</td></tr>
-<tr><td><b>Real-Time xterm.js PTY Terminal (Linux / macOS / WSL2)</b></td><td>Interactive 60fps ANSI terminal inside Web Control Plane (<code>xterm.js</code> ↔ single-use WS ticket ↔ Python PTY ↔ <code>tmux</code>) shared live with Pandawa agents, or attach via SSH (<code>pandawa term attach &lt;name&gt;</code>). <i>(Windows: run under WSL2 or Docker for PTY/tmux.)</i></td></tr>
-<tr><td><b>46 Built-In Power Tools + Live MCP + Heartbeat Daemon</b></td><td>Shared PTY/tmux terminals, live inter-agent <code>team_message</code>/<code>team_inbox</code>, <code>brain_semantic_search</code>, <code>heartbeat_configure</code> (24/7 daemon), atomic file patching &amp; checkpoints, Python/Node/Bash execution, web search, Playwright + Vision, cron, and <b>HTTP/STDIO MCP</b>.</td></tr>
+<tr><td><b>Real-Time xterm.js PTY Terminal (Linux / macOS / WSL2)</b></td><td>Interactive 60fps ANSI terminal inside Web Control Plane (<code>xterm.js</code> ↔ single-use WS ticket ↔ Python PTY ↔ team-scoped <code>tmux</code>) shared live with teammates in their team workspace, or attach via SSH (<code>pandawa term attach &lt;name&gt;</code>). <i>(Windows: run under WSL2 or Docker for PTY/tmux.)</i></td></tr>
+<tr><td><b>46 Built-In Power Tools + Live MCP + Heartbeat Daemon</b></td><td>Team-scoped PTY/tmux terminals &amp; managed processes, genuine inter-agent <code>consult_teammate</code> &amp; <code>team_message</code>/<code>team_inbox</code> (with SQLite read receipts), <code>brain_semantic_search</code>, <code>heartbeat_configure</code> (24/7 daemon), atomic file patching &amp; checkpoints, Python/Node/Bash execution, web search, Playwright + Vision, cron, and <b>HTTP/STDIO MCP</b>.</td></tr>
 <tr><td><b>Commercial Brain Kits (<code>.pandawa.json</code>)</b></td><td>Export any Team + Layered Brains + Canvas topology into a portable kit (providers, channels &amp; secrets are never exported) with a pre-install Preview Modal.</td></tr>
 </table>
 
@@ -62,9 +63,9 @@
 └────────────────────────────────────┬───────────────────────────────────────┘
                                      ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│       Autonomous Team Engine (Programmatic Execute & Verify · ≤100 Steps)  │
-│  Multi-AI Hub (OpenAI · Anthropic · Gemini · DeepSeek · OpenRouter · Local)│
-│  SSE Streaming · Vision · Semantic Compaction · Token Cap · Exit-Code QA   │
+│       Autonomous Team Engine (Smart Triage -> Execute -> Verify · ≤100)    │
+│  Per-Team Isolated Workspaces · Real Peer Consult & Team Messages          │
+│  Official & Custom API Keys · OpenAI Responses (/v1/responses) · Vision    │
 └────────────────────────────────────┬───────────────────────────────────────┘
                                      ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -105,7 +106,7 @@ git clone https://github.com/be-yourself-never-surrender/pandawa.git
 cd pandawa
 npm install && npm --prefix web install
 npm run build
-npm test
+npm test && npm run test:web
 npm start
 ```
 
@@ -155,7 +156,7 @@ pandawa backup kit.json               # Export Team + Brains + Canvas into porta
 | --- | --- | --- |
 | `PANDAWA_PORT` | `7777` | HTTP & WebSocket server port |
 | `PANDAWA_HOST` | `127.0.0.1` | Bind interface (`0.0.0.0` in Docker / systemd behind HTTPS) |
-| `PANDAWA_DATA_DIR` | `./data` | Storage for `pandawa.db` (`0600`), `.vault.key` (`0600`), `whatsapp_sessions/` (`0700`), `brains/`, `workspace/` |
+| `PANDAWA_DATA_DIR` | `./data` | Storage for `pandawa.db` (`0600`), `.vault.key` (`0600`), `whatsapp_sessions/` (`0700`), `brains/`, per-team `workspaces/` & `workspace/` |
 | `PANDAWA_DEFAULT_PASSWORD` | *(random 16-char)* | Optional override for first-boot admin password |
 | `PANDAWA_CORS_ORIGINS` | *(same-origin)* | Comma-separated extra allowed CORS origins |
 | `PANDAWA_TOKEN_TTL_SEC` | `172800` (48h) | Admin session JWT lifetime in seconds |
@@ -166,8 +167,10 @@ pandawa backup kit.json               # Export Team + Brains + Canvas into porta
 ## Testing & Security
 
 ```bash
-npm run build && npm test
+npm run build && npm test && npm run test:web
 ```
+
+Runs 22 server unit/E2E tests (auth, SSRF guard, file locks, Smart Triage, OpenAI `/v1/responses`, multi-team workspace isolation, inter-agent collaboration, Telegram & WhatsApp channels) plus 5 Web Control Plane utility tests.
 
 See [SECURITY.md](SECURITY.md) for the full security architecture and production deployment checklist.
 

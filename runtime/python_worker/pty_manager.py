@@ -4,27 +4,65 @@ Pandawa v6 — Persistent Shared Terminal Manager (Python + tmux)
 Provides stateful, interactive, multi-agent shared terminal sessions
 that humans can also inspect in Web Studio or attach via `tmux attach`.
 """
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
+from contextlib import contextmanager
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 PREFIX = "pdw_"
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
 
 
-def sanitize_name(name: str) -> str:
+def sanitize_name(name: str, max_len: int = 64) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (name or "main").strip().lower()).strip("_")
-    return (slug or "main")[:36]
+    return (slug or "main")[:max_len]
 
 
-def tmux_name(name: str) -> str:
-    s = sanitize_name(name)
+def resolve_scoped_name(name: str, scope: str = "") -> str:
+    clean = sanitize_name(name)
+    if clean.startswith(PREFIX):
+        clean = clean[len(PREFIX):] or "main"
+    sc = str(scope or "").strip()
+    if not sc:
+        return clean
+    tag = "s" + hashlib.sha256(sc.encode("utf-8")).hexdigest()[:8]
+    if clean.startswith(f"{tag}__"):
+        return clean
+    return f"{tag}__{clean}"[:64]
+
+
+def tmux_name(name: str, scope: str = "") -> str:
+    s = resolve_scoped_name(name, scope)
     return s if s.startswith(PREFIX) else f"{PREFIX}{s}"
+
+
+@contextmanager
+def session_exec_lock(tname: str):
+    if fcntl is None:
+        yield
+        return
+    lock_path = os.path.join(tempfile.gettempdir(), f"pdw_lock_{sanitize_name(tname)}.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def run_tmux(args: list[str], input_text: str | None = None, timeout: float = 10.0) -> subprocess.CompletedProcess:
@@ -42,7 +80,7 @@ def has_tmux() -> bool:
 
 
 def session_exists(tname: str) -> bool:
-    res = run_tmux(["has-session", "-t", tname])
+    res = run_tmux(["has-session", "-t", f"={tname}"])
     return res.returncode == 0
 
 
@@ -69,7 +107,7 @@ def cmd_list() -> dict:
                 "cwd": parts[3],
                 "currentCommand": parts[4],
                 "pid": int(parts[5]) if parts[5].isdigit() else None,
-                "attachCommand": f"tmux attach -t {sname}",
+                "attachCommand": f"tmux attach -t ={sname}",
             })
     return {"ok": True, "tmux": True, "sessions": sessions}
 
@@ -77,7 +115,8 @@ def cmd_list() -> dict:
 def cmd_open(payload: dict) -> dict:
     if not has_tmux():
         return {"ok": False, "error": "tmux is not installed on host"}
-    name = sanitize_name(payload.get("name", "main"))
+    scope = str(payload.get("scope") or payload.get("namespace") or "")
+    name = resolve_scoped_name(payload.get("name", "main"), scope)
     tname = tmux_name(name)
     cwd = payload.get("cwd") or os.getcwd()
     os.makedirs(cwd, exist_ok=True)
@@ -95,22 +134,22 @@ def cmd_open(payload: dict) -> dict:
         ])
         if res.returncode != 0:
             return {"ok": False, "error": res.stderr.strip() or "Failed to create tmux session"}
-        run_tmux(["set-option", "-t", tname, "history-limit", "10000"])
-        run_tmux(["set-option", "-t", tname, "remain-on-exit", "off"])
+        run_tmux(["set-option", "-t", f"={tname}", "history-limit", "10000"])
+        run_tmux(["set-option", "-t", f"={tname}", "remain-on-exit", "off"])
         # Give shell prompt a moment to initialize
         time.sleep(0.25)
 
-    # Apply any initial environment variables requested
-    env_vars = payload.get("env") or {}
-    if isinstance(env_vars, dict) and env_vars:
-        exports = []
-        for k, v in env_vars.items():
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(k)):
-                escaped = str(v).replace("'", "'\"'\"'")
-                exports.append(f"export {k}='{escaped}'")
-        if exports:
-            cmd_send({"name": name, "text": " && ".join(exports), "enter": True})
-            time.sleep(0.15)
+        # Apply initial environment variables ONLY when creating a fresh session (never paste into busy sessions)
+        env_vars = payload.get("env") or {}
+        if isinstance(env_vars, dict) and env_vars:
+            exports = []
+            for k, v in env_vars.items():
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(k)):
+                    escaped = str(v).replace("'", "'\"'\"'")
+                    exports.append(f"export {k}='{escaped}'")
+            if exports:
+                cmd_send({"name": name, "text": " && ".join(exports), "enter": True})
+                time.sleep(0.15)
 
     return {
         "ok": True,
@@ -118,13 +157,13 @@ def cmd_open(payload: dict) -> dict:
         "tmuxName": tname,
         "existed": existed,
         "cwd": cwd,
-        "attachCommand": f"tmux attach -t {tname}",
+        "attachCommand": f"tmux attach -t ={tname}",
     }
 
 
 def capture_pane(tname: str, lines: int = 300) -> str:
     lines = max(20, min(5000, int(lines)))
-    res = run_tmux(["capture-pane", "-p", "-J", "-t", tname, "-S", f"-{lines}"])
+    res = run_tmux(["capture-pane", "-p", "-J", "-t", f"={tname}", "-S", f"-{lines}"])
     if res.returncode != 0:
         return ""
     return ANSI_RE.sub("", res.stdout)
@@ -133,7 +172,8 @@ def capture_pane(tname: str, lines: int = 300) -> str:
 def cmd_read(payload: dict) -> dict:
     if not has_tmux():
         return {"ok": False, "error": "tmux is not installed"}
-    name = sanitize_name(payload.get("name", "main"))
+    scope = str(payload.get("scope") or payload.get("namespace") or "")
+    name = resolve_scoped_name(payload.get("name", "main"), scope)
     tname = tmux_name(name)
     if not session_exists(tname):
         return {"ok": False, "error": f"Terminal session '{name}' does not exist."}
@@ -144,8 +184,7 @@ def cmd_read(payload: dict) -> dict:
         if "__PDW_START_" not in ln and "__PDW_DONE_" not in ln and "__pdw_ec=" not in ln
     ]
     output = "\n".join(clean_lines).rstrip()
-    # Also fetch current cwd and running command
-    meta = run_tmux(["display-message", "-p", "-t", tname, "#{pane_current_path}\t#{pane_current_command}"])
+    meta = run_tmux(["display-message", "-p", "-t", f"={tname}", "#{pane_current_path}\t#{pane_current_command}"])
     cwd, cur_cmd = "", ""
     if meta.returncode == 0 and "\t" in meta.stdout:
         cwd, cur_cmd = meta.stdout.strip().split("\t", 1)
@@ -162,7 +201,8 @@ def cmd_read(payload: dict) -> dict:
 def cmd_send(payload: dict) -> dict:
     if not has_tmux():
         return {"ok": False, "error": "tmux is not installed"}
-    name = sanitize_name(payload.get("name", "main"))
+    scope = str(payload.get("scope") or payload.get("namespace") or "")
+    name = resolve_scoped_name(payload.get("name", "main"), scope)
     tname = tmux_name(name)
     if not session_exists(tname):
         return {"ok": False, "error": f"Terminal session '{name}' does not exist."}
@@ -173,26 +213,25 @@ def cmd_send(payload: dict) -> dict:
     enter = payload.get("enter", True)
 
     if key and str(key) in special_keys:
-        res = run_tmux(["send-keys", "-t", tname, str(key)])
+        res = run_tmux(["send-keys", "-t", f"={tname}", str(key)])
         if res.returncode != 0:
             return {"ok": False, "error": res.stderr.strip()}
     elif text is not None:
         raw = str(text)
         if raw in special_keys and not payload.get("literal"):
-            res = run_tmux(["send-keys", "-t", tname, raw])
+            res = run_tmux(["send-keys", "-t", f"={tname}", raw])
             if res.returncode != 0:
                 return {"ok": False, "error": res.stderr.strip()}
         else:
-            # Use tmux buffer paste for exact quoting & multiline fidelity
             buf_name = f"pdwbuf_{uuid.uuid4().hex[:8]}"
             load = run_tmux(["load-buffer", "-b", buf_name, "-"], input_text=raw)
             if load.returncode != 0:
                 return {"ok": False, "error": load.stderr.strip()}
-            paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", tname])
+            paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", f"={tname}"])
             if paste.returncode != 0:
                 return {"ok": False, "error": paste.stderr.strip()}
             if enter:
-                run_tmux(["send-keys", "-t", tname, "Enter"])
+                run_tmux(["send-keys", "-t", f"={tname}", "Enter"])
 
     time.sleep(0.2)
     snapshot = capture_pane(tname, 80).rstrip()
@@ -202,93 +241,93 @@ def cmd_send(payload: dict) -> dict:
 def cmd_exec(payload: dict) -> dict:
     if not has_tmux():
         return {"ok": False, "error": "tmux is not installed"}
-    name = sanitize_name(payload.get("name", "main"))
+    scope = str(payload.get("scope") or payload.get("namespace") or "")
+    name = resolve_scoped_name(payload.get("name", "main"), scope)
     tname = tmux_name(name)
     cwd = payload.get("cwd") or os.getcwd()
-    if not session_exists(tname):
-        opened = cmd_open({"name": name, "cwd": cwd})
-        if not opened.get("ok"):
-            return opened
-
     command = str(payload.get("command", "")).strip()
     if not command:
         return {"ok": False, "error": "Command cannot be empty"}
 
     timeout_sec = max(1.0, min(300.0, float(payload.get("timeoutSec", 45.0))))
-    marker_id = uuid.uuid4().hex[:10]
-    start_token = f"__PDW_START_{marker_id}__"
-    done_prefix = f"__PDW_DONE_{marker_id}__:"
 
-    # %s and %d keep the echoed command text distinct from the actual printed markers!
-    script = (
-        f"printf '__PDW_START_%s__\\n' '{marker_id}'\n"
-        f"{command}\n"
-        f"__pdw_ec=$?; printf '\\n__PDW_DONE_%s__:%d\\n' '{marker_id}' \"$__pdw_ec\"\n"
-    )
+    with session_exec_lock(tname):
+        if not session_exists(tname):
+            opened = cmd_open({"name": name, "scope": scope, "cwd": cwd})
+            if not opened.get("ok"):
+                return opened
 
-    buf_name = f"pdwexec_{marker_id}"
-    load = run_tmux(["load-buffer", "-b", buf_name, "-"], input_text=script)
-    if load.returncode != 0:
-        return {"ok": False, "error": load.stderr.strip()}
-    paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", tname])
-    if paste.returncode != 0:
-        return {"ok": False, "error": paste.stderr.strip()}
+        marker_id = uuid.uuid4().hex[:10]
+        start_token = f"__PDW_START_{marker_id}__"
+        done_prefix = f"__PDW_DONE_{marker_id}__:"
 
-    done_re = re.compile(rf"^{re.escape(done_prefix)}(\d+)\s*$")
-    deadline = time.monotonic() + timeout_sec
-    exit_code = None
-    captured_out = ""
-    timed_out = False
+        script = (
+            f"printf '__PDW_START_%s__\\n' '{marker_id}'\n"
+            f"{command}\n"
+            f"__pdw_ec=$?; printf '\\n__PDW_DONE_%s__:%d\\n' '{marker_id}' \"$__pdw_ec\"\n"
+        )
 
-    while True:
-        pane = capture_pane(tname, 2500)
-        lines = pane.splitlines()
+        buf_name = f"pdwexec_{marker_id}"
+        load = run_tmux(["load-buffer", "-b", buf_name, "-"], input_text=script)
+        if load.returncode != 0:
+            return {"ok": False, "error": load.stderr.strip()}
+        paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", f"={tname}"])
+        if paste.returncode != 0:
+            return {"ok": False, "error": paste.stderr.strip()}
 
-        # Find LAST exact start_token line
-        start_idx = -1
-        for i, ln in enumerate(lines):
-            if ln.strip() == start_token:
-                start_idx = i
+        done_re = re.compile(rf"^{re.escape(done_prefix)}(\d+)\s*$")
+        deadline = time.monotonic() + timeout_sec
+        exit_code = None
+        captured_out = ""
+        timed_out = False
 
-        if start_idx != -1:
-            after = lines[start_idx + 1:]
-            done_idx = -1
-            for j, ln in enumerate(after):
-                m = done_re.match(ln.strip())
-                if m:
-                    done_idx = j
-                    exit_code = int(m.group(1))
+        while True:
+            pane = capture_pane(tname, 2500)
+            lines = pane.splitlines()
+
+            start_idx = -1
+            for i, ln in enumerate(lines):
+                if ln.strip() == start_token:
+                    start_idx = i
+
+            if start_idx != -1:
+                after = lines[start_idx + 1:]
+                done_idx = -1
+                for j, ln in enumerate(after):
+                    m = done_re.match(ln.strip())
+                    if m:
+                        done_idx = j
+                        exit_code = int(m.group(1))
+                        break
+
+                if done_idx != -1:
+                    body = after[:done_idx]
+                    cleaned = [
+                        ln for ln in body
+                        if "__PDW_DONE_%s__" not in ln and "__PDW_START_%s__" not in ln
+                    ]
+                    captured_out = "\n".join(cleaned).strip()
                     break
 
-            if done_idx != -1:
-                body = after[:done_idx]
-                # Remove echoed trailing sentinel command line if shell echoed it
-                cleaned = [
-                    ln for ln in body
-                    if f"__PDW_DONE_%s__" not in ln and f"__PDW_START_%s__" not in ln
-                ]
-                captured_out = "\n".join(cleaned).strip()
-                break
-
-            if time.monotonic() >= deadline:
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    cleaned = [
+                        ln for ln in after
+                        if "__PDW_DONE_%s__" not in ln and "__PDW_START_%s__" not in ln
+                    ]
+                    captured_out = "\n".join(cleaned).strip()
+                    break
+            elif time.monotonic() >= deadline:
                 timed_out = True
-                cleaned = [
-                    ln for ln in after
-                    if f"__PDW_DONE_%s__" not in ln and f"__PDW_START_%s__" not in ln
-                ]
-                captured_out = "\n".join(cleaned).strip()
+                captured_out = "\n".join(lines[-80:]).strip()
                 break
-        elif time.monotonic() >= deadline:
-            timed_out = True
-            captured_out = "\n".join(lines[-80:]).strip()
-            break
 
-        time.sleep(0.15)
+            time.sleep(0.15)
 
-    meta = run_tmux(["display-message", "-p", "-t", tname, "#{pane_current_path}\t#{pane_current_command}"])
-    cur_cwd, cur_cmd = cwd, ""
-    if meta.returncode == 0 and "\t" in meta.stdout:
-        cur_cwd, cur_cmd = meta.stdout.strip().split("\t", 1)
+        meta = run_tmux(["display-message", "-p", "-t", f"={tname}", "#{pane_current_path}\t#{pane_current_command}"])
+        cur_cwd, cur_cmd = cwd, ""
+        if meta.returncode == 0 and "\t" in meta.stdout:
+            cur_cwd, cur_cmd = meta.stdout.strip().split("\t", 1)
 
     return {
         "ok": True,
@@ -305,18 +344,26 @@ def cmd_exec(payload: dict) -> dict:
 def cmd_close(payload: dict) -> dict:
     if not has_tmux():
         return {"ok": False, "error": "tmux is not installed"}
-    name = sanitize_name(payload.get("name", "main"))
+    scope = str(payload.get("scope") or payload.get("namespace") or "")
+    name = resolve_scoped_name(payload.get("name", "main"), scope)
     tname = tmux_name(name)
     if not session_exists(tname):
         return {"ok": False, "error": f"Terminal session '{name}' not found."}
-    res = run_tmux(["kill-session", "-t", tname])
+    res = run_tmux(["kill-session", "-t", f"={tname}"])
     return {"ok": res.returncode == 0, "name": name, "error": res.stderr.strip() if res.returncode != 0 else ""}
 
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "list"
     raw_in = sys.stdin.read().strip() if not sys.stdin.isatty() else ""
-    payload = json.loads(raw_in) if raw_in else {}
+    try:
+        payload = json.loads(raw_in) if raw_in else {}
+        if not isinstance(payload, dict):
+            print(json.dumps({"ok": False, "error": "JSON payload must be an object"}))
+            return
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"ok": False, "error": f"Invalid JSON input: {exc}"}))
+        return
 
     if action == "list":
         out = cmd_list()

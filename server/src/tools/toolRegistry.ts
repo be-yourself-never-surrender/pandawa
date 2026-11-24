@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import crypto from "node:crypto";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -39,9 +38,10 @@ import {
 } from "./terminalManager.js";
 import { runPythonWorker } from "./pythonWorker.js";
 import { assertSafeOutboundUrl } from "./netGuard.js";
+import { execSandboxedCommand } from "./sandboxRunner.js";
 import { semanticBrainSearch } from "../brains/semanticMemory.js";
 import { getHeartbeatConfig, updateHeartbeatConfig } from "../engine/heartbeatDaemon.js";
-import { dispatchChannelNotification } from "../channels/channelManager.js";
+import { dispatchChannelFile, dispatchChannelNotification } from "../channels/channelManager.js";
 
 const execAsync = promisify(exec);
 
@@ -1074,6 +1074,61 @@ const TOOLS: PandawaTool[] = [
       return `Attached visual image "${rel}" (${mimeType}, ${Math.round(stat.size / 1024)} KB) into your next reasoning step.`;
     },
   },
+  {
+    pack: "workspace",
+    definition: {
+      name: "channel_send_file",
+      description:
+        "Send a real file or image (report, script, screenshot, PDF, archive) from this team's workspace back to the active Telegram, WhatsApp, or Discord channel conversation.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path inside the team workspace" },
+          caption: { type: "string", description: "Optional short caption for the attachment" },
+          channel_name_or_id: {
+            type: "string",
+            description: "Optional channel ID or partial name (defaults to originating chat channel)",
+          },
+        },
+        required: ["path"],
+      },
+    },
+    execute: async (args, ctx) => {
+      const rel = String(args.path || "");
+      const fullPath = resolveWorkspacePath(rel, resolveWorkspaceTeamId(ctx));
+      if (!fs.existsSync(fullPath)) return `File not found in workspace: ${rel}`;
+
+      const db = getDb();
+      let targetChannelId = ctx.channelId || "";
+      const requested = String(args.channel_name_or_id || "").trim().toLowerCase();
+      if (requested) {
+        const rows = db.prepare("SELECT id, name FROM channels WHERE enabled = 1").all() as Array<{
+          id: string;
+          name: string;
+        }>;
+        const found = rows.find((c) => c.id.toLowerCase() === requested || c.name.toLowerCase().includes(requested));
+        if (!found) return `Channel "${args.channel_name_or_id}" not found or disabled.`;
+        targetChannelId = found.id;
+      } else if (!targetChannelId) {
+        const first = db
+          .prepare(
+            "SELECT id FROM channels WHERE enabled = 1 AND type IN ('telegram','whatsapp_qr','whatsapp_cloud','discord') ORDER BY created_at ASC LIMIT 1"
+          )
+          .get() as { id?: string } | undefined;
+        targetChannelId = first?.id || "";
+      }
+      if (!targetChannelId) return "No enabled media-capable channel configured.";
+
+      const chatOverride = !requested || requested === ctx.channelId ? ctx.chatId : undefined;
+      const res = await dispatchChannelFile(
+        targetChannelId,
+        fullPath,
+        args.caption ? String(args.caption) : undefined,
+        chatOverride
+      );
+      return JSON.stringify({ path: rel, channelId: targetChannelId, ...res }, null, 2);
+    },
+  },
 
   // =============================================
   // PACK 4: SHELL, CODE EXECUTION & BACKGROUND PROCESSES
@@ -1098,9 +1153,11 @@ const TOOLS: PandawaTool[] = [
       const wsTeamId = resolveWorkspaceTeamId(ctx);
       const cwd = resolveScopedCwd(args.cwd ? String(args.cwd) : undefined, wsTeamId);
       try {
-        const { stdout, stderr } = await execAsync(command, {
+        const { stdout, stderr } = await execSandboxedCommand({
+          command,
           cwd,
-          timeout: 60_000,
+          teamId: wsTeamId,
+          timeoutMs: 60_000,
           maxBuffer: 4 * 1024 * 1024,
         });
         return `STDOUT:\n${stdout.slice(0, 14_000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();
@@ -1128,7 +1185,9 @@ const TOOLS: PandawaTool[] = [
       const lang = String(args.language || "python");
       const code = String(args.code || "");
       const ext = lang === "node" ? ".mjs" : lang === "bash" ? ".sh" : ".py";
-      const tmpFile = path.join(os.tmpdir(), `pandawa_exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`);
+      const wsTeamId = resolveWorkspaceTeamId(ctx);
+      const wsDir = resolveTeamWorkspaceDir(wsTeamId);
+      const tmpFile = path.join(wsDir, `.pandawa_exec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`);
       fs.writeFileSync(tmpFile, code, "utf8");
       const cmd =
         lang === "node"
@@ -1136,11 +1195,12 @@ const TOOLS: PandawaTool[] = [
           : lang === "bash"
           ? `bash "${tmpFile}"`
           : `python3 "${tmpFile}" || python "${tmpFile}"`;
-      const wsDir = resolveTeamWorkspaceDir(resolveWorkspaceTeamId(ctx));
       try {
-        const { stdout, stderr } = await execAsync(cmd, {
+        const { stdout, stderr } = await execSandboxedCommand({
+          command: cmd,
           cwd: wsDir,
-          timeout: 45_000,
+          teamId: wsTeamId,
+          timeoutMs: 45_000,
           maxBuffer: 4 * 1024 * 1024,
         });
         return `STDOUT:\n${stdout.slice(0, 14_000)}\n${stderr ? `STDERR:\n${stderr.slice(0, 4000)}` : ""}`.trim();

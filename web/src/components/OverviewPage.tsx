@@ -153,7 +153,19 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
           </span>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <button
+            onClick={() => onNavigate("monitor")}
+            className="h-8 px-3 rounded-md bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] text-emerald-300 text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <Radio className="w-3.5 h-3.5 text-emerald-400" /> Live Monitor
+          </button>
+          <button
+            onClick={() => onNavigate("workspaces")}
+            className="h-8 px-3 rounded-md bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] text-zinc-300 text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <Terminal className="w-3.5 h-3.5 text-zinc-400" /> Workspaces
+          </button>
           <button
             onClick={() => onNavigate("terminal")}
             className="h-8 px-3 rounded-md bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] text-zinc-300 text-xs font-medium inline-flex items-center gap-1.5 transition cursor-pointer"
@@ -199,6 +211,17 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
             <span className="text-zinc-500">
               Heartbeat {runtime.heartbeat?.enabled ? `${runtime.heartbeat.intervalMinutes}m` : "standby"}
             </span>
+            {(() => {
+              const sb = (runtime as { sandbox?: { effectiveEngine?: string; mode?: string; reason?: string } }).sandbox;
+              if (!sb) return null;
+              const isBwrap = sb.effectiveEngine === "bwrap";
+              return (
+                <span title={sb.reason || ""} className="inline-flex items-center gap-1.5">
+                  <span className={`w-1.5 h-1.5 rounded-full ${isBwrap ? "bg-emerald-400" : "bg-sky-400"}`} />
+                  Sandbox {sb.effectiveEngine || sb.mode || "scoped_cwd"}
+                </span>
+              );
+            })()}
           </div>
         )}
 
@@ -348,6 +371,20 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => onNavigate("monitor")}
+                          title="Watch team group chat (read-only)"
+                          className="h-7 px-2.5 rounded-md bg-[#0c0c0e] hover:bg-[#1a1a1e] border border-white/[0.08] text-zinc-300 text-[11px] font-medium inline-flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Radio className="w-3 h-3 text-emerald-400" /> Monitor
+                        </button>
+                        <button
+                          onClick={() => onNavigate("workspaces")}
+                          title="Browse team workspace files"
+                          className="h-7 px-2.5 rounded-md bg-[#0c0c0e] hover:bg-[#1a1a1e] border border-white/[0.08] text-zinc-300 text-[11px] font-medium inline-flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Terminal className="w-3 h-3 text-zinc-400" /> Files
+                        </button>
                         <button
                           onClick={() => onFocusTeamOnCanvas(t.id)}
                           className="h-7 px-3 rounded-md bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"

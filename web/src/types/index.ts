@@ -1,5 +1,7 @@
 export type NavTab =
   | "overview"
+  | "monitor"
+  | "workspaces"
   | "canvas"
   | "channels"
   | "terminal"
@@ -8,6 +10,13 @@ export type NavTab =
   | "skills"
   | "automation"
   | "settings";
+
+export interface ProviderHealth {
+  status: "ready" | "no_key" | "error" | "disabled" | "unchecked";
+  latencyMs?: number;
+  error?: string;
+  checkedAt?: string;
+}
 
 export interface ProviderItem {
   id: string;
@@ -21,6 +30,7 @@ export interface ProviderItem {
   models: string[];
   headers: Record<string, string>;
   enabled: boolean;
+  health?: ProviderHealth;
 }
 
 export interface BrainItem {
@@ -55,6 +65,7 @@ export interface AgentItem {
 
 export interface TeamItem {
   id: string;
+  workspaceDir?: string;
   slug: string;
   name: string;
   description: string;

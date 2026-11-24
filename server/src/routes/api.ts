@@ -41,6 +41,22 @@ import {
   type LLMMessage,
   type LLMImageAttachment,
 } from "../providers/llmClient.js";
+import {
+  clearProviderHealth,
+  computeProviderHealth,
+  estimateTokenCostUsd,
+  isLocalProviderUrl,
+  recordProviderHealth,
+} from "../providers/providerHealth.js";
+import { getSandboxMode, getSandboxStatus, setSandboxMode, type SandboxMode } from "../tools/sandboxRunner.js";
+import {
+  createWorkspaceCheckpointSnapshot,
+  listWorkspaceCheckpoints,
+  listWorkspaceTree,
+  readWorkspacePreview,
+  resolveExplorerFilePath,
+  rollbackWorkspaceCheckpointSnapshot,
+} from "../tools/workspaceExplorer.js";
 import { compileAgentRuntime, getTeamMembers } from "../engine/contextCompiler.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
 import { runTeamMission, resolveTeamRoles } from "../engine/teamEngine.js";
@@ -144,6 +160,7 @@ function maskProvider(p: ProviderRecord) {
     models,
     headers,
     enabled: Boolean(p.enabled),
+    health: computeProviderHealth(p),
   };
 }
 
@@ -921,12 +938,14 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     ).run(name, kind, baseUrl, apiKey, defaultModel, modelsJson, headersJson, enabled, String(req.params.id));
 
     const updated = db.prepare("SELECT * FROM providers WHERE id = ?").get(String(req.params.id)) as unknown as ProviderRecord;
+    clearProviderHealth(updated.id);
     logAudit("admin", "provider.update", String(req.params.id), name);
     res.json({ provider: maskProvider(updated) });
   });
 
   router.delete("/providers/:id", (req: Request, res: Response) => {
     const db = getDb();
+    clearProviderHealth(String(req.params.id));
     db.prepare("DELETE FROM providers WHERE id = ?").run(String(req.params.id));
     logAudit("admin", "provider.delete", String(req.params.id));
     res.json({ ok: true });
@@ -940,7 +959,46 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       return;
     }
     const result = await testProviderConnection(provider);
-    res.json(result);
+    recordProviderHealth(provider.id, {
+      ok: result.ok,
+      latencyMs: result.latencyMs,
+      error: result.error?.detail || (result.ok ? undefined : result.message),
+    });
+    broadcast({ type: "providers_health_updated" });
+    res.json({ ...result, health: computeProviderHealth(provider) });
+  });
+
+  router.post("/providers/probe-all", async (_req: Request, res: Response) => {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM providers ORDER BY created_at ASC").all() as unknown as ProviderRecord[];
+    const results = await Promise.all(
+      rows.map(async (p) => {
+        if (!p.enabled) {
+          return { id: p.id, name: p.name, ok: false, latencyMs: 0, detail: "Disabled", health: computeProviderHealth(p) };
+        }
+        const key = decryptSecret(p.api_key || "").trim();
+        const local = isLocalProviderUrl(p.base_url);
+        if (!local && (!key || key.toLowerCase() === "ollama")) {
+          return {
+            id: p.id,
+            name: p.name,
+            ok: false,
+            latencyMs: 0,
+            detail: "No API key configured",
+            health: computeProviderHealth(p),
+          };
+        }
+        const probed = await testProviderConnection(p);
+        recordProviderHealth(p.id, {
+          ok: probed.ok,
+          latencyMs: probed.latencyMs,
+          error: probed.error?.detail || (probed.ok ? undefined : probed.message),
+        });
+        return { id: p.id, name: p.name, ...probed, health: computeProviderHealth(p) };
+      })
+    );
+    broadcast({ type: "providers_health_updated" });
+    res.json({ results });
   });
 
   // ========================
@@ -2920,13 +2978,15 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
   });
 
   // ========================
-  // RUNTIME POLICIES (Token Budget Cap & Optional Private-IP SSRF Policy)
+  // RUNTIME POLICIES (Token Budget Cap, Private-IP SSRF & OS bwrap Sandbox)
   // ========================
   router.get("/system/policies", (_req: Request, res: Response) => {
     const rawBudget = getSetting("max_tokens_per_mission");
     res.json({
       maxTokensPerMission: rawBudget !== null ? Number(rawBudget) : 250_000,
       ssrfBlockPrivate: getSetting("ssrf_block_private") === "1",
+      sandboxMode: getSandboxMode(),
+      sandboxStatus: getSandboxStatus(),
     });
   });
 
@@ -2938,17 +2998,33 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     if (req.body?.ssrfBlockPrivate !== undefined) {
       setSetting("ssrf_block_private", req.body.ssrfBlockPrivate ? "1" : "0");
     }
+    if (req.body?.sandboxMode !== undefined) {
+      const candidate = String(req.body.sandboxMode).trim().toLowerCase();
+      if (candidate === "auto" || candidate === "bwrap" || candidate === "off") {
+        setSandboxMode(candidate as SandboxMode);
+      } else {
+        res.status(400).json({ error: "Invalid sandboxMode (expected auto | bwrap | off)" });
+        return;
+      }
+    }
     const rawBudget = getSetting("max_tokens_per_mission");
-    logAudit("admin", "system.policies_update", "policies", `budget=${rawBudget}, ssrfPrivate=${getSetting("ssrf_block_private")}`);
+    logAudit(
+      "admin",
+      "system.policies_update",
+      "policies",
+      `budget=${rawBudget}, ssrfPrivate=${getSetting("ssrf_block_private")}, sandbox=${getSandboxMode()}`
+    );
     res.json({
       ok: true,
       maxTokensPerMission: rawBudget !== null ? Number(rawBudget) : 250_000,
       ssrfBlockPrivate: getSetting("ssrf_block_private") === "1",
+      sandboxMode: getSandboxMode(),
+      sandboxStatus: getSandboxStatus(),
     });
   });
 
   // ========================
-  // HYBRID PYTHON / TMUX / PLAYWRIGHT / SEMANTIC / HEARTBEAT STATUS
+  // HYBRID PYTHON / TMUX / PLAYWRIGHT / SEMANTIC / HEARTBEAT / SANDBOX STATUS
   // ========================
   router.get("/system/runtime", async (_req: Request, res: Response) => {
     const [pyStatus, termStatus, semStatus] = await Promise.all([
@@ -2965,6 +3041,7 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
       runningJobs: listBackgroundJobs(50).filter((j) => j.status === "running" || j.status === "queued").length,
       semanticMemory: semStatus,
       heartbeat: getHeartbeatConfig(),
+      sandbox: getSandboxStatus(),
     });
   });
 
@@ -3043,38 +3120,370 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
 
   router.get("/system/analytics", (_req: Request, res: Response) => {
     const db = getDb();
-    const byAgent = db
+    const rawLogs = db
       .prepare(
         `SELECT u.agent_id as agentId,
                 COALESCE(a.name, u.agent_id) as agentName,
                 COALESCE(a.avatar, '⚡') as avatar,
-                COUNT(*) as calls,
-                COALESCE(SUM(u.prompt_tokens), 0) as promptTokens,
-                COALESCE(SUM(u.completion_tokens), 0) as completionTokens,
-                ROUND(COALESCE(AVG(u.duration_ms), 0)) as avgDurationMs
+                u.provider_id as providerId,
+                COALESCE(p.name, u.provider_id) as providerName,
+                u.model as model,
+                u.prompt_tokens as promptTokens,
+                u.completion_tokens as completionTokens,
+                u.duration_ms as durationMs,
+                COALESCE(s.target_type, '') as targetType,
+                COALESCE(s.target_id, '') as targetId,
+                COALESCE(t.name, '') as teamName
          FROM usage_logs u
          LEFT JOIN agents a ON a.id = u.agent_id
-         GROUP BY u.agent_id
-         ORDER BY (promptTokens + completionTokens) DESC`
-      )
-      .all();
-
-    const byModel = db
-      .prepare(
-        `SELECT u.model as model,
-                COALESCE(p.name, u.provider_id) as providerName,
-                COUNT(*) as calls,
-                COALESCE(SUM(u.prompt_tokens), 0) as promptTokens,
-                COALESCE(SUM(u.completion_tokens), 0) as completionTokens,
-                ROUND(COALESCE(AVG(u.duration_ms), 0)) as avgDurationMs
-         FROM usage_logs u
          LEFT JOIN providers p ON p.id = u.provider_id
-         GROUP BY u.model, u.provider_id
-         ORDER BY (promptTokens + completionTokens) DESC`
+         LEFT JOIN sessions s ON s.id = u.session_id
+         LEFT JOIN teams t ON s.target_type = 'team' AND t.id = s.target_id`
       )
-      .all();
+      .all() as Array<{
+      agentId: string;
+      agentName: string;
+      avatar: string;
+      providerId: string;
+      providerName: string;
+      model: string;
+      promptTokens: number;
+      completionTokens: number;
+      durationMs: number;
+      targetType: string;
+      targetId: string;
+      teamName: string;
+    }>;
 
-    res.json({ byAgent, byModel });
+    const agentMap = new Map<
+      string,
+      { agentId: string; agentName: string; avatar: string; calls: number; promptTokens: number; completionTokens: number; totalDur: number; estimatedCostUsd: number }
+    >();
+    const modelMap = new Map<
+      string,
+      { model: string; providerName: string; calls: number; promptTokens: number; completionTokens: number; totalDur: number; estimatedCostUsd: number }
+    >();
+    const teamMap = new Map<
+      string,
+      { teamId: string; teamName: string; calls: number; promptTokens: number; completionTokens: number; totalDur: number; estimatedCostUsd: number }
+    >();
+
+    let totalCalls = 0;
+    let totalPrompt = 0;
+    let totalCompletion = 0;
+    let totalCost = 0;
+
+    for (const row of rawLogs) {
+      const cost = estimateTokenCostUsd(row.model, row.promptTokens, row.completionTokens);
+      totalCalls++;
+      totalPrompt += row.promptTokens;
+      totalCompletion += row.completionTokens;
+      totalCost += cost;
+
+      const ag = agentMap.get(row.agentId) || {
+        agentId: row.agentId,
+        agentName: row.agentName,
+        avatar: row.avatar,
+        calls: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalDur: 0,
+        estimatedCostUsd: 0,
+      };
+      ag.calls++;
+      ag.promptTokens += row.promptTokens;
+      ag.completionTokens += row.completionTokens;
+      ag.totalDur += row.durationMs;
+      ag.estimatedCostUsd += cost;
+      agentMap.set(row.agentId, ag);
+
+      const mKey = `${row.model}::${row.providerId}`;
+      const md = modelMap.get(mKey) || {
+        model: row.model,
+        providerName: row.providerName,
+        calls: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalDur: 0,
+        estimatedCostUsd: 0,
+      };
+      md.calls++;
+      md.promptTokens += row.promptTokens;
+      md.completionTokens += row.completionTokens;
+      md.totalDur += row.durationMs;
+      md.estimatedCostUsd += cost;
+      modelMap.set(mKey, md);
+
+      if (row.targetType === "team" && row.targetId) {
+        const tm = teamMap.get(row.targetId) || {
+          teamId: row.targetId,
+          teamName: row.teamName || row.targetId,
+          calls: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalDur: 0,
+          estimatedCostUsd: 0,
+        };
+        tm.calls++;
+        tm.promptTokens += row.promptTokens;
+        tm.completionTokens += row.completionTokens;
+        tm.totalDur += row.durationMs;
+        tm.estimatedCostUsd += cost;
+        teamMap.set(row.targetId, tm);
+      }
+    }
+
+    const roundCost = (n: number) => Number(n.toFixed(6));
+    const byAgent = Array.from(agentMap.values())
+      .map((a) => ({
+        agentId: a.agentId,
+        agentName: a.agentName,
+        avatar: a.avatar,
+        calls: a.calls,
+        promptTokens: a.promptTokens,
+        completionTokens: a.completionTokens,
+        avgDurationMs: Math.round(a.totalDur / Math.max(1, a.calls)),
+        estimatedCostUsd: roundCost(a.estimatedCostUsd),
+      }))
+      .sort((a, b) => b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens));
+
+    const byModel = Array.from(modelMap.values())
+      .map((m) => ({
+        model: m.model,
+        providerName: m.providerName,
+        calls: m.calls,
+        promptTokens: m.promptTokens,
+        completionTokens: m.completionTokens,
+        avgDurationMs: Math.round(m.totalDur / Math.max(1, m.calls)),
+        estimatedCostUsd: roundCost(m.estimatedCostUsd),
+      }))
+      .sort((a, b) => b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens));
+
+    const byTeam = Array.from(teamMap.values())
+      .map((t) => ({
+        teamId: t.teamId,
+        teamName: t.teamName,
+        calls: t.calls,
+        promptTokens: t.promptTokens,
+        completionTokens: t.completionTokens,
+        avgDurationMs: Math.round(t.totalDur / Math.max(1, t.calls)),
+        estimatedCostUsd: roundCost(t.estimatedCostUsd),
+      }))
+      .sort((a, b) => b.promptTokens + b.completionTokens - (a.promptTokens + a.completionTokens));
+
+    res.json({
+      byAgent,
+      byModel,
+      byTeam,
+      totals: {
+        calls: totalCalls,
+        promptTokens: totalPrompt,
+        completionTokens: totalCompletion,
+        estimatedCostUsd: roundCost(totalCost),
+      },
+    });
+  });
+
+  // ========================
+  // PER-TEAM WORKSPACE EXPLORER & CHECKPOINTS
+  // ========================
+  router.get("/workspaces/:teamId/tree", (req: Request, res: Response) => {
+    try {
+      res.json(listWorkspaceTree(String(req.params.teamId)));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/workspaces/:teamId/file", (req: Request, res: Response) => {
+    const relPath = String(req.query.path || "");
+    try {
+      res.json(readWorkspacePreview(String(req.params.teamId), relPath));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(/not found/i.test(msg) ? 404 : 400).json({ error: msg });
+    }
+  });
+
+  router.get("/workspaces/:teamId/download", (req: Request, res: Response) => {
+    const relPath = String(req.query.path || "");
+    try {
+      const fullPath = resolveExplorerFilePath(String(req.params.teamId), relPath);
+      if (!fs.existsSync(fullPath) || fs.statSync(fullPath).isDirectory()) {
+        res.status(404).json({ error: "Workspace file not found." });
+        return;
+      }
+      res.download(fullPath, path.basename(fullPath));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/workspaces/:teamId/checkpoints", (req: Request, res: Response) => {
+    try {
+      res.json({ checkpoints: listWorkspaceCheckpoints(String(req.params.teamId)) });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/workspaces/:teamId/checkpoints", (req: Request, res: Response) => {
+    try {
+      const out = createWorkspaceCheckpointSnapshot(
+        String(req.params.teamId),
+        req.body?.label ? String(req.body.label) : undefined
+      );
+      logAudit("admin", "workspace.checkpoint_create", String(req.params.teamId), `${out.id} (${out.files} files)`);
+      res.json(out);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post("/workspaces/:teamId/checkpoints/:cid/rollback", (req: Request, res: Response) => {
+    try {
+      const out = rollbackWorkspaceCheckpointSnapshot(String(req.params.teamId), String(req.params.cid));
+      logAudit(
+        "admin",
+        "workspace.checkpoint_rollback",
+        String(req.params.teamId),
+        `${out.id} (${out.restoredFiles} files)`
+      );
+      res.json(out);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(/not found/i.test(msg) ? 404 : 400).json({ error: msg });
+    }
+  });
+
+  // ========================
+  // READ-ONLY LIVE MISSION MONITOR (Spectator Group Chat)
+  // ========================
+  router.get("/monitor/feed", (req: Request, res: Response) => {
+    const db = getDb();
+    const filterTeamId = typeof req.query.teamId === "string" ? req.query.teamId.trim() : "";
+    const rows = (
+      filterTeamId
+        ? db
+            .prepare(
+              `SELECT s.*,
+                      (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as messageCount,
+                      (SELECT COUNT(*) FROM team_messages tm WHERE tm.session_id = s.id) as teamMessageCount,
+                      (SELECT COUNT(*) FROM blackboard_entries bb WHERE bb.session_id = s.id) as blackboardCount,
+                      (SELECT COALESCE(SUM(u.prompt_tokens), 0) FROM usage_logs u WHERE u.session_id = s.id) as promptTokens,
+                      (SELECT COALESCE(SUM(u.completion_tokens), 0) FROM usage_logs u WHERE u.session_id = s.id) as completionTokens,
+                      (SELECT content FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as lastMessage,
+                      (SELECT role FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as lastRole,
+                      (SELECT agent_name FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as lastAgentName
+               FROM sessions s
+               WHERE s.target_type = 'team' AND s.target_id = ?
+               ORDER BY s.updated_at DESC LIMIT 30`
+            )
+            .all(filterTeamId)
+        : db
+            .prepare(
+              `SELECT s.*,
+                      (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) as messageCount,
+                      (SELECT COUNT(*) FROM team_messages tm WHERE tm.session_id = s.id) as teamMessageCount,
+                      (SELECT COUNT(*) FROM blackboard_entries bb WHERE bb.session_id = s.id) as blackboardCount,
+                      (SELECT COALESCE(SUM(u.prompt_tokens), 0) FROM usage_logs u WHERE u.session_id = s.id) as promptTokens,
+                      (SELECT COALESCE(SUM(u.completion_tokens), 0) FROM usage_logs u WHERE u.session_id = s.id) as completionTokens,
+                      (SELECT content FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as lastMessage,
+                      (SELECT role FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as lastRole,
+                      (SELECT agent_name FROM messages m WHERE m.session_id = s.id ORDER BY m.created_at DESC LIMIT 1) as lastAgentName
+               FROM sessions s
+               ORDER BY s.updated_at DESC LIMIT 30`
+            )
+            .all()
+    ) as Array<Record<string, unknown>>;
+
+    const teamsMap = new Map(
+      (db.prepare("SELECT id, name FROM teams").all() as Array<{ id: string; name: string }>).map((t) => [t.id, t.name])
+    );
+    const agentsMap = new Map(
+      (db.prepare("SELECT id, name FROM agents").all() as Array<{ id: string; name: string }>).map((a) => [a.id, a.name])
+    );
+
+    res.json({
+      feed: rows.map((s) => ({
+        ...s,
+        targetName:
+          s.target_type === "team"
+            ? teamsMap.get(String(s.target_id || "")) || String(s.target_id || "")
+            : agentsMap.get(String(s.target_id || "")) || String(s.target_id || ""),
+      })),
+    });
+  });
+
+  router.get("/monitor/session/:sessionId", (req: Request, res: Response) => {
+    const db = getDb();
+    const sid = String(req.params.sessionId);
+    const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(sid) as
+      | { id: string; title: string; target_type: string; target_id: string; status: string; created_at: string; updated_at: string }
+      | undefined;
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    const team =
+      session.target_type === "team" && session.target_id
+        ? (db.prepare("SELECT id, name, slug, collaboration_mode FROM teams WHERE id = ?").get(session.target_id) as
+            | Record<string, unknown>
+            | undefined) || null
+        : null;
+
+    const rawMessages = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC")
+      .all(sid) as Array<Record<string, unknown>>;
+    const messages = rawMessages.map((r) => ({
+      ...r,
+      toolCalls: safeParseJson<Array<Record<string, unknown>>>(r.tool_calls_json, []),
+      meta: safeParseJson<Record<string, unknown>>(r.meta_json, {}),
+    }));
+
+    const rawTeamMessages = db
+      .prepare("SELECT * FROM team_messages WHERE session_id = ? ORDER BY created_at ASC")
+      .all(sid) as Array<Record<string, unknown>>;
+    const teamMessages = rawTeamMessages.map((r) => ({
+      ...r,
+      readBy: safeParseJson<string[]>(r.read_by_json, []),
+    }));
+    const blackboard = db
+      .prepare("SELECT * FROM blackboard_entries WHERE session_id = ? ORDER BY created_at ASC")
+      .all(sid);
+    const tasks = db
+      .prepare("SELECT * FROM team_tasks WHERE session_id = ? ORDER BY updated_at DESC")
+      .all(sid);
+
+    const usageRows = db
+      .prepare("SELECT model, prompt_tokens, completion_tokens, duration_ms FROM usage_logs WHERE session_id = ?")
+      .all(sid) as Array<{ model: string; prompt_tokens: number; completion_tokens: number; duration_ms: number }>;
+
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let estimatedCostUsd = 0;
+    for (const u of usageRows) {
+      promptTokens += u.prompt_tokens;
+      completionTokens += u.completion_tokens;
+      estimatedCostUsd += estimateTokenCostUsd(u.model, u.prompt_tokens, u.completion_tokens);
+    }
+
+    res.json({
+      session,
+      team,
+      messages,
+      teamMessages,
+      blackboard,
+      tasks,
+      usage: {
+        calls: usageRows.length,
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens,
+        estimatedCostUsd: Number(estimatedCostUsd.toFixed(6)),
+      },
+    });
   });
 
   return router;

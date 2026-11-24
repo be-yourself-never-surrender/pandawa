@@ -7,6 +7,7 @@ import {
   type LLMMessage,
   type ProviderRecord,
 } from "../providers/llmClient.js";
+import { recordProviderHealth } from "../providers/providerHealth.js";
 import { compileAgentRuntime, type CompiledAgentRuntime } from "./contextCompiler.js";
 import {
   getToolsForPacks,
@@ -249,6 +250,8 @@ export async function runAgentTurn(params: {
   history?: LLMMessage[];
   teamId?: string;
   sessionId?: string;
+  channelId?: string;
+  chatId?: string;
   maxIterations?: number;
   consultDepth?: number;
   extraSystemNote?: string;
@@ -365,6 +368,7 @@ export async function runAgentTurn(params: {
       }
 
       let res;
+      const primaryCallStart = Date.now();
       try {
         res = await callLLM({
           provider,
@@ -385,9 +389,11 @@ export async function runAgentTurn(params: {
             });
           },
         });
+        recordProviderHealth(provider.id, { ok: true, latencyMs: Date.now() - primaryCallStart });
       } catch (primaryErr) {
         if (params.signal?.aborted) throw primaryErr;
         const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+        recordProviderHealth(provider.id, { ok: false, error: primaryMsg });
         const failureList: string[] = [`[Primary: ${provider.name} (${model})] ${primaryMsg}`];
 
         const backups = runtime.fallbackProviders.filter(
@@ -409,6 +415,7 @@ export async function runAgentTurn(params: {
             reason: primaryMsg.slice(0, 140),
           });
           const nextModel = fb.model || fb.provider.default_model;
+          const fbStart = Date.now();
           try {
             res = await callLLM({
               provider: fb.provider,
@@ -429,6 +436,7 @@ export async function runAgentTurn(params: {
                 });
               },
             });
+            recordProviderHealth(fb.provider.id, { ok: true, latencyMs: Date.now() - fbStart });
             provider = fb.provider;
             model = nextModel;
             usedFallback = true;
@@ -437,6 +445,7 @@ export async function runAgentTurn(params: {
           } catch (fbErr) {
             if (params.signal?.aborted) throw fbErr;
             const fbMsg = fbErr instanceof Error ? fbErr.message : String(fbErr);
+            recordProviderHealth(fb.provider.id, { ok: false, error: fbMsg });
             failureList.push(`[Fallback: ${fb.provider.name} (${nextModel})] ${fbMsg}`);
           }
         }
@@ -501,6 +510,8 @@ export async function runAgentTurn(params: {
           runtime,
           teamId: params.teamId,
           sessionId: params.sessionId,
+          channelId: params.channelId,
+          chatId: params.chatId,
           consultDepth: params.consultDepth ?? 0,
           signal: params.signal,
           onImageCaptured: (img) => attachedImagesThisStep.push(img),
@@ -509,6 +520,8 @@ export async function runAgentTurn(params: {
               agentId: peerId,
               teamId: params.teamId,
               sessionId: params.sessionId,
+              channelId: params.channelId,
+              chatId: params.chatId,
               consultDepth: (params.consultDepth ?? 0) + 1,
               maxIterations: 10,
               signal: params.signal,

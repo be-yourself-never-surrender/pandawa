@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { PANDAWA_VERSION, generateId } from "../config.js";
 import { getDb, getSetting, setSetting } from "../db/database.js";
 import { decryptSecret } from "../auth/cryptoVault.js";
@@ -15,8 +17,19 @@ import {
 } from "../engine/approvalManager.js";
 import { clearMissionController, abortMission, registerMissionController } from "../engine/missionController.js";
 import { listTerminals } from "../tools/terminalManager.js";
-import { sendWhatsAppCloudMessage, sendWhatsAppQrMessage } from "./whatsappManager.js";
-import type { LLMMessage } from "../providers/llmClient.js";
+import {
+  sendWhatsAppCloudMedia,
+  sendWhatsAppCloudMessage,
+  sendWhatsAppQrMedia,
+  sendWhatsAppQrMessage,
+} from "./whatsappManager.js";
+import {
+  MAX_INBOUND_MEDIA_BYTES,
+  guessMimeType,
+  isImageMimeOrExt,
+  saveInboundChannelMedia,
+} from "./channelMedia.js";
+import type { LLMImageAttachment, LLMMessage } from "../providers/llmClient.js";
 
 export interface ChannelRow {
   id: string;
@@ -434,6 +447,7 @@ export async function executeChannelMission(params: {
   chatKey: string;
   senderDisplay: string;
   text: string;
+  images?: LLMImageAttachment[];
   replyFn: (out: string) => Promise<void>;
   broadcast?: (ev: Record<string, unknown>) => void;
 }): Promise<void> {
@@ -489,7 +503,10 @@ export async function executeChannelMission(params: {
         agentId: route.targetId,
         sessionId,
         prompt: params.text,
+        images: params.images,
         history,
+        channelId: ch.id,
+        chatId: params.chatKey,
         signal: controller.signal,
         onEvent: forwardEvent,
       });
@@ -517,7 +534,10 @@ export async function executeChannelMission(params: {
         teamId: route.targetId,
         sessionId,
         userPrompt: params.text,
+        images: params.images,
         history,
+        channelId: ch.id,
+        chatId: params.chatKey,
         signal: controller.signal,
         onEvent: forwardEvent,
       });
@@ -629,6 +649,122 @@ export async function dispatchChannelNotification(
   }
 }
 
+async function downloadTelegramFile(
+  botToken: string,
+  fileId: string
+): Promise<{ buffer: Buffer; filePath: string; filename: string } | null> {
+  const base = getTelegramApiBase();
+  const metaResp = await fetch(`${base}/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, {
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!metaResp.ok) return null;
+  const metaJson = (await metaResp.json()) as {
+    ok?: boolean;
+    result?: { file_path?: string; file_size?: number };
+  };
+  const tgFilePath = metaJson.result?.file_path;
+  if (!metaJson.ok || !tgFilePath) return null;
+  if (metaJson.result?.file_size && metaJson.result.file_size > MAX_INBOUND_MEDIA_BYTES) {
+    throw new Error(`Telegram file exceeds 20 MB limit (${metaJson.result.file_size} bytes).`);
+  }
+  const fileResp = await fetch(`${base}/file/bot${botToken}/${tgFilePath.replace(/^\/+/, "")}`, {
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!fileResp.ok) return null;
+  const arr = await fileResp.arrayBuffer();
+  const buffer = Buffer.from(arr);
+  if (buffer.byteLength > MAX_INBOUND_MEDIA_BYTES) {
+    throw new Error(`Telegram file exceeds 20 MB limit (${buffer.byteLength} bytes).`);
+  }
+  return {
+    buffer,
+    filePath: tgFilePath,
+    filename: path.posix.basename(tgFilePath),
+  };
+}
+
+async function sendTelegramMedia(
+  botToken: string,
+  chatId: string | number,
+  filePath: string,
+  caption?: string
+): Promise<{ ok: boolean; detail: string }> {
+  if (!fs.existsSync(filePath)) return { ok: false, detail: `File not found: ${filePath}` };
+  const buf = fs.readFileSync(filePath);
+  const filename = path.basename(filePath);
+  const mime = guessMimeType(filePath);
+  const isImg = isImageMimeOrExt(mime, filePath);
+  const method = isImg ? "sendPhoto" : "sendDocument";
+  const field = isImg ? "photo" : "document";
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption?.trim()) form.append("caption", caption.trim().slice(0, 1000));
+  form.append(field, new Blob([buf], { type: mime }), filename);
+
+  const resp = await fetch(`${getTelegramApiBase()}/bot${botToken}/${method}`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    return { ok: false, detail: `Telegram ${method} HTTP ${resp.status}: ${errText.slice(0, 200)}` };
+  }
+  return { ok: true, detail: `Telegram ${method} OK (${filename})` };
+}
+
+export async function dispatchChannelFile(
+  channelId: string,
+  filePath: string,
+  caption?: string,
+  chatIdOverride?: string
+): Promise<{ ok: boolean; detail: string }> {
+  const db = getDb();
+  const ch = db.prepare("SELECT * FROM channels WHERE id = ?").get(channelId) as ChannelRow | undefined;
+  if (!ch) return { ok: false, detail: "Channel not found" };
+  if (!fs.existsSync(filePath)) return { ok: false, detail: `File not found: ${filePath}` };
+
+  const cfg = decryptChannelConfig(ch.config_json);
+  try {
+    if (ch.type === "telegram" && cfg.botToken?.trim()) {
+      const targetChat = (chatIdOverride || cfg.chatId || "").trim();
+      if (!targetChat) return { ok: false, detail: "Telegram chatId missing for outbound file." };
+      return await sendTelegramMedia(cfg.botToken.trim(), targetChat, filePath, caption);
+    }
+
+    if (ch.type === "whatsapp_qr") {
+      const target = (chatIdOverride || cfg.allowedNumbers || "").split(/[,;\s]+/)[0] || "";
+      return await sendWhatsAppQrMedia(ch.id, target, filePath, caption);
+    }
+
+    if (ch.type === "whatsapp_cloud") {
+      const target = (chatIdOverride || cfg.allowedNumbers || "").split(/[,;\s]+/)[0] || "";
+      return await sendWhatsAppCloudMedia(cfg, target, filePath, caption);
+    }
+
+    if (ch.type === "discord" && cfg.webhookUrl?.trim()) {
+      const buf = fs.readFileSync(filePath);
+      const filename = path.basename(filePath);
+      const form = new FormData();
+      if (caption?.trim()) {
+        form.append("payload_json", JSON.stringify({ content: caption.trim().slice(0, 1800) }));
+      }
+      form.append("files[0]", new Blob([buf], { type: guessMimeType(filePath) }), filename);
+      const resp = await fetch(cfg.webhookUrl.trim(), {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(30_000),
+      });
+      return { ok: resp.ok, detail: `Discord upload HTTP ${resp.status} (${filename})` };
+    }
+
+    return { ok: false, detail: `Channel type "${ch.type}" does not support direct file upload or missing config.` };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function sendTelegramText(botToken: string, chatId: string | number, text: string): Promise<void> {
   const base = getTelegramApiBase();
   const safeText = text || "(Empty response)";
@@ -701,7 +837,17 @@ async function runTelegramPoller(channelId: string, handle: PollerHandle): Promi
         ok?: boolean;
         result?: Array<{
           update_id: number;
-          message?: { chat?: { id: number | string }; text?: string; from?: { username?: string; first_name?: string } };
+          message?: {
+            chat?: { id: number | string };
+            text?: string;
+            caption?: string;
+            photo?: Array<{ file_id: string; file_size?: number }>;
+            document?: { file_id: string; file_name?: string; mime_type?: string };
+            voice?: { file_id: string; mime_type?: string };
+            audio?: { file_id: string; file_name?: string; mime_type?: string };
+            video?: { file_id: string; file_name?: string; mime_type?: string };
+            from?: { username?: string; first_name?: string };
+          };
         }>;
       };
 
@@ -716,11 +862,41 @@ async function runTelegramPoller(channelId: string, handle: PollerHandle): Promi
         }
 
         const msg = upd.message;
-        const text = msg?.text?.trim();
         const chatId = msg?.chat?.id;
-        if (!text || chatId === undefined) continue;
+        if (!msg || chatId === undefined) continue;
         const chatKey = String(chatId);
         if (allowedChatId && chatKey !== allowedChatId) continue;
+
+        const baseText = (msg.text || msg.caption || "").trim();
+        const mediaPick: { fileId: string; filename?: string; mimeType?: string; prefix: string } | null =
+          Array.isArray(msg.photo) && msg.photo.length > 0
+            ? { fileId: msg.photo[msg.photo.length - 1].file_id, mimeType: "image/jpeg", prefix: "tg_photo" }
+            : msg.document?.file_id
+            ? {
+                fileId: msg.document.file_id,
+                filename: msg.document.file_name,
+                mimeType: msg.document.mime_type,
+                prefix: "tg_doc",
+              }
+            : msg.voice?.file_id
+            ? { fileId: msg.voice.file_id, mimeType: msg.voice.mime_type || "audio/ogg", prefix: "tg_voice" }
+            : msg.audio?.file_id
+            ? {
+                fileId: msg.audio.file_id,
+                filename: msg.audio.file_name,
+                mimeType: msg.audio.mime_type || "audio/mpeg",
+                prefix: "tg_audio",
+              }
+            : msg.video?.file_id
+            ? {
+                fileId: msg.video.file_id,
+                filename: msg.video.file_name,
+                mimeType: msg.video.mime_type || "video/mp4",
+                prefix: "tg_video",
+              }
+            : null;
+
+        if (!baseText && !mediaPick) continue;
 
         const liveCh =
           (db.prepare("SELECT * FROM channels WHERE id = ? AND enabled = 1").get(channelId) as ChannelRow | undefined) || ch;
@@ -735,8 +911,7 @@ async function runTelegramPoller(channelId: string, handle: PollerHandle): Promi
         };
 
         // Check fast non-blocking control commands FIRST so they execute even while a mission is paused/running
-        const cmdCheck = text.trim();
-        if (cmdCheck.startsWith("/")) {
+        if (!mediaPick && baseText.startsWith("/")) {
           const handled = await handleChannelControlCommand({
             platformKey: "tg",
             platformLabel: "Telegram",
@@ -744,20 +919,44 @@ async function runTelegramPoller(channelId: string, handle: PollerHandle): Promi
             activeSessions: tgActiveChatSessions,
             ch: liveCh,
             chatKey,
-            text: cmdCheck,
+            text: baseText,
             replyFn,
             broadcast: _broadcast,
           });
           if (handled) continue;
         }
 
-        // Dispatch regular mission via per-(channelId, chatId) FIFO queue WITHOUT blocking getUpdates polling!
+        // Dispatch regular mission (text and/or media) via per-(channelId, chatId) FIFO queue WITHOUT blocking getUpdates polling!
         enqueueChannelWork(tgChatQueues, `${channelId}:${chatKey}`, async () => {
           sendTelegramTyping(botToken, chatId).catch(() => {});
           const typingInterval = setInterval(() => {
             sendTelegramTyping(botToken, chatId).catch(() => {});
           }, 4500);
           try {
+            let promptText = baseText;
+            const inboundImages: LLMImageAttachment[] = [];
+
+            if (mediaPick) {
+              const dl = await downloadTelegramFile(botToken, mediaPick.fileId);
+              if (dl) {
+                const route = resolveChannelRouteSummary(liveCh);
+                const routedTeamId = route.targetType === "team" ? route.targetId : undefined;
+                const saved = await saveInboundChannelMedia({
+                  buffer: dl.buffer,
+                  filename: mediaPick.filename || dl.filename,
+                  mimeType: mediaPick.mimeType,
+                  teamId: routedTeamId,
+                  prefix: mediaPick.prefix,
+                });
+                if (saved.visionImage) inboundImages.push(saved.visionImage);
+                promptText = baseText
+                  ? `${baseText}\n\n${saved.promptContext}`
+                  : `User sent an attachment via Telegram.\n\n${saved.promptContext}`;
+              }
+            }
+
+            if (!promptText) return;
+
             await executeChannelMission({
               platformKey: "tg",
               platformLabel: "Telegram",
@@ -766,10 +965,13 @@ async function runTelegramPoller(channelId: string, handle: PollerHandle): Promi
               channelId,
               chatKey,
               senderDisplay: `@${sender}`,
-              text,
+              text: promptText,
+              images: inboundImages.length > 0 ? inboundImages : undefined,
               replyFn,
               broadcast: _broadcast,
             });
+          } catch (mediaErr) {
+            await replyFn(`Pandawa media error: ${mediaErr instanceof Error ? mediaErr.message : String(mediaErr)}`);
           } finally {
             clearInterval(typingInterval);
           }

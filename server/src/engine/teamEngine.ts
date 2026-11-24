@@ -1,5 +1,3 @@
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { WORKSPACE_DIR, generateId, resolveTeamWorkspaceDir } from "../config.js";
 import { getDb } from "../db/database.js";
 import type { LLMImageAttachment, LLMMessage } from "../providers/llmClient.js";
@@ -7,8 +5,7 @@ import { getTeamMembers, type AgentRecord } from "./contextCompiler.js";
 import { runAgentTurn, type AgentRunResult } from "./agentRunner.js";
 import { toolRequiresApproval, requestApproval } from "./approvalManager.js";
 import { clearSessionFileLocks } from "../tools/toolRegistry.js";
-
-const execAsync = promisify(exec);
+import { execSandboxedCommand } from "../tools/sandboxRunner.js";
 
 export interface VerificationCheckResult {
   title: string;
@@ -125,6 +122,7 @@ export async function runProgrammaticVerifyCommands(
   tasks: Array<{ title: string; verifyCmd?: string }>,
   options?: {
     cwd?: string;
+    teamId?: string;
     reviewerId?: string;
     sessionId?: string;
     signal?: AbortSignal;
@@ -167,9 +165,11 @@ export async function runProgrammaticVerifyCommands(
 
     const started = Date.now();
     try {
-      const { stdout, stderr } = await execAsync(cmd, {
+      const { stdout, stderr } = await execSandboxedCommand({
+        command: cmd,
         cwd,
-        timeout: 60_000,
+        teamId: options?.teamId,
+        timeoutMs: 60_000,
         maxBuffer: 2 * 1024 * 1024,
       });
       results.push({
@@ -523,6 +523,8 @@ export async function runTeamMission(params: {
   history?: LLMMessage[];
   activeAgentIds?: string[];
   modeOverride?: string;
+  channelId?: string;
+  chatId?: string;
   signal?: AbortSignal;
   onEvent?: (event: Record<string, unknown>) => void;
 }): Promise<TeamMissionResult> {
@@ -596,6 +598,8 @@ export async function runTeamMission(params: {
           agentId: lead.id,
           teamId: team.id,
           sessionId: params.sessionId,
+          channelId: params.channelId,
+          chatId: params.chatId,
           images: params.images,
           history: params.history,
           maxIterations: 8,
@@ -825,6 +829,8 @@ export async function runTeamMission(params: {
                 agentId: member.id,
                 teamId: team.id,
                 sessionId: params.sessionId,
+                channelId: params.channelId,
+                chatId: params.chatId,
                 images: cycle === 1 ? params.images : undefined,
                 signal: params.signal,
                 prompt:
@@ -898,6 +904,7 @@ export async function runTeamMission(params: {
           taskRecords.map((tr) => ({ title: tr.task.title, verifyCmd: tr.task.verifyCmd })),
           {
             cwd: resolveTeamWorkspaceDir(team.id),
+            teamId: team.id,
             reviewerId: reviewer.id,
             sessionId: params.sessionId,
             signal: params.signal,
@@ -930,6 +937,8 @@ export async function runTeamMission(params: {
             agentId: reviewer.id,
             teamId: team.id,
             sessionId: params.sessionId,
+            channelId: params.channelId,
+            chatId: params.chatId,
             signal: params.signal,
             prompt:
               `User Mission:\n${params.userPrompt}\n\n` +
@@ -1004,6 +1013,8 @@ export async function runTeamMission(params: {
           agentId: sender.id,
           teamId: team.id,
           sessionId: params.sessionId,
+          channelId: params.channelId,
+          chatId: params.chatId,
           maxIterations: 5,
           signal: params.signal,
           prompt:
@@ -1115,6 +1126,8 @@ export async function runTeamMission(params: {
             agentId: member.id,
             teamId: team.id,
             sessionId: params.sessionId,
+            channelId: params.channelId,
+            chatId: params.chatId,
             images: runningContext ? undefined : params.images,
             signal: params.signal,
             prompt: runningContext
@@ -1197,6 +1210,8 @@ export async function runTeamMission(params: {
             agentId: sender.id,
             teamId: team.id,
             sessionId: params.sessionId,
+            channelId: params.channelId,
+            chatId: params.chatId,
             maxIterations: 5,
             signal: params.signal,
             prompt:
@@ -1295,6 +1310,8 @@ export async function runTeamMission(params: {
             agentId: member.id,
             teamId: team.id,
             sessionId: params.sessionId,
+            channelId: params.channelId,
+            chatId: params.chatId,
             images: params.images,
             signal: params.signal,
             prompt:
@@ -1368,6 +1385,8 @@ export async function runTeamMission(params: {
           agentId: reviewer.id,
           teamId: team.id,
           sessionId: params.sessionId,
+          channelId: params.channelId,
+          chatId: params.chatId,
           signal: params.signal,
           prompt:
             `User Mission:\n${params.userPrompt}\n\n` +
@@ -1422,6 +1441,8 @@ export async function runTeamMission(params: {
         agentId: sender.id,
         teamId: team.id,
         sessionId: params.sessionId,
+        channelId: params.channelId,
+        chatId: params.chatId,
         signal: params.signal,
         prompt:
           `Original User Request:\n${params.userPrompt}\n\n` +

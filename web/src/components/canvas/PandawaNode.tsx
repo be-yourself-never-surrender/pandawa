@@ -19,6 +19,9 @@ export interface PandawaNodeData extends Record<string, unknown> {
   roleBadges?: string[];
   pipelineSummary?: string;
   isActive?: boolean;
+  healthStatus?: "ready" | "no_key" | "error" | "disabled" | "unchecked";
+  healthDetail?: string;
+  needsApiKey?: boolean;
 }
 
 const STYLE_MAP: Record<string, { badge: string; bar: string; iconColor: string }> = {
@@ -124,6 +127,40 @@ export const PandawaNode: React.FC<NodeProps> = ({ data, selected }) => {
           <span className="inline-flex items-center gap-1 text-[9px] font-mono uppercase text-emerald-400">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             live
+          </span>
+        ) : d.nodeType === "agent" && d.needsApiKey ? (
+          <span
+            title={d.healthDetail || "Assign an API key on the linked provider"}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/35 text-[9px] font-mono uppercase text-amber-300"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            Needs API Key
+          </span>
+        ) : d.nodeType === "provider" && d.healthStatus ? (
+          <span
+            title={d.healthDetail || d.healthStatus}
+            className={`inline-flex items-center gap-1 text-[9px] font-mono uppercase ${
+              d.healthStatus === "ready"
+                ? "text-emerald-400"
+                : d.healthStatus === "no_key"
+                ? "text-amber-300"
+                : d.healthStatus === "error"
+                ? "text-rose-400"
+                : "text-zinc-500"
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                d.healthStatus === "ready"
+                  ? "bg-emerald-400"
+                  : d.healthStatus === "no_key"
+                  ? "bg-amber-400"
+                  : d.healthStatus === "error"
+                  ? "bg-rose-400"
+                  : "bg-zinc-600"
+              }`}
+            />
+            {d.healthStatus === "no_key" ? "no key" : d.healthStatus}
           </span>
         ) : d.purpose ? (
           <span className="text-[9px] font-mono uppercase text-zinc-500">{d.purpose}</span>

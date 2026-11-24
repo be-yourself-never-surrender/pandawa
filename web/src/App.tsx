@@ -20,6 +20,12 @@ const BrainCanvas = lazy(() =>
 const TerminalPage = lazy(() =>
   import("./components/ops/TerminalPage").then((m) => ({ default: m.TerminalPage }))
 );
+const LiveMonitorPage = lazy(() =>
+  import("./components/ops/LiveMonitorPage").then((m) => ({ default: m.LiveMonitorPage }))
+);
+const WorkspaceExplorerPage = lazy(() =>
+  import("./components/ops/WorkspaceExplorerPage").then((m) => ({ default: m.WorkspaceExplorerPage }))
+);
 
 const LazyFallback: React.FC<{ label: string }> = ({ label }) => (
   <div className="h-screen bg-[#09090b] flex items-center justify-center text-xs font-mono text-zinc-500">
@@ -32,6 +38,7 @@ export const App: React.FC = () => {
   const [checkingAuth, setCheckingAuth] = useState<boolean>(true);
   const [usingDefaultPassword, setUsingDefaultPassword] = useState<boolean>(false);
   const [tab, setTab] = useState<NavTab>("overview");
+  const [workspaceTeamId, setWorkspaceTeamId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState<boolean>(false);
   const [openFilePath, setOpenFilePath] = useState<string | null>(null);
   const [focusTeamId, setFocusTeamId] = useState<string | null>(null);
@@ -116,7 +123,7 @@ export const App: React.FC = () => {
           const evType = String(ev.type || "");
           if (evType !== "agent_token") {
             const seq = ++eventSeqRef.current;
-            setLiveEvents((prev) => [...prev.slice(-49), { ...ev, _seq: seq }]);
+            setLiveEvents((prev) => [...prev.slice(-199), { ...ev, _seq: seq }]);
           }
 
           if (evType === "agent_start" && typeof ev.agentId === "string") {
@@ -237,6 +244,22 @@ export const App: React.FC = () => {
               liveEvents={liveEvents}
               initialFocusTeamId={focusTeamId}
             />
+          </Suspense>
+        )}
+        {tab === "monitor" && (
+          <Suspense fallback={<LazyFallback label="Live Monitor" />}>
+            <LiveMonitorPage
+              liveEvents={liveEvents}
+              onOpenWorkspace={(tid) => {
+                setWorkspaceTeamId(tid);
+                setTab("workspaces");
+              }}
+            />
+          </Suspense>
+        )}
+        {tab === "workspaces" && (
+          <Suspense fallback={<LazyFallback label="Team Workspaces" />}>
+            <WorkspaceExplorerPage initialTeamId={workspaceTeamId} />
           </Suspense>
         )}
         {tab === "channels" && (

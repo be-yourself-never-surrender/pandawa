@@ -1,6 +1,7 @@
 import React from "react";
 import {
   LayoutDashboard,
+  Eye,
   Network,
   Radio,
   Terminal,
@@ -36,6 +37,8 @@ const SECTIONS: Array<{
     title: "Control Plane",
     items: [
       { id: "overview", label: "Command Center", icon: LayoutDashboard },
+      { id: "monitor", label: "Live Monitor", icon: Eye },
+      { id: "workspaces", label: "Workspaces", icon: FolderTree },
       { id: "canvas", label: "Brain Canvas", icon: Network },
       { id: "channels", label: "Channels", icon: Radio },
       { id: "terminal", label: "Live Terminal", icon: Terminal },

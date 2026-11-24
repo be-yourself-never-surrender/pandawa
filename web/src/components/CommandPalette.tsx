@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   LayoutDashboard,
+  Eye,
   Network,
   Radio,
   Terminal,
@@ -55,6 +56,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     };
     return [
       { id: "nav-overview", group: "Navigate", label: "Command Center", hint: "Control Plane", icon: LayoutDashboard, action: go("overview") },
+      { id: "nav-monitor", group: "Navigate", label: "Live Monitor", hint: "Read-Only Spectator Group Chat", icon: Eye, action: go("monitor") },
+      { id: "nav-workspaces", group: "Navigate", label: "Workspaces", hint: "Team Files & Checkpoints", icon: FolderTree, action: go("workspaces") },
       { id: "nav-canvas", group: "Navigate", label: "Brain Canvas", hint: "Visual Wiring", icon: Network, action: go("canvas") },
       { id: "nav-channels", group: "Navigate", label: "Channels", hint: "Telegram · WhatsApp · Discord", icon: Radio, action: go("channels") },
       { id: "nav-terminal", group: "Navigate", label: "Live Terminal", hint: "xterm PTY & Jobs", icon: Terminal, action: go("terminal") },

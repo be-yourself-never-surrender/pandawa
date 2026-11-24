@@ -138,6 +138,42 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
     }
   }
 
+  const [sandboxMode, setSandboxMode] = useState<"auto" | "bwrap" | "off">("auto");
+  const [sandboxStatus, setSandboxStatus] = useState<{
+    mode?: string;
+    platform?: string;
+    bwrapAvailable?: boolean;
+    effectiveEngine?: string;
+    reason?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    apiFetch<{ sandboxMode?: "auto" | "bwrap" | "off"; sandboxStatus?: typeof sandboxStatus }>("/api/system/policies")
+      .then((res) => {
+        if (res.sandboxMode) setSandboxMode(res.sandboxMode);
+        if (res.sandboxStatus) setSandboxStatus(res.sandboxStatus);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function updateSandboxMode(next: "auto" | "bwrap" | "off") {
+    try {
+      const res = await apiFetch<{ sandboxMode: "auto" | "bwrap" | "off"; sandboxStatus?: typeof sandboxStatus }>(
+        "/api/system/policies",
+        {
+          method: "PUT",
+          body: JSON.stringify({ sandboxMode: next }),
+        }
+      );
+      setSandboxMode(res.sandboxMode || next);
+      if (res.sandboxStatus) setSandboxStatus(res.sandboxStatus);
+      setPolicyNotice(`Sandbox mode saved: ${next}`);
+      setTimeout(() => setPolicyNotice(""), 2500);
+    } catch (err) {
+      setPolicyNotice(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function confirmInstallBundle() {
     if (!previewBundle) return;
     setInstallingBundle(true);
@@ -311,6 +347,40 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
           </button>
           {policyNotice && <span className="text-emerald-400 text-[11px]">{policyNotice}</span>}
         </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-white/[0.07] text-xs">
+          <div className="space-y-0.5">
+            <div className="text-zinc-300 font-medium">
+              OS Execution Sandbox:{" "}
+              <span className="font-mono text-emerald-300">
+                {sandboxStatus?.effectiveEngine || "scoped_cwd"}
+              </span>
+              {sandboxStatus?.bwrapAvailable ? (
+                <span className="ml-2 text-[10px] font-mono text-emerald-400">(bubblewrap ready)</span>
+              ) : (
+                <span className="ml-2 text-[10px] font-mono text-zinc-500">
+                  ({sandboxStatus?.platform || "host"} fallback)
+                </span>
+              )}
+            </div>
+            {sandboxStatus?.reason && <div className="text-[11px] text-zinc-500">{sandboxStatus.reason}</div>}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {(["auto", "bwrap", "off"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => void updateSandboxMode(m)}
+                className={`px-2.5 py-1 rounded-md border text-[11px] font-mono uppercase cursor-pointer transition ${
+                  sandboxMode === m
+                    ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-200 font-semibold"
+                    : "bg-[#09090b] border-white/[0.08] text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="text-[11px] text-emerald-400/90 flex items-center gap-1.5 pt-1">
           <CheckCircle2 className="w-3.5 h-3.5" /> Provider API keys, Telegram tokens, Webhook secrets &amp; MCP headers are encrypted at rest (AES-256-GCM).
         </div>
@@ -393,27 +463,42 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
         </div>
       </div>
 
-      {/* Token & Latency Analytics Breakdown */}
+      {/* Token, Cost & Latency Analytics Breakdown */}
       <div className="rounded-xl bg-[#111113] border border-white/[0.08] p-5 space-y-4 text-xs">
-        <h2 className="text-sm font-bold text-white flex items-center gap-2">
-          <BarChart3 className="w-4 h-4 text-emerald-400" /> Token &amp; Multi-AI Usage Breakdown
-        </h2>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <BarChart3 className="w-4 h-4 text-emerald-400" /> Token, Cost &amp; Multi-AI Usage Breakdown
+          </h2>
+          {(() => {
+            const totals = (analytics as { totals?: { estimatedCostUsd?: number; promptTokens?: number; completionTokens?: number } }).totals;
+            if (!totals) return null;
+            return (
+              <span className="font-mono text-[11px] px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/25 text-emerald-300">
+                Est. Total Cost: ${Number(totals.estimatedCostUsd || 0).toFixed(4)}
+              </span>
+            );
+          })()}
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           <div className="rounded-xl bg-[#0c0c0e] border border-white/[0.08] p-3.5 space-y-2">
             <div className="text-[11px] font-bold uppercase tracking-wider text-cyan-300">By Agent</div>
             {analytics.byAgent.length === 0 ? (
               <div className="text-zinc-500">No live LLM calls recorded yet.</div>
             ) : (
-              analytics.byAgent.map((a) => (
-                <div key={a.agentId} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.08]/60 last:border-0">
-                  <span className="text-zinc-200 font-medium truncate">
-                    {a.avatar} {a.agentName} <span className="text-zinc-500">({a.calls} calls)</span>
-                  </span>
-                  <span className="font-mono text-amber-300 shrink-0">
-                    {(a.promptTokens + a.completionTokens).toLocaleString()} tok · {(a.avgDurationMs / 1000).toFixed(1)}s
-                  </span>
-                </div>
-              ))
+              analytics.byAgent.map((a) => {
+                const cost = (a as { estimatedCostUsd?: number }).estimatedCostUsd;
+                return (
+                  <div key={a.agentId} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.08]/60 last:border-0">
+                    <span className="text-zinc-200 font-medium truncate">
+                      {a.avatar} {a.agentName} <span className="text-zinc-500">({a.calls} calls)</span>
+                    </span>
+                    <span className="font-mono text-amber-300 shrink-0">
+                      {(a.promptTokens + a.completionTokens).toLocaleString()} tok · {(a.avgDurationMs / 1000).toFixed(1)}s
+                      {typeof cost === "number" ? ` · $${cost.toFixed(4)}` : ""}
+                    </span>
+                  </div>
+                );
+              })
             )}
           </div>
           <div className="rounded-xl bg-[#0c0c0e] border border-white/[0.08] p-3.5 space-y-2">
@@ -421,13 +506,34 @@ export const SettingsPage: React.FC<{ onPasswordChanged: () => void }> = ({ onPa
             {analytics.byModel.length === 0 ? (
               <div className="text-zinc-500">No model calls recorded yet.</div>
             ) : (
-              analytics.byModel.map((m, idx) => (
-                <div key={idx} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.08]/60 last:border-0">
-                  <span className="text-zinc-200 font-mono truncate">
-                    {m.model || "default"} <span className="text-zinc-500 font-sans">({m.providerName})</span>
+              analytics.byModel.map((m, idx) => {
+                const cost = (m as { estimatedCostUsd?: number }).estimatedCostUsd;
+                return (
+                  <div key={idx} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.08]/60 last:border-0">
+                    <span className="text-zinc-200 font-mono truncate">
+                      {m.model || "default"} <span className="text-zinc-500 font-sans">({m.providerName})</span>
+                    </span>
+                    <span className="font-mono text-emerald-300 shrink-0">
+                      {(m.promptTokens + m.completionTokens).toLocaleString()} tok · {m.calls}x
+                      {typeof cost === "number" ? ` · $${cost.toFixed(4)}` : ""}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <div className="rounded-xl bg-[#0c0c0e] border border-white/[0.08] p-3.5 space-y-2">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-violet-300">By Team</div>
+            {((analytics as { byTeam?: Array<{ teamId: string; teamName: string; calls: number; promptTokens: number; completionTokens: number; estimatedCostUsd?: number }> }).byTeam || []).length === 0 ? (
+              <div className="text-zinc-500">No team missions logged yet.</div>
+            ) : (
+              ((analytics as { byTeam?: Array<{ teamId: string; teamName: string; calls: number; promptTokens: number; completionTokens: number; estimatedCostUsd?: number }> }).byTeam || []).map((t) => (
+                <div key={t.teamId} className="flex items-center justify-between gap-2 py-1 border-b border-white/[0.08]/60 last:border-0">
+                  <span className="text-zinc-200 font-medium truncate">
+                    {t.teamName} <span className="text-zinc-500">({t.calls} calls)</span>
                   </span>
-                  <span className="font-mono text-emerald-300 shrink-0">
-                    {(m.promptTokens + m.completionTokens).toLocaleString()} tok · {m.calls}x
+                  <span className="font-mono text-violet-300 shrink-0">
+                    {(t.promptTokens + t.completionTokens).toLocaleString()} tok · ${Number(t.estimatedCostUsd || 0).toFixed(4)}
                   </span>
                 </div>
               ))

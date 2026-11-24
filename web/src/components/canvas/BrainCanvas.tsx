@@ -100,6 +100,7 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PandawaNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [spawningTpl, setSpawningTpl] = useState(false);
+  const [probingHealth, setProbingHealth] = useState(false);
   const [previewBundle, setPreviewBundle] = useState<PreviewBundleData | null>(null);
   const [installingBundle, setInstallingBundle] = useState(false);
   const [teams, setTeams] = useState<TeamItem[]>([]);
@@ -219,10 +220,69 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
   useEffect(() => {
     const { nextSeq, freshEvents } = advanceEventCursor(liveEvents, lastEventSeqRef.current);
     lastEventSeqRef.current = nextSeq;
-    if (freshEvents.some((ev) => ev.type === "topology_updated") && !dirty) {
+    if (
+      freshEvents.some((ev) => ev.type === "topology_updated" || ev.type === "providers_health_updated") &&
+      !dirty
+    ) {
       loadAll().catch(() => {});
     }
   }, [liveEvents, dirty, loadAll]);
+
+  useEffect(() => {
+    const provMap = new Map(providers.map((p) => [p.id, p]));
+    setNodes((prev) => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const provNodeToProviderId = new Map<string, string>();
+      for (const n of prev) {
+        if (n.data.nodeType === "provider") {
+          const pid = String(n.data.refId || n.data.providerId || "");
+          if (pid) provNodeToProviderId.set(n.id, pid);
+        }
+      }
+      const next = prev.map((n) => {
+        if (n.data.nodeType === "provider") {
+          const pid = String(n.data.refId || n.data.providerId || "");
+          const p = provMap.get(pid);
+          if (!p) return n;
+          const nextStatus = p.health?.status || (p.enabled ? (p.hasApiKey ? "unchecked" : "no_key") : "disabled");
+          const nextDetail = p.health?.error || (p.health?.latencyMs ? `${p.health.latencyMs}ms` : "");
+          if (n.data.healthStatus === nextStatus && (n.data.healthDetail || "") === nextDetail) return n;
+          changed = true;
+          return { ...n, data: { ...n.data, healthStatus: nextStatus, healthDetail: nextDetail } };
+        }
+        if (n.data.nodeType === "agent") {
+          const aid = String(n.data.refId || n.data.agentId || "");
+          const ag = agents.find((a) => a.id === aid);
+          let pid = ag?.provider_id || "";
+          if (!pid) {
+            for (const e of edges) {
+              if (e.source === n.id && provNodeToProviderId.has(e.target)) {
+                pid = provNodeToProviderId.get(e.target) || "";
+                break;
+              }
+              if (e.target === n.id && provNodeToProviderId.has(e.source)) {
+                pid = provNodeToProviderId.get(e.source) || "";
+                break;
+              }
+            }
+          }
+          const boundProv = pid ? provMap.get(pid) : undefined;
+          const needsApiKey = !pid || (boundProv ? boundProv.health?.status === "no_key" : false);
+          const detail = !pid
+            ? "No AI provider wired or assigned"
+            : needsApiKey
+            ? `Provider "${boundProv?.name}" has no API key configured`
+            : "";
+          if (Boolean(n.data.needsApiKey) === needsApiKey && (n.data.healthDetail || "") === detail) return n;
+          changed = true;
+          return { ...n, data: { ...n.data, needsApiKey, healthDetail: detail } };
+        }
+        return n;
+      });
+      return changed ? next : prev;
+    });
+  }, [providers, agents, edges, setNodes]);
 
   useEffect(() => {
     setNodes((prev) =>
@@ -870,6 +930,31 @@ export const BrainCanvas: React.FC<BrainCanvasProps> = ({
               <CheckCircle2 className="w-3.5 h-3.5" /> {savedNotice}
             </span>
           )}
+          <button
+            disabled={probingHealth}
+            onClick={async () => {
+              setProbingHealth(true);
+              setErrorNotice("");
+              try {
+                const res = await apiFetch<{ results: Array<{ ok: boolean }> }>("/api/providers/probe-all", {
+                  method: "POST",
+                });
+                const okCount = (res.results || []).filter((r) => r.ok).length;
+                setSavedNotice(`Health: ${okCount}/${(res.results || []).length} providers ready`);
+                setTimeout(() => setSavedNotice(""), 3000);
+                await loadAll();
+              } catch (err) {
+                setErrorNotice(err instanceof Error ? err.message : String(err));
+              } finally {
+                setProbingHealth(false);
+              }
+            }}
+            title="Live-probe all configured AI providers"
+            className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 text-xs font-medium flex items-center gap-1 cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${probingHealth ? "animate-spin" : ""}`} />
+            {probingHealth ? "Checking..." : "Check AI Health"}
+          </button>
           <button
             onClick={runAutoLayout}
             title="Auto-arrange canvas cleanly"

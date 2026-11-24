@@ -9,12 +9,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/be-yourself-never-surrender/pandawa/actions"><img src="https://img.shields.io/github/actions/workflow/status/be-yourself-never-surrender/pandawa/ci.yml?style=for-the-badge&label=CI%20Build%20%26%20Tests" alt="CI Status"></a>
   <a href="https://github.com/be-yourself-never-surrender/pandawa/releases"><img src="https://img.shields.io/badge/Version-7.0.0-e5a00d?style=for-the-badge" alt="Version 7.0.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=for-the-badge" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Runtime-Node.js%2022.5%2B%20%2F%2024%20%2B%20Python%203-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node 24 + Python">
   <img src="https://img.shields.io/badge/Channels-WhatsApp%20%7C%20Telegram%20%7C%20Discord-06b6d4?style=for-the-badge" alt="Omnichannel">
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/Security-Hardened%20%7C%20Zero%20Mock-ef4444?style=for-the-badge" alt="Security"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/be-yourself-never-surrender/pandawa/actions/workflows/ci.yml"><img src="https://github.com/be-yourself-never-surrender/pandawa/actions/workflows/ci.yml/badge.svg" alt="Pandawa CI"></a>
 </p>
 
 ---

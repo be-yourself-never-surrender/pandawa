@@ -15,6 +15,8 @@ export interface VerificationCheckResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  ownerAgentId?: string;
+  ownerAgentName?: string;
 }
 
 export interface LeadTriageSummary {
@@ -119,7 +121,7 @@ function collectTeamInteractionStats(
 }
 
 export async function runProgrammaticVerifyCommands(
-  tasks: Array<{ title: string; verifyCmd?: string }>,
+  tasks: Array<{ title: string; verifyCmd?: string; ownerAgentId?: string; ownerAgentName?: string }>,
   options?: {
     cwd?: string;
     teamId?: string;
@@ -138,6 +140,11 @@ export async function runProgrammaticVerifyCommands(
     const cmd = (t.verifyCmd || "").trim();
     if (!cmd || seen.has(cmd)) continue;
     seen.add(cmd);
+
+    const ownerMeta = {
+      ...(t.ownerAgentId ? { ownerAgentId: t.ownerAgentId } : {}),
+      ...(t.ownerAgentName ? { ownerAgentName: t.ownerAgentName } : {}),
+    };
 
     if (!options?.skipApproval && toolRequiresApproval("shell_exec", options?.sessionId)) {
       const decision = await requestApproval({
@@ -158,6 +165,7 @@ export async function runProgrammaticVerifyCommands(
           stdout: "",
           stderr: `Verification command rejected by user${decision.reason ? `: ${decision.reason}` : "."}`,
           durationMs: 0,
+          ...ownerMeta,
         });
         continue;
       }
@@ -180,6 +188,7 @@ export async function runProgrammaticVerifyCommands(
         stdout: stdout.slice(0, 4000),
         stderr: stderr.slice(0, 2000),
         durationMs: Date.now() - started,
+        ...ownerMeta,
       });
     } catch (err: unknown) {
       const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
@@ -191,6 +200,7 @@ export async function runProgrammaticVerifyCommands(
         stdout: String(e.stdout || "").slice(0, 4000),
         stderr: String(e.stderr || e.message || String(err)).slice(0, 2500),
         durationMs: Date.now() - started,
+        ...ownerMeta,
       });
     }
   }
@@ -209,6 +219,174 @@ export function computeVerificationVerdict(checks: VerificationCheckResult[], re
     return checks.every((c) => c.passed) && !reviewerRejected;
   }
   return reviewerPassed;
+}
+
+export interface ParsedReviewerRevisions {
+  targetAgentIds: string[];
+  feedbackByAgentId: Map<string, string>;
+  targeted: boolean;
+}
+
+/**
+ * Parses targeted revision directives from a QA/Auditor verdict (`REVISE [AgentName]: ...`
+ * or `{"revisions": [...]}`), plus programmatic `verifyCmd` failures mapped to owners.
+ * Falls back cleanly to all active specialists when no agent-specific targeting is found.
+ */
+export function parseReviewerRevisions(
+  reviewerText: string,
+  progChecks: VerificationCheckResult[],
+  taskRecords: Array<{ agent: { id: string; name: string; slug?: string }; task: { title: string } }>
+): ParsedReviewerRevisions {
+  const activeAgents = new Map<string, { id: string; name: string; slug?: string }>();
+  for (const tr of taskRecords) {
+    if (tr.agent?.id && !activeAgents.has(tr.agent.id)) {
+      activeAgents.set(tr.agent.id, tr.agent);
+    }
+  }
+
+  const normalizeName = (s: string) =>
+    s
+      .trim()
+      .replace(/^[\s*@[\]`"'*]+|[\s*\[\]`"'*]+$/g, "")
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+
+  const matchActiveAgent = (rawName: string): { id: string; name: string } | undefined => {
+    const q = normalizeName(rawName);
+    if (!q) return undefined;
+    const list = Array.from(activeAgents.values());
+    const exact = list.find(
+      (a) => a.name.toLowerCase() === q || (a.slug && a.slug.toLowerCase() === q)
+    );
+    if (exact) return exact;
+    const partial = list.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        q.includes(a.name.toLowerCase()) ||
+        (a.slug && (a.slug.toLowerCase().includes(q) || q.includes(a.slug.toLowerCase())))
+    );
+    return partial.length === 1 ? partial[0] : undefined;
+  };
+
+  const feedbackByAgentId = new Map<string, string>();
+  const appendFeedback = (agentId: string, note: string) => {
+    const clean = note.trim();
+    if (!clean) return;
+    const existing = feedbackByAgentId.get(agentId);
+    feedbackByAgentId.set(agentId, existing ? `${existing}\n- ${clean}` : clean);
+  };
+
+  // 1. Line directives: REVISE [AgentName]: <note> / - REVISE @AgentName: <note>
+  const reviseLineRe = /^\s*(?:[-*]\s*)?REVISE\s+\[?@?([^\]\n:]+?)\]?\s*:\s*(.+)$/gim;
+  for (const m of reviewerText.matchAll(reviseLineRe)) {
+    const ag = matchActiveAgent(m[1]);
+    if (ag) appendFeedback(ag.id, m[2]);
+  }
+
+  // 2. JSON revision blocks: {"revisions": [{"agent": "...", "feedback": "..."}]}
+  const jsonCandidates: string[] = [];
+  for (const m of reviewerText.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    jsonCandidates.push(m[1].trim());
+  }
+  const rawRevisionsObj = reviewerText.match(/\{[\s\S]*"revisions"\s*:\s*\[[\s\S]*?\][\s\S]*?\}/);
+  if (rawRevisionsObj) jsonCandidates.push(rawRevisionsObj[0]);
+
+  for (const cand of jsonCandidates) {
+    try {
+      const parsed = JSON.parse(cand) as { revisions?: Array<Record<string, unknown>> };
+      if (parsed && Array.isArray(parsed.revisions)) {
+        for (const item of parsed.revisions) {
+          if (!item || typeof item !== "object") continue;
+          const agRaw = String(item.agent || item.agentName || item.owner || item.to || "");
+          const fbRaw = String(item.feedback || item.note || item.message || item.reason || "");
+          const ag = matchActiveAgent(agRaw);
+          if (ag && fbRaw.trim()) appendFeedback(ag.id, fbRaw);
+        }
+      }
+    } catch {
+      // ignore non-JSON blocks
+    }
+  }
+
+  // 3. Machine-truth binding: failing verifyCmd always forces its owner into targeted revisions
+  for (const c of progChecks) {
+    if (!c.passed && c.ownerAgentId && activeAgents.has(c.ownerAgentId)) {
+      const errSnippet = (c.stderr || c.stdout || "").trim().slice(0, 800);
+      appendFeedback(
+        c.ownerAgentId,
+        `Programmatic verifyCmd FAILED for "${c.title}": \`${c.command}\` (exit ${c.exitCode})${errSnippet ? `\n${errSnippet}` : ""}`
+      );
+    }
+  }
+
+  if (feedbackByAgentId.size > 0) {
+    return {
+      targetAgentIds: Array.from(feedbackByAgentId.keys()),
+      feedbackByAgentId,
+      targeted: true,
+    };
+  }
+
+  // Fallback: target all active specialists with full critique
+  const fallbackText = reviewerText.slice(0, 3200);
+  for (const ag of activeAgents.values()) {
+    feedbackByAgentId.set(ag.id, fallbackText);
+  }
+  return {
+    targetAgentIds: Array.from(activeAgents.keys()),
+    feedbackByAgentId,
+    targeted: false,
+  };
+}
+
+function postEngineTeamMessage(params: {
+  teamId: string;
+  sessionId: string;
+  fromAgent: string;
+  toAgent: string;
+  kind: string;
+  content: string;
+  onEvent?: (ev: Record<string, unknown>) => void;
+}): string {
+  const id = generateId("tmsg");
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO team_messages (id, team_id, session_id, from_agent, to_agent, kind, content, read_by_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '[]')`
+  ).run(id, params.teamId, params.sessionId, params.fromAgent, params.toAgent, params.kind, params.content);
+  params.onEvent?.({
+    type: "team_message",
+    id,
+    teamId: params.teamId,
+    sessionId: params.sessionId,
+    fromAgent: params.fromAgent,
+    toAgent: params.toAgent,
+    kind: params.kind,
+    content: params.content,
+  });
+  return id;
+}
+
+function markTeamMessagesReadBy(ids: string[], readerName: string): void {
+  if (!ids.length || !readerName) return;
+  const db = getDb();
+  for (const id of ids) {
+    const row = db.prepare("SELECT read_by_json FROM team_messages WHERE id = ?").get(id) as
+      | { read_by_json?: string }
+      | undefined;
+    if (!row) continue;
+    let readers: string[] = [];
+    try {
+      const parsed = JSON.parse(row.read_by_json || "[]");
+      if (Array.isArray(parsed)) readers = parsed.map(String);
+    } catch {
+      readers = [];
+    }
+    if (!readers.includes(readerName)) {
+      readers.push(readerName);
+      db.prepare("UPDATE team_messages SET read_by_json = ? WHERE id = ?").run(JSON.stringify(readers), id);
+    }
+  }
 }
 
 interface TeamRow {
@@ -779,13 +957,23 @@ export async function runTeamMission(params: {
         skippedReview: !shouldRunReview,
       };
 
-      const maxFixCycles = Math.max(1, Math.min(3, team.max_rounds || 2));
+      const maxFixCycles = Math.max(1, Math.min(5, team.max_rounds || 2));
       let verified = false;
       let lastFeedback = "";
       let lastChecks: VerificationCheckResult[] = [];
+      let pendingAgentIds = new Set<string>(tasksByAgent.keys());
+      let feedbackByAgentId = new Map<string, string>();
+      let reviewMsgIdsByAgentId = new Map<string, string[]>();
+      const latestResultByAgent = new Map<string, { cycle: number; result: AgentRunResult }>();
 
       for (let cycle = 1; cycle <= maxFixCycles; cycle++) {
         if (params.signal?.aborted) throw new Error("Mission stopped by user.");
+
+        const activeEntries = Array.from(tasksByAgent.entries()).filter(([agentKey]) =>
+          pendingAgentIds.has(agentKey)
+        );
+        if (activeEntries.length === 0) break;
+        const activeNames = activeEntries.map(([, items]) => items[0].agent.name);
 
         params.onEvent?.({
           type: "team_phase",
@@ -793,14 +981,19 @@ export async function runTeamMission(params: {
           detail:
             cycle === 1
               ? `Selected specialist(s) (${delegatedAgents.join(", ")}) executing assigned tasks...`
-              : `Fix Cycle ${cycle}/${maxFixCycles}: Specialists resolving verification failures...`,
+              : `Fix Cycle ${cycle}/${maxFixCycles}: Targeted revision by ${activeNames.join(", ")}...`,
         });
 
-        // Phase 2: Parallel Multi-Step Execution per Assigned Specialist
+        // Phase 2: Parallel Multi-Step Execution per Assigned (or Flagged) Specialist
         const teamWorkspaceDir = resolveTeamWorkspaceDir(team.id);
         const execResults = await Promise.all(
-          Array.from(tasksByAgent.entries()).map(async ([agentKey, items]) => {
+          activeEntries.map(async ([agentKey, items]) => {
             const member = items[0].agent;
+            if (cycle > 1) {
+              const incomingReviewIds = reviewMsgIdsByAgentId.get(agentKey) || [];
+              markTeamMessagesReadBy(incomingReviewIds, member.name);
+            }
+
             const taskListText = items
               .map(
                 (it, idx) =>
@@ -811,7 +1004,7 @@ export async function runTeamMission(params: {
               )
               .join("\n\n");
 
-            const activePeerSummaries = Array.from(tasksByAgent.entries())
+            const activePeerSummaries = activeEntries
               .filter(([id]) => id !== agentKey)
               .map(([, peerItems]) => {
                 const pAgent = peerItems[0].agent;
@@ -823,6 +1016,11 @@ export async function runTeamMission(params: {
               activePeerSummaries.length > 0
                 ? `\nParallel Teammates Executing Right Now (use \`team_message\`, \`team_inbox\`, or \`consult_teammate\` for real coordination):\n${activePeerSummaries.join("\n")}\n`
                 : "";
+
+            const agentFeedback = cycle > 1 ? feedbackByAgentId.get(agentKey) || lastFeedback : "";
+            const revisionBlock = agentFeedback
+              ? `\n💬 AUDIT REVISION REQUEST FROM ${reviewer.name} (Round ${cycle - 1} → Fix #${cycle}):\n${agentFeedback}\nFix ONLY the flagged issues above, verify them, and confirm back to ${reviewer.name}.\n`
+              : "";
 
             try {
               const res = await runAgentTurn({
@@ -838,9 +1036,7 @@ export async function runTeamMission(params: {
                   `Team Workspace Root (isolated to ${team.name}): \`${teamWorkspaceDir}\`\n\n` +
                   `Your Assigned Execution Tasks:\n${taskListText}\n` +
                   peerCoordinationBlock +
-                  (lastFeedback
-                    ? `\n⚠️ VERIFICATION FAILED IN PREVIOUS ROUND — FIX THESE EXACT ISSUES:\n${lastFeedback}\n`
-                    : "") +
+                  revisionBlock +
                   `\nACTUALLY DO THE WORK using your workspace, code, and persistent terminal tools (\`term_open\`, \`term_exec\`, \`term_read\`).\n` +
                   `- Use \`team_message\` / \`team_inbox\` to hand off real contracts, ports, or file paths, and \`consult_teammate\` whenever you need live verification or input from a peer.\n` +
                   `- Update your task status with \`team_todo_manage\` when finished.\n` +
@@ -849,13 +1045,39 @@ export async function runTeamMission(params: {
                 onEvent: params.onEvent,
               });
 
+              latestResultByAgent.set(agentKey, { cycle, result: res });
+
               for (const it of items) {
                 db.prepare("UPDATE team_tasks SET status = 'done', updated_at = datetime('now') WHERE id = ?").run(it.id);
               }
+
+              if (cycle > 1) {
+                const alreadyMessagedReviewer = res.toolTrace.some(
+                  (tc) =>
+                    tc.name === "team_message" &&
+                    String((tc.args as Record<string, unknown>)?.to_agent || "")
+                      .trim()
+                      .toLowerCase() === reviewer.name.toLowerCase()
+                );
+                if (!alreadyMessagedReviewer && reviewer.id !== member.id) {
+                  postEngineTeamMessage({
+                    teamId: team.id,
+                    sessionId: params.sessionId,
+                    fromAgent: member.name,
+                    toAgent: reviewer.name,
+                    kind: "update",
+                    content: `[Fix #${cycle}] ${res.content.slice(0, 800)}`,
+                    onEvent: params.onEvent,
+                  });
+                }
+              }
+
               return res;
             } catch (err) {
               if (isFatalMissionError(err, params.signal)) throw err;
-              return makeFallbackAgentResult(member, "Execution", err);
+              const fallbackRes = makeFallbackAgentResult(member, "Execution", err);
+              latestResultByAgent.set(agentKey, { cycle, result: fallbackRes });
+              return fallbackRes;
             }
           })
         );
@@ -899,9 +1121,14 @@ export async function runTeamMission(params: {
           detail: `${reviewer.avatar} ${reviewer.name} running programmatic exit-code verification & QA checks...`,
         });
 
-        // 3A. Machine-enforced execution of all planned verifyCmd checks
+        // 3A. Machine-enforced execution of all planned verifyCmd checks (owner-attributed)
         const progChecks = await runProgrammaticVerifyCommands(
-          taskRecords.map((tr) => ({ title: tr.task.title, verifyCmd: tr.task.verifyCmd })),
+          taskRecords.map((tr) => ({
+            title: tr.task.title,
+            verifyCmd: tr.task.verifyCmd,
+            ownerAgentId: tr.agent.id,
+            ownerAgentName: tr.agent.name,
+          })),
           {
             cwd: resolveTeamWorkspaceDir(team.id),
             teamId: team.id,
@@ -919,15 +1146,27 @@ export async function runTeamMission(params: {
               progChecks
                 .map(
                   (c) =>
-                    `- **${c.title}** | \`${c.command}\` → **${c.passed ? "PASS (exit 0)" : `FAIL (exit ${c.exitCode})`}** (${c.durationMs}ms)\n` +
+                    `- **${c.title}**${c.ownerAgentName ? ` (${c.ownerAgentName})` : ""} | \`${c.command}\` → **${c.passed ? "PASS (exit 0)" : `FAIL (exit ${c.exitCode})`}** (${c.durationMs}ms)\n` +
                     (c.stdout ? `  STDOUT: ${c.stdout.slice(0, 800)}\n` : "") +
                     (c.stderr ? `  STDERR: ${c.stderr.slice(0, 800)}\n` : "")
                 )
                 .join("\n")
             : "(No explicit verifyCmd provided by planner — run real build/test checks in terminal now.)";
 
-        const buildDigest = execResults
-          .map((r) => `### ${r.avatar} ${r.agentName} (${r.stepsUsed || 0} steps, ${r.toolTrace.length} tool calls)\n${r.content}`)
+        const buildDigest = Array.from(tasksByAgent.keys())
+          .map((k) => {
+            const entry = latestResultByAgent.get(k);
+            if (!entry) return "";
+            const r = entry.result;
+            const statusTag =
+              entry.cycle < cycle
+                ? `[Passed in Cycle ${entry.cycle} — unchanged]`
+                : cycle > 1
+                ? `[Revised in Fix #${cycle}]`
+                : `(${r.stepsUsed || 0} steps, ${r.toolTrace.length} tool calls)`;
+            return `### ${r.avatar} ${r.agentName} ${statusTag}\n${r.content}`;
+          })
+          .filter(Boolean)
           .join("\n\n");
 
         let verifyRes: AgentRunResult;
@@ -947,7 +1186,7 @@ export async function runTeamMission(params: {
               `PERFORM REAL VERIFICATION NOW:\n` +
               `1. Review programmatic exit-code results above and actually inspect real artifacts via \`workspace_read\`, \`term_read\`, \`team_inbox\`, and \`blackboard_read\` (never trust claims without checking files/logs).\n` +
               `2. Use \`consult_teammate\` if anything needs clarification or extra check from a specialist, and run any additional build/test checks via \`term_exec\`.\n` +
-              `3. Start your final conclusion line with EXACTLY \`VERDICT: PASS\` ONLY if all checks genuinely pass, OR \`VERDICT: NEEDS_FIX\` followed by the exact failing command/error.`,
+              `3. Start your final conclusion line with EXACTLY \`VERDICT: PASS\` ONLY if all checks genuinely pass, OR \`VERDICT: NEEDS_FIX\`. When returning \`VERDICT: NEEDS_FIX\`, direct specific revision notes ONLY to the teammate(s) who need to rework using lines formatted as:\nREVISE [ExactAgentName]: <exact issue to fix and expected proof>`,
             extraSystemNote:
               "You are the Verification Gate in Execute & Verify Mode. Machine exit codes are authoritative; never rubber-stamp failing builds.",
             onEvent: params.onEvent,
@@ -982,10 +1221,55 @@ export async function runTeamMission(params: {
         });
 
         if (cyclePassed) {
+          postEngineTeamMessage({
+            teamId: team.id,
+            sessionId: params.sessionId,
+            fromAgent: reviewer.name,
+            toAgent: "all",
+            kind: "review",
+            content: `[Verify #${cycle} · PASS] ${verifyRes.content.slice(0, 600)}`,
+            onEvent: params.onEvent,
+          });
           verified = true;
           break;
         }
+
         lastFeedback = `${progReportText}\n\nReviewer Critique:\n${verifyRes.content}`.slice(0, 3200);
+        const parsedRev = parseReviewerRevisions(verifyRes.content, progChecks, taskRecords);
+        pendingAgentIds = new Set(parsedRev.targetAgentIds);
+        feedbackByAgentId = parsedRev.feedbackByAgentId;
+        reviewMsgIdsByAgentId = new Map();
+
+        if (cycle < maxFixCycles) {
+          let reopenedCount = 0;
+          for (const targetId of parsedRev.targetAgentIds) {
+            const targetItems = tasksByAgent.get(targetId) || [];
+            const targetAgent = targetItems[0]?.agent;
+            if (!targetAgent) continue;
+
+            for (const it of targetItems) {
+              db.prepare("UPDATE team_tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?").run(
+                it.id
+              );
+              reopenedCount++;
+            }
+
+            const targetNote = (parsedRev.feedbackByAgentId.get(targetId) || verifyRes.content).slice(0, 1200);
+            const msgId = postEngineTeamMessage({
+              teamId: team.id,
+              sessionId: params.sessionId,
+              fromAgent: reviewer.name,
+              toAgent: targetAgent.name,
+              kind: "review",
+              content: `[Verify #${cycle} · NEEDS_FIX] ${targetNote}`,
+              onEvent: params.onEvent,
+            });
+            reviewMsgIdsByAgentId.set(targetId, [msgId]);
+          }
+          if (reopenedCount > 0) {
+            params.onEvent?.({ type: "team_task_updated", teamId: team.id, count: reopenedCount });
+          }
+        }
       }
 
       // Phase 4: Final Synthesis Delivery (via configured Result Sender)

@@ -48,6 +48,11 @@ def tmux_name(name: str, scope: str = "") -> str:
     return s if s.startswith(PREFIX) else f"{PREFIX}{s}"
 
 
+def pane_target(tname: str) -> str:
+    """Target active pane cleanly across tmux >=3.6 (`=session:` vs ambiguous `=session`)."""
+    return f"={tname}:"
+
+
 @contextmanager
 def session_exec_lock(tname: str):
     if fcntl is None:
@@ -148,7 +153,7 @@ def cmd_open(payload: dict) -> dict:
                     escaped = str(v).replace("'", "'\"'\"'")
                     exports.append(f"export {k}='{escaped}'")
             if exports:
-                cmd_send({"name": name, "text": " && ".join(exports), "enter": True})
+                cmd_send({"name": name, "scope": scope, "text": " && ".join(exports), "enter": True})
                 time.sleep(0.15)
 
     return {
@@ -163,7 +168,7 @@ def cmd_open(payload: dict) -> dict:
 
 def capture_pane(tname: str, lines: int = 300) -> str:
     lines = max(20, min(5000, int(lines)))
-    res = run_tmux(["capture-pane", "-p", "-J", "-t", f"={tname}", "-S", f"-{lines}"])
+    res = run_tmux(["capture-pane", "-p", "-J", "-t", pane_target(tname), "-S", f"-{lines}"])
     if res.returncode != 0:
         return ""
     return ANSI_RE.sub("", res.stdout)
@@ -184,7 +189,7 @@ def cmd_read(payload: dict) -> dict:
         if "__PDW_START_" not in ln and "__PDW_DONE_" not in ln and "__pdw_ec=" not in ln
     ]
     output = "\n".join(clean_lines).rstrip()
-    meta = run_tmux(["display-message", "-p", "-t", f"={tname}", "#{pane_current_path}\t#{pane_current_command}"])
+    meta = run_tmux(["display-message", "-p", "-t", pane_target(tname), "#{pane_current_path}\t#{pane_current_command}"])
     cwd, cur_cmd = "", ""
     if meta.returncode == 0 and "\t" in meta.stdout:
         cwd, cur_cmd = meta.stdout.strip().split("\t", 1)
@@ -213,13 +218,13 @@ def cmd_send(payload: dict) -> dict:
     enter = payload.get("enter", True)
 
     if key and str(key) in special_keys:
-        res = run_tmux(["send-keys", "-t", f"={tname}", str(key)])
+        res = run_tmux(["send-keys", "-t", pane_target(tname), str(key)])
         if res.returncode != 0:
             return {"ok": False, "error": res.stderr.strip()}
     elif text is not None:
         raw = str(text)
         if raw in special_keys and not payload.get("literal"):
-            res = run_tmux(["send-keys", "-t", f"={tname}", raw])
+            res = run_tmux(["send-keys", "-t", pane_target(tname), raw])
             if res.returncode != 0:
                 return {"ok": False, "error": res.stderr.strip()}
         else:
@@ -227,11 +232,11 @@ def cmd_send(payload: dict) -> dict:
             load = run_tmux(["load-buffer", "-b", buf_name, "-"], input_text=raw)
             if load.returncode != 0:
                 return {"ok": False, "error": load.stderr.strip()}
-            paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", f"={tname}"])
+            paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", pane_target(tname)])
             if paste.returncode != 0:
                 return {"ok": False, "error": paste.stderr.strip()}
             if enter:
-                run_tmux(["send-keys", "-t", f"={tname}", "Enter"])
+                run_tmux(["send-keys", "-t", pane_target(tname), "Enter"])
 
     time.sleep(0.2)
     snapshot = capture_pane(tname, 80).rstrip()
@@ -271,7 +276,7 @@ def cmd_exec(payload: dict) -> dict:
         load = run_tmux(["load-buffer", "-b", buf_name, "-"], input_text=script)
         if load.returncode != 0:
             return {"ok": False, "error": load.stderr.strip()}
-        paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", f"={tname}"])
+        paste = run_tmux(["paste-buffer", "-d", "-b", buf_name, "-t", pane_target(tname)])
         if paste.returncode != 0:
             return {"ok": False, "error": paste.stderr.strip()}
 
@@ -324,7 +329,7 @@ def cmd_exec(payload: dict) -> dict:
 
             time.sleep(0.15)
 
-        meta = run_tmux(["display-message", "-p", "-t", f"={tname}", "#{pane_current_path}\t#{pane_current_command}"])
+        meta = run_tmux(["display-message", "-p", "-t", pane_target(tname), "#{pane_current_path}\t#{pane_current_command}"])
         cur_cwd, cur_cmd = cwd, ""
         if meta.returncode == 0 and "\t" in meta.stdout:
             cur_cwd, cur_cmd = meta.stdout.strip().split("\t", 1)

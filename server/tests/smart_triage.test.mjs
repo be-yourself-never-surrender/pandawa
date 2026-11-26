@@ -51,6 +51,27 @@ test("parseLeadTriagePlan unit checks: direct_reply, selective delegate, legacy 
   assert.equal(p5.action, "delegate");
   assert.equal(p5.needsReview, true);
   assert.deepEqual(p5.tasks, []);
+
+  // 6. Unfenced raw JSON following prose with stray/curly {braces} (e.g. plain-text / no-backticks user preference)
+  const p6 = parseLeadTriagePlan(
+    'Oke bro, konteks endpoint {id} & catatan {unclosed akan dicek oleh spesialis.\n' +
+      '{"action":"delegate","needsReview":true,"reason":"Target API audit","tasks":[{"title":"Audit IDOR","owner":"SecurityEng","instructions":"Check object ownership"}]}',
+    specs
+  );
+  assert.equal(p6.action, "delegate");
+  assert.equal(p6.needsReview, true);
+  assert.equal(p6.reason, "Target API audit");
+  assert.equal(p6.tasks.length, 1);
+  assert.equal(p6.tasks[0].owner, "SecurityEng");
+
+  // 7. Unfenced raw direct_reply following prose with {braces}
+  const p7 = parseLeadTriagePlan(
+    'Catatan internal {debug} siap.\n{"action":"direct_reply","reason":"No tools needed","reply":"Halo bro, polos tanpa markdown."}',
+    specs
+  );
+  assert.equal(p7.action, "direct_reply");
+  assert.equal(p7.reply, "Halo bro, polos tanpa markdown.");
+  assert.equal(p7.needsReview, false);
 });
 
 test("Smart Triage E2E: direct_reply wakes 0 specialists/reviewer; selective delegate wakes ONLY chosen specialist(s)", async () => {

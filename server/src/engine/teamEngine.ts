@@ -530,52 +530,102 @@ function normalizeTaskList(arr: Array<Record<string, unknown>>, specialists: Age
     .slice(0, 8);
 }
 
+function extractBalancedJsonSpans(rawText: string, openCh: "{" | "[", closeCh: "}" | "]"): string[] {
+  const spans: Array<{ start: number; end: number; raw: string }> = [];
+  const stack: number[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < rawText.length; i++) {
+    const ch = rawText[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === openCh) {
+      stack.push(i);
+    } else if (ch === closeCh && stack.length > 0) {
+      const start = stack.pop()!;
+      spans.push({ start, end: i + 1, raw: rawText.slice(start, i + 1) });
+    }
+  }
+
+  spans.sort((a, b) => b.end - a.end || b.raw.length - a.raw.length);
+  return spans.map((s) => s.raw);
+}
+
+function isTriageEnvelope(parsed: unknown): boolean {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const obj = parsed as Record<string, unknown>;
+  return typeof obj.action === "string" || typeof obj.mode === "string" || Array.isArray(obj.tasks);
+}
+
 export function parseLeadTriagePlan(rawText: string, specialists: AgentRecord[]): LeadTriagePlan {
   const candidates: Array<{ parsed: unknown; stripPattern?: string }> = [];
 
-  // 1. Scan fenced code blocks from last to first
+  // 1. Scan fenced code blocks from last to first (preferring triage envelopes)
   const fenced = Array.from(rawText.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)).reverse();
+  const fallbackFenced: Array<{ parsed: unknown; stripPattern?: string }> = [];
   for (const m of fenced) {
     try {
       const parsed = JSON.parse(m[1].trim());
-      candidates.push({ parsed, stripPattern: m[0] });
-      break;
+      if (isTriageEnvelope(parsed) || Array.isArray(parsed)) {
+        candidates.push({ parsed, stripPattern: m[0] });
+        break;
+      }
+      fallbackFenced.push({ parsed, stripPattern: m[0] });
     } catch {
       // try previous fenced block
     }
   }
+  if (candidates.length === 0 && fallbackFenced.length > 0) {
+    candidates.push(fallbackFenced[0]);
+  }
 
-  // 2. Fallback to raw JSON object or top-level array
+  // 2. Fallback to raw/unfenced JSON object or array (handles plain-text / no-backtick outputs + earlier {prose})
   if (candidates.length === 0) {
-    const trimmed = rawText.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    const objSpans = extractBalancedJsonSpans(rawText, "{", "}");
+    let fallbackObj: { parsed: unknown; stripPattern: string } | null = null;
+    for (const raw of objSpans) {
       try {
-        candidates.push({ parsed: JSON.parse(trimmed), stripPattern: trimmed });
+        const parsed = JSON.parse(raw);
+        if (isTriageEnvelope(parsed)) {
+          candidates.push({ parsed, stripPattern: raw });
+          break;
+        }
+        if (!fallbackObj && parsed && typeof parsed === "object") {
+          fallbackObj = { parsed, stripPattern: raw };
+        }
       } catch {
-        // continue to substring scan
+        // try next balanced span
       }
     }
     if (candidates.length === 0) {
-      const firstObj = rawText.indexOf("{");
-      const lastObj = rawText.lastIndexOf("}");
-      const firstArr = rawText.indexOf("[");
-      const lastArr = rawText.lastIndexOf("]");
-      const slices: Array<{ pos: number; raw: string }> = [];
-      if (firstObj !== -1 && lastObj > firstObj) {
-        slices.push({ pos: firstObj, raw: rawText.slice(firstObj, lastObj + 1) });
-      }
-      if (firstArr !== -1 && lastArr > firstArr) {
-        slices.push({ pos: firstArr, raw: rawText.slice(firstArr, lastArr + 1) });
-      }
-      slices.sort((a, b) => a.pos - b.pos);
-      for (const s of slices) {
+      const arrSpans = extractBalancedJsonSpans(rawText, "[", "]");
+      for (const raw of arrSpans) {
         try {
-          candidates.push({ parsed: JSON.parse(s.raw), stripPattern: s.raw });
-          break;
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            candidates.push({ parsed, stripPattern: raw });
+            break;
+          }
         } catch {
-          // try next slice
+          // try next array span
         }
       }
+    }
+    if (candidates.length === 0 && fallbackObj) {
+      candidates.push(fallbackObj);
     }
   }
 
@@ -787,14 +837,15 @@ export async function runTeamMission(params: {
             `Available Specialists:\n` +
             selectableRoster.map((m) => `- **${m.name}** (${m.title} | purpose: ${m.purpose})`).join("\n") +
             `\nReviewer/QA: **${reviewer.name}** (${reviewer.title})\n\n` +
-            `First, triage this request using **Smart Triage**:\n` +
-            `1. **Direct Reply**: If this is a casual greeting, simple chat, quick explanation, or direct question you can answer immediately WITHOUT waking specialists or running execution tools, respond with this JSON block:\n` +
-            `\`\`\`json\n{"action":"direct_reply","reason":"short reason","reply":"your complete final response to the user"}\n\`\`\`\n` +
-            `2. **Selective Delegation**: If real work, code/terminal execution, investigation, or specialist expertise is needed, delegate ONLY to the exact specialist(s) required (never wake unrelated teammates). Set \`"needsReview": false\` for lightweight non-code lookups/summaries that need no QA audit, or \`"needsReview": true\` when builds, edits, commands, or security checks must be verified:\n` +
-            `\`\`\`json\n{"action":"delegate","needsReview":true,"reason":"short reason","tasks":[{"title":"...", "owner":"<exact specialist name>", "files":["path/a"], "verifyCmd":"command to verify (optional)", "instructions":"exact actionable steps"}]}\n\`\`\`\n` +
-            `END your response with ONE valid \`\`\`json ... \`\`\` block (1 to ${Math.min(5, selectableRoster.length + 1)} tasks if delegating).`,
+            `First, triage this request using Smart Triage.\n` +
+            `INTERNAL MACHINE ENVELOPE RULE (CRITICAL): This triage output is parsed by the engine and is NOT shown raw to the user. Even if user memory/preferences ask for plain text or no markdown/backticks in user chat, you MUST ALWAYS end this turn with ONE valid JSON object (fenced or bare raw JSON) and apply plain-text style ONLY inside "reply" or the final synthesis.\n\n` +
+            `1. Direct Reply: If this is a casual greeting, simple chat, quick explanation, or direct question you can answer immediately WITHOUT waking specialists or running execution tools, output:\n` +
+            `{"action":"direct_reply","reason":"short reason","reply":"your complete final response to the user"}\n` +
+            `2. Selective Delegation: If real work, code/terminal execution, investigation, or specialist expertise is needed, delegate ONLY to the exact specialist(s) required (never wake unrelated teammates). Set "needsReview": false for lightweight non-code lookups/summaries that need no QA audit, or "needsReview": true when builds, edits, commands, or security checks must be verified:\n` +
+            `{"action":"delegate","needsReview":true,"reason":"short reason","tasks":[{"title":"...", "owner":"<exact specialist name>", "files":["path/a"], "verifyCmd":"command to verify (optional)", "instructions":"exact actionable steps"}]}\n` +
+            `END your response with ONE valid JSON object (1 to ${Math.min(5, selectableRoster.length + 1)} tasks if delegating).`,
           extraSystemNote:
-            `You are the Lead Architect & Smart Triage Commander for ${team.name}. Answer lightweight chat directly with action="direct_reply"; otherwise selectively delegate only necessary tasks to the right specialist(s) without overlapping files.`,
+            `You are the Lead Architect & Smart Triage Commander for ${team.name}. Output a valid internal JSON routing envelope (bare JSON or fenced json block) regardless of user chat formatting preferences; apply user formatting preferences only inside direct_reply.reply or final synthesis.`,
           onEvent: params.onEvent,
         });
       } catch (err) {

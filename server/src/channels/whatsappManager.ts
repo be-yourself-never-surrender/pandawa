@@ -243,9 +243,16 @@ function dispatchWhatsAppInbound(params: {
       let finalText = trimmed;
       let finalImages = params.images;
       if (params.preparePayload) {
-        const prepared = await params.preparePayload();
-        finalText = prepared.text.trim();
-        finalImages = prepared.images;
+        try {
+          const prepared = await params.preparePayload();
+          finalText = prepared.text.trim();
+          finalImages = prepared.images;
+        } catch (mediaErr) {
+          await params.replyFn(
+            `Pandawa media error: ${mediaErr instanceof Error ? mediaErr.message : String(mediaErr)}`
+          );
+          return;
+        }
       }
       if (!finalText) return;
       await executeChannelMission({
@@ -759,17 +766,18 @@ async function downloadWhatsAppCloudMedia(
   if (!metaResp.ok) return null;
   const meta = (await metaResp.json()) as { url?: string; mime_type?: string; file_size?: number };
   if (!meta.url) return null;
+  const maxMb = Math.round(MAX_INBOUND_MEDIA_BYTES / (1024 * 1024));
   if (meta.file_size && meta.file_size > MAX_INBOUND_MEDIA_BYTES) {
-    throw new Error(`WhatsApp Cloud media exceeds 20 MB limit.`);
+    throw new Error(`WhatsApp Cloud media exceeds ${maxMb} MB limit.`);
   }
   const binResp = await fetch(meta.url, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(180_000),
   });
   if (!binResp.ok) return null;
   const buffer = Buffer.from(await binResp.arrayBuffer());
   if (buffer.byteLength > MAX_INBOUND_MEDIA_BYTES) {
-    throw new Error(`WhatsApp Cloud media exceeds 20 MB limit.`);
+    throw new Error(`WhatsApp Cloud media exceeds ${maxMb} MB limit.`);
   }
   return { buffer, mimeType: meta.mime_type };
 }

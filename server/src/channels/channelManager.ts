@@ -651,30 +651,45 @@ export async function dispatchChannelNotification(
 
 async function downloadTelegramFile(
   botToken: string,
-  fileId: string
+  fileId: string,
+  declaredFilename?: string
 ): Promise<{ buffer: Buffer; filePath: string; filename: string } | null> {
   const base = getTelegramApiBase();
+  const maxMb = Math.round(MAX_INBOUND_MEDIA_BYTES / (1024 * 1024));
   const metaResp = await fetch(`${base}/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, {
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(20_000),
   });
-  if (!metaResp.ok) return null;
-  const metaJson = (await metaResp.json()) as {
+  const metaJson = (await metaResp.json().catch(() => ({}))) as {
     ok?: boolean;
+    description?: string;
     result?: { file_path?: string; file_size?: number };
   };
+  if (!metaResp.ok || !metaJson.ok) {
+    const desc = String(metaJson.description || `HTTP ${metaResp.status}`);
+    if (/file is too big/i.test(desc)) {
+      const fname = declaredFilename ? `"${declaredFilename}" ` : "";
+      throw new Error(
+        `File ${fname}melebihi batas 20 MB resmi Telegram Bot API (getFile: ${desc}). ` +
+          `Untuk mengirim .apk/.apks besar (hingga ${maxMb} MB), upload langsung lewat Pandawa Web UI → Team Workspaces → Upload File (atau kirim via WhatsApp QR / link download), lalu sebutkan path filenya di chat (misal: inbox/namafile.apk).`
+      );
+    }
+    throw new Error(`Telegram getFile failed: ${desc}`);
+  }
   const tgFilePath = metaJson.result?.file_path;
-  if (!metaJson.ok || !tgFilePath) return null;
+  if (!tgFilePath) return null;
   if (metaJson.result?.file_size && metaJson.result.file_size > MAX_INBOUND_MEDIA_BYTES) {
-    throw new Error(`Telegram file exceeds 20 MB limit (${metaJson.result.file_size} bytes).`);
+    throw new Error(`Telegram file exceeds ${maxMb} MB limit (${metaJson.result.file_size} bytes).`);
   }
   const fileResp = await fetch(`${base}/file/bot${botToken}/${tgFilePath.replace(/^\/+/, "")}`, {
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(180_000),
   });
-  if (!fileResp.ok) return null;
+  if (!fileResp.ok) {
+    throw new Error(`Telegram file download failed (HTTP ${fileResp.status}).`);
+  }
   const arr = await fileResp.arrayBuffer();
   const buffer = Buffer.from(arr);
   if (buffer.byteLength > MAX_INBOUND_MEDIA_BYTES) {
-    throw new Error(`Telegram file exceeds 20 MB limit (${buffer.byteLength} bytes).`);
+    throw new Error(`Telegram file exceeds ${maxMb} MB limit (${buffer.byteLength} bytes).`);
   }
   return {
     buffer,
@@ -705,7 +720,7 @@ async function sendTelegramMedia(
   const resp = await fetch(`${getTelegramApiBase()}/bot${botToken}/${method}`, {
     method: "POST",
     body: form,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(120_000),
   });
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "");
@@ -937,7 +952,7 @@ async function runTelegramPoller(channelId: string, handle: PollerHandle): Promi
             const inboundImages: LLMImageAttachment[] = [];
 
             if (mediaPick) {
-              const dl = await downloadTelegramFile(botToken, mediaPick.fileId);
+              const dl = await downloadTelegramFile(botToken, mediaPick.fileId, mediaPick.filename);
               if (dl) {
                 const route = resolveChannelRouteSummary(liveCh);
                 const routedTeamId = route.targetType === "team" ? route.targetId : undefined;

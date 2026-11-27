@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   Camera,
   ChevronDown,
@@ -10,9 +10,11 @@ import {
   FolderOpen,
   History,
   Image as ImageIcon,
+  Package,
   RefreshCw,
   RotateCcw,
   Search,
+  Upload,
 } from "lucide-react";
 import { apiFetch, getStoredToken } from "../../api/client";
 import type { TeamItem } from "../../types";
@@ -33,6 +35,7 @@ interface WorkspacePreview {
   mimeType: string;
   content?: string;
   dataUrl?: string;
+  isAndroidPackage?: boolean;
 }
 
 interface CheckpointItem {
@@ -66,8 +69,11 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
   const [busyAction, setBusyAction] = useState(false);
   const [loadingTree, setLoadingTree] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
+  const [uploadState, setUploadState] = useState<{ filename: string; pct: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     apiFetch<{ teams: TeamItem[] }>("/api/teams")
@@ -130,6 +136,83 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
     },
     [teamId]
   );
+
+  async function uploadSingleFile(file: File): Promise<{ path: string; isAndroidPackage?: boolean }> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const url = `/api/workspaces/${encodeURIComponent(teamId)}/upload?filename=${encodeURIComponent(file.name)}&dir=inbox`;
+      xhr.open("POST", url);
+      const token = getStoredToken();
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && ev.total > 0) {
+          setUploadState({ filename: file.name, pct: Math.min(99, Math.round((ev.loaded / ev.total) * 100)) });
+        }
+      };
+      xhr.onload = () => {
+        try {
+          const parsed = JSON.parse(xhr.responseText || "{}") as {
+            ok?: boolean;
+            path?: string;
+            isAndroidPackage?: boolean;
+            error?: string;
+          };
+          if (xhr.status >= 200 && xhr.status < 300 && parsed.ok && parsed.path) {
+            resolve({ path: parsed.path, isAndroidPackage: parsed.isAndroidPackage });
+          } else {
+            reject(new Error(parsed.error || `Upload failed (HTTP ${xhr.status})`));
+          }
+        } catch {
+          reject(new Error(`Upload failed (HTTP ${xhr.status})`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Network error while uploading file."));
+      xhr.send(file);
+    });
+  }
+
+  async function handleUploadFiles(fileList: FileList | File[] | null) {
+    if (!teamId || !fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
+    setBusyAction(true);
+    setError("");
+    setNotice("");
+    let lastUploaded: { path: string; isAndroidPackage?: boolean } | null = null;
+    try {
+      for (const file of files) {
+        setUploadState({ filename: file.name, pct: 0 });
+        lastUploaded = await uploadSingleFile(file);
+      }
+      setUploadState(null);
+      setExpandedDirs((prev) => new Set([...prev, "inbox"]));
+      await loadTreeAndCheckpoints(teamId);
+      if (lastUploaded) {
+        await openFile(lastUploaded.path);
+        const tag = lastUploaded.isAndroidPackage ? " (Android package terdeteksi & diinspeksi)" : "";
+        setNotice(
+          files.length === 1
+            ? `Uploaded ke ${lastUploaded.path}${tag}. Sebutkan path ini di chat bot agar agen langsung menganalisa.`
+            : `${files.length} file berhasil di-upload ke inbox/.`
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploadState(null);
+      setBusyAction(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function handleDrop(ev: DragEvent<HTMLDivElement>) {
+    ev.preventDefault();
+    setIsDragging(false);
+    if (ev.dataTransfer?.files?.length) {
+      void handleUploadFiles(ev.dataTransfer.files);
+    }
+  }
 
   async function handleDownload(filePath: string) {
     if (!teamId || !filePath) return;
@@ -276,7 +359,36 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#09090b] text-zinc-100 overflow-hidden">
+    <div
+      className="h-full flex flex-col bg-[#09090b] text-zinc-100 overflow-hidden relative"
+      onDragOver={(ev) => {
+        ev.preventDefault();
+        if (!isDragging) setIsDragging(true);
+      }}
+      onDragLeave={(ev) => {
+        if (ev.currentTarget === ev.target) setIsDragging(false);
+      }}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-40 bg-zinc-950/85 backdrop-blur-xs border-2 border-dashed border-emerald-400/60 flex flex-col items-center justify-center gap-2 pointer-events-none">
+          <Package className="w-10 h-10 text-emerald-400" />
+          <div className="text-sm font-medium text-emerald-200">
+            Drop .apk / .apks / file ke sini untuk upload ke workspace team (inbox/)
+          </div>
+          <div className="text-xs text-zinc-400">Mendukung file besar hingga 250 MB (streaming langsung ke disk)</div>
+        </div>
+      )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".apk,.apks,.xapk,.aab,*/*"
+        className="hidden"
+        onChange={(e) => void handleUploadFiles(e.target.files)}
+      />
+
       <header className="px-6 py-4 border-b border-white/[0.07] flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="min-w-0">
           <div className="flex items-center gap-2.5">
@@ -290,7 +402,7 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
             )}
           </div>
           <p className="text-xs text-zinc-500 mt-0.5">
-            Ruang kerja terisolasi per team: telusuri artefak, preview file &amp; gambar, download, atau snapshot &amp; rollback.
+            Ruang kerja terisolasi per team: upload .apk/.apks atau file besar, telusuri artefak, preview, download, atau snapshot &amp; rollback.
           </p>
         </div>
 
@@ -309,6 +421,15 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
 
           <button
             type="button"
+            disabled={busyAction || !teamId}
+            onClick={() => fileInputRef.current?.click()}
+            className="h-8 px-3 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 disabled:opacity-50 border border-emerald-500/35 text-xs font-medium text-emerald-200 inline-flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <Upload className="w-3.5 h-3.5" /> Upload File / APK
+          </button>
+
+          <button
+            type="button"
             onClick={() => void loadTreeAndCheckpoints(teamId)}
             className="h-8 px-2.5 rounded-md bg-[#111113] hover:bg-[#18181b] border border-white/[0.08] text-xs text-zinc-300 inline-flex items-center gap-1.5 transition cursor-pointer"
           >
@@ -317,8 +438,22 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
         </div>
       </header>
 
-      {(error || notice) && (
+      {(error || notice || uploadState) && (
         <div className="px-6 pt-3 space-y-2 shrink-0">
+          {uploadState && (
+            <div className="px-3 py-2 rounded-lg bg-zinc-900 border border-white/[0.09] text-xs text-zinc-200 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate font-mono">Uploading {uploadState.filename}...</span>
+                <span className="font-mono text-emerald-300">{uploadState.pct}%</span>
+              </div>
+              <div className="h-1.5 w-full rounded bg-zinc-800 overflow-hidden">
+                <div
+                  className="h-full bg-emerald-400 transition-all duration-150"
+                  style={{ width: `${uploadState.pct}%` }}
+                />
+              </div>
+            </div>
+          )}
           {error && (
             <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/25 text-xs text-red-300">
               {error}
@@ -374,12 +509,22 @@ export function WorkspaceExplorerPage({ initialTeamId }: Props) {
 
             {preview && (
               <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(preview.path);
+                    setNotice(`Path disalin: ${preview.path}`);
+                  }}
+                  className="h-7 px-2.5 rounded bg-[#15151a] hover:bg-[#1e1e26] border border-white/[0.08] text-[11px] text-zinc-300 inline-flex items-center gap-1 transition cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" /> Copy Path
+                </button>
                 {preview.kind === "text" && preview.content !== undefined && (
                   <button
                     type="button"
                     onClick={() => {
                       void navigator.clipboard?.writeText(preview.content || "");
-                      setNotice(`Copied ${preview.path}`);
+                      setNotice(`Copied content of ${preview.path}`);
                     }}
                     className="h-7 px-2.5 rounded bg-[#15151a] hover:bg-[#1e1e26] border border-white/[0.08] text-[11px] text-zinc-300 inline-flex items-center gap-1 transition cursor-pointer"
                   >

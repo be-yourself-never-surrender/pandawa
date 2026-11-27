@@ -1,7 +1,16 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { resolveTeamCheckpointsDir, resolveTeamWorkspaceDir } from "../config.js";
-import { guessMimeType, isImageMimeOrExt } from "../channels/channelMedia.js";
+import {
+  MAX_INBOUND_MEDIA_BYTES,
+  guessMimeType,
+  isAndroidPackageExt,
+  isImageMimeOrExt,
+  sanitizeMediaFilename,
+} from "../channels/channelMedia.js";
+import { runPythonWorker } from "./pythonWorker.js";
 
 export interface WorkspaceTreeNode {
   name: string;
@@ -114,8 +123,16 @@ export function readWorkspacePreview(teamIdParam: string, relPath: string): {
   }
 
   const maxPreview = 200_000;
-  const buf = fs.readFileSync(full);
-  const slice = buf.subarray(0, maxPreview);
+  const bytesToRead = Math.min(stat.size, maxPreview);
+  const slice = Buffer.alloc(bytesToRead);
+  if (bytesToRead > 0) {
+    const fd = fs.openSync(full, "r");
+    try {
+      fs.readSync(fd, slice, 0, bytesToRead, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
   if (slice.includes(0)) {
     return { path: relPath, kind: "binary", size: stat.size, mimeType };
   }
@@ -125,6 +142,179 @@ export function readWorkspacePreview(teamIdParam: string, relPath: string): {
     size: stat.size,
     mimeType,
     content: slice.toString("utf8"),
+  };
+}
+
+export async function readWorkspacePreviewAsync(teamIdParam: string, relPath: string): Promise<{
+  path: string;
+  kind: "text" | "image" | "binary";
+  size: number;
+  mimeType: string;
+  content?: string;
+  dataUrl?: string;
+  isAndroidPackage?: boolean;
+}> {
+  const base = readWorkspacePreview(teamIdParam, relPath);
+  if (base.kind === "binary" && isAndroidPackageExt(base.path)) {
+    const full = resolveExplorerFilePath(teamIdParam, relPath);
+    try {
+      const parsed = await runPythonWorker<{ ok?: boolean; text?: string }>(
+        "doc_read",
+        { path: full, maxChars: 24000 },
+        30_000
+      );
+      if (parsed.ok && parsed.text) {
+        return {
+          ...base,
+          kind: "text",
+          isAndroidPackage: true,
+          content: parsed.text,
+        };
+      }
+    } catch {
+      // fall back to binary metadata preview
+    }
+    return { ...base, isAndroidPackage: true };
+  }
+  return base;
+}
+
+export interface StreamedWorkspaceUploadResult {
+  path: string;
+  filename: string;
+  size: number;
+  mimeType: string;
+  sha256: string;
+  isAndroidPackage: boolean;
+  androidPreview?: string;
+}
+
+export async function streamWorkspaceUpload(params: {
+  teamId: string;
+  stream: Readable;
+  filename: string;
+  dir?: string;
+  contentType?: string;
+  maxBytes?: number;
+}): Promise<StreamedWorkspaceUploadResult> {
+  const maxBytes = params.maxBytes ?? MAX_INBOUND_MEDIA_BYTES;
+  const maxMb = Math.round(maxBytes / (1024 * 1024));
+  const cleanDirRaw = String(params.dir || "inbox")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+  if (cleanDirRaw.includes("..")) {
+    throw new Error("Path traversal not allowed in target directory.");
+  }
+  const cleanDir = cleanDirRaw || "inbox";
+  const targetDir = resolveExplorerFilePath(params.teamId, cleanDir);
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  const safeName = sanitizeMediaFilename(params.filename, params.contentType, "upload");
+  const storedName = `${Date.now()}_${safeName}`;
+  const finalPath = path.resolve(targetDir, storedName);
+  if (!finalPath.startsWith(targetDir + path.sep)) {
+    throw new Error("Invalid upload destination path.");
+  }
+
+  const tmpPath = `${finalPath}.part_${crypto.randomUUID().slice(0, 8)}`;
+  const hash = crypto.createHash("sha256");
+  let totalBytes = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    const out = fs.createWriteStream(tmpPath);
+    let settled = false;
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      try {
+        out.destroy();
+      } catch {
+        // ignore
+      }
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {
+        // ignore
+      }
+      reject(err);
+    };
+
+    params.stream.on("data", (chunk: Buffer | string) => {
+      if (settled) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buf.byteLength;
+      if (totalBytes > maxBytes) {
+        const limitErr = new Error(`Uploaded file exceeds ${maxMb} MB limit.`) as Error & { statusCode?: number };
+        limitErr.statusCode = 413;
+        params.stream.pause();
+        fail(limitErr);
+        return;
+      }
+      hash.update(buf);
+      if (!out.write(buf)) {
+        params.stream.pause();
+        out.once("drain", () => {
+          if (!settled) params.stream.resume();
+        });
+      }
+    });
+
+    params.stream.on("error", (err) => fail(err instanceof Error ? err : new Error(String(err))));
+    params.stream.on("aborted", () => fail(new Error("Upload stream aborted by client.")));
+    params.stream.on("end", () => {
+      if (!settled) out.end();
+    });
+
+    out.on("error", (err) => fail(err instanceof Error ? err : new Error(String(err))));
+    out.on("finish", () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    });
+  });
+
+  if (totalBytes <= 0) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {
+      // ignore
+    }
+    throw new Error("Uploaded file is empty (0 bytes).");
+  }
+
+  fs.renameSync(tmpPath, finalPath);
+  const relPath = `${cleanDir}/${storedName}`.replace(/^\/+/, "");
+  const isAndroidPkg = isAndroidPackageExt(finalPath);
+  const rawMime = String(params.contentType || "").split(";")[0].trim().toLowerCase();
+  const mimeType =
+    !rawMime || rawMime === "application/octet-stream" || (isAndroidPkg && rawMime === "application/zip")
+      ? guessMimeType(finalPath)
+      : rawMime;
+
+  let androidPreview: string | undefined;
+  if (isAndroidPkg) {
+    try {
+      const parsed = await runPythonWorker<{ ok?: boolean; text?: string }>(
+        "doc_read",
+        { path: finalPath, maxChars: 8000 },
+        30_000
+      );
+      if (parsed.ok && parsed.text) {
+        androidPreview = parsed.text;
+      }
+    } catch {
+      // non-fatal; file is still saved cleanly
+    }
+  }
+
+  return {
+    path: relPath,
+    filename: storedName,
+    size: totalBytes,
+    mimeType,
+    sha256: hash.digest("hex"),
+    isAndroidPackage: isAndroidPkg,
+    ...(androidPreview ? { androidPreview } : {}),
   };
 }
 

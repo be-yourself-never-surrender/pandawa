@@ -1027,11 +1027,11 @@ const TOOLS: PandawaTool[] = [
     definition: {
       name: "doc_read",
       description:
-        "Extract clean readable text from PDF, DOCX, XLSX/Excel, CSV, or text files inside the workspace using Pandawa's Python Document Worker.",
+        "Extract clean readable text or structured inspection from PDF, DOCX, XLSX/Excel, Android packages (APK, APKS split bundles, XAPK, AAB — decoded AndroidManifest.xml, permissions, exported components, deep links, DEX/native libs, frameworks, SHA-256), CSV, or text files inside the workspace using Pandawa's Python Document Worker.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative file path inside workspace (e.g. report.pdf, sheet.xlsx)" },
+          path: { type: "string", description: "Relative file path inside workspace (e.g. inbox/app.apk, inbox/bundle.apks, report.pdf, sheet.xlsx)" },
           max_chars: { type: "number", description: "Max characters to extract (default 24000)" },
         },
         required: ["path"],

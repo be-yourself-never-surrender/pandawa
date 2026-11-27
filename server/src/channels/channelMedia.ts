@@ -4,7 +4,9 @@ import { resolveTeamWorkspaceDir } from "../config.js";
 import type { LLMImageAttachment } from "../providers/llmClient.js";
 import { runPythonWorker } from "../tools/pythonWorker.js";
 
-export const MAX_INBOUND_MEDIA_BYTES = 20 * 1024 * 1024;
+const configuredMaxMediaMb = Number(process.env.PANDAWA_MAX_MEDIA_MB || 250);
+export const MAX_INBOUND_MEDIA_BYTES =
+  Math.max(20, Number.isFinite(configuredMaxMediaMb) ? configuredMaxMediaMb : 250) * 1024 * 1024;
 const MAX_VISION_IMAGE_BYTES = 6 * 1024 * 1024;
 
 const EXT_TO_MIME: Record<string, string> = {
@@ -21,6 +23,10 @@ const EXT_TO_MIME: Record<string, string> = {
   ".md": "text/markdown",
   ".json": "application/json",
   ".zip": "application/zip",
+  ".apk": "application/vnd.android.package-archive",
+  ".apks": "application/vnd.android.apks",
+  ".xapk": "application/vnd.android.xapk",
+  ".aab": "application/vnd.android.aab",
   ".ogg": "audio/ogg",
   ".opus": "audio/ogg",
   ".mp3": "audio/mpeg",
@@ -61,6 +67,18 @@ const TEXT_EXTS = new Set([
 ]);
 
 const RICH_DOC_EXTS = new Set([".pdf", ".docx", ".xlsx"]);
+export const ANDROID_PKG_EXTS = new Set([".apk", ".apks", ".xapk", ".aab"]);
+
+export function isAndroidPackageExt(filePath?: string): boolean {
+  if (!filePath) return false;
+  return ANDROID_PKG_EXTS.has(path.extname(filePath).toLowerCase());
+}
+
+export function formatMediaSize(sizeBytes: number): string {
+  if (sizeBytes >= 1024 * 1024) return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (sizeBytes >= 1024) return `${Math.round(sizeBytes / 1024)} KB`;
+  return `${sizeBytes} B`;
+}
 
 export function guessMimeType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -83,11 +101,11 @@ function extFromMime(mimeType?: string): string {
   return ".bin";
 }
 
-function sanitizeFilename(rawName: string | undefined, mimeType?: string, prefix?: string): string {
+export function sanitizeMediaFilename(rawName: string | undefined, mimeType?: string, prefix?: string): string {
   const baseRaw = path.basename(String(rawName || "").replace(/\\/g, "/")).trim();
   const cleaned = baseRaw.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   if (cleaned && cleaned !== "." && cleaned !== "..") {
-    return cleaned.slice(0, 96);
+    return cleaned.slice(0, 120);
   }
   const stem = (prefix || "media").replace(/[^a-zA-Z0-9_-]/g, "") || "media";
   return `${stem}${extFromMime(mimeType)}`;
@@ -99,6 +117,7 @@ export interface SavedChannelMediaResult {
   sizeBytes: number;
   mimeType: string;
   isImage: boolean;
+  isAndroidPackage?: boolean;
   promptContext: string;
   visionImage?: LLMImageAttachment;
 }
@@ -113,9 +132,10 @@ export async function saveInboundChannelMedia(params: {
   if (!Buffer.isBuffer(params.buffer)) {
     throw new Error("Media payload must be a Buffer.");
   }
+  const maxMb = Math.round(MAX_INBOUND_MEDIA_BYTES / (1024 * 1024));
   if (params.buffer.byteLength > MAX_INBOUND_MEDIA_BYTES) {
     throw new Error(
-      `Inbound media too large (${Math.round(params.buffer.byteLength / (1024 * 1024))} MB, max 20 MB).`
+      `Inbound media too large (${(params.buffer.byteLength / (1024 * 1024)).toFixed(1)} MB, max ${maxMb} MB).`
     );
   }
 
@@ -123,7 +143,7 @@ export async function saveInboundChannelMedia(params: {
   const inboxDir = path.join(wsRoot, "inbox");
   fs.mkdirSync(inboxDir, { recursive: true });
 
-  const safeName = sanitizeFilename(params.filename, params.mimeType, params.prefix);
+  const safeName = sanitizeMediaFilename(params.filename, params.mimeType, params.prefix);
   const storedName = `${Date.now()}_${safeName}`;
   const fullPath = path.resolve(inboxDir, storedName);
   if (!fullPath.startsWith(inboxDir + path.sep)) {
@@ -132,11 +152,16 @@ export async function saveInboundChannelMedia(params: {
 
   fs.writeFileSync(fullPath, params.buffer);
   const relPath = `inbox/${storedName}`;
-  const mimeType = (params.mimeType || "").split(";")[0].trim() || guessMimeType(fullPath);
   const ext = path.extname(fullPath).toLowerCase();
+  const rawMime = (params.mimeType || "").split(";")[0].trim().toLowerCase();
+  const mimeType =
+    !rawMime || rawMime === "application/octet-stream" || (ANDROID_PKG_EXTS.has(ext) && rawMime === "application/zip")
+      ? guessMimeType(fullPath)
+      : rawMime;
   const isImage = isImageMimeOrExt(mimeType, fullPath);
+  const isAndroidPkg = ANDROID_PKG_EXTS.has(ext);
   const sizeBytes = params.buffer.byteLength;
-  const sizeLabel = sizeBytes >= 1024 ? `${Math.round(sizeBytes / 1024)} KB` : `${sizeBytes} B`;
+  const sizeLabel = formatMediaSize(sizeBytes);
 
   let visionImage: LLMImageAttachment | undefined;
   let previewNote = "";
@@ -148,6 +173,23 @@ export async function saveInboundChannelMedia(params: {
       name: relPath,
     };
     previewNote = "Attached directly to Vision context.";
+  } else if (isAndroidPkg) {
+    try {
+      const parsed = await runPythonWorker<{ ok?: boolean; text?: string; error?: string }>(
+        "doc_read",
+        { path: fullPath, maxChars: 6000 },
+        30_000
+      );
+      if (parsed.ok && parsed.text) {
+        previewNote =
+          `Android package pre-inspection (full analysis via \`doc_read(path="${relPath}")\` or shell \`unzip\`/\`apktool\`/\`jadx\`):\n` +
+          `\`\`\`\n${String(parsed.text).slice(0, 4500)}\n\`\`\``;
+      } else {
+        previewNote = `Android package saved in team workspace. Inspect via \`doc_read(path="${relPath}")\` or \`shell_exec\` (\`unzip\`, \`apktool\`, \`jadx\`).`;
+      }
+    } catch {
+      previewNote = `Android package saved in team workspace. Inspect via \`doc_read(path="${relPath}")\` or \`shell_exec\` (\`unzip\`, \`apktool\`, \`jadx\`).`;
+    }
   } else if (TEXT_EXTS.has(ext) && sizeBytes <= 256 * 1024 && !params.buffer.includes(0)) {
     const snippet = params.buffer.toString("utf8").slice(0, 4000);
     previewNote = `Inline text preview:\n\`\`\`\n${snippet}\n\`\`\``;
@@ -178,6 +220,7 @@ export async function saveInboundChannelMedia(params: {
     sizeBytes,
     mimeType,
     isImage,
+    ...(isAndroidPkg ? { isAndroidPackage: true } : {}),
     promptContext,
     ...(visionImage ? { visionImage } : {}),
   };

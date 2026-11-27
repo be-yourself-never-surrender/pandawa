@@ -53,10 +53,12 @@ import {
   createWorkspaceCheckpointSnapshot,
   listWorkspaceCheckpoints,
   listWorkspaceTree,
-  readWorkspacePreview,
+  readWorkspacePreviewAsync,
   resolveExplorerFilePath,
   rollbackWorkspaceCheckpointSnapshot,
+  streamWorkspaceUpload,
 } from "../tools/workspaceExplorer.js";
+import { MAX_INBOUND_MEDIA_BYTES } from "../channels/channelMedia.js";
 import { compileAgentRuntime, getTeamMembers } from "../engine/contextCompiler.js";
 import { runAgentTurn } from "../engine/agentRunner.js";
 import { runTeamMission, resolveTeamRoles } from "../engine/teamEngine.js";
@@ -3295,13 +3297,48 @@ export function createApiRouter(broadcast: (ev: Record<string, unknown>) => void
     }
   });
 
-  router.get("/workspaces/:teamId/file", (req: Request, res: Response) => {
+  router.get("/workspaces/:teamId/file", async (req: Request, res: Response) => {
     const relPath = String(req.query.path || "");
     try {
-      res.json(readWorkspacePreview(String(req.params.teamId), relPath));
+      const preview = await readWorkspacePreviewAsync(String(req.params.teamId), relPath);
+      res.json(preview);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(/not found/i.test(msg) ? 404 : 400).json({ error: msg });
+    }
+  });
+
+  router.post("/workspaces/:teamId/upload", async (req: Request, res: Response) => {
+    const teamId = String(req.params.teamId || "");
+    const filename = String(req.query.filename || req.headers["x-filename"] || "upload.bin").trim();
+    const dir = String(req.query.dir || req.headers["x-target-dir"] || "inbox").trim();
+    const contentLength = Number(req.headers["content-length"] || 0);
+    if (Number.isFinite(contentLength) && contentLength > MAX_INBOUND_MEDIA_BYTES) {
+      const maxMb = Math.round(MAX_INBOUND_MEDIA_BYTES / (1024 * 1024));
+      res.status(413).json({ error: `Uploaded file exceeds ${maxMb} MB limit.` });
+      return;
+    }
+    if (req.readableEnded) {
+      res.status(415).json({
+        error: "Send raw binary file stream with Content-Type: application/octet-stream (not JSON).",
+      });
+      return;
+    }
+    try {
+      const uploaded = await streamWorkspaceUpload({
+        teamId,
+        stream: req,
+        filename,
+        dir,
+        contentType: typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : undefined,
+      });
+      logAudit("admin", "workspace.upload", teamId, `${uploaded.path} (${uploaded.size} bytes)`);
+      broadcast({ type: "workspace_updated", teamId, path: uploaded.path });
+      res.json({ ok: true, ...uploaded });
+    } catch (err) {
+      const e = err as Error & { statusCode?: number };
+      const status = typeof e.statusCode === "number" ? e.statusCode : 400;
+      res.status(status).json({ error: e instanceof Error ? e.message : String(err) });
     }
   });
 
